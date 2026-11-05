@@ -297,6 +297,26 @@ pub fn evaluate_alarms(s: &AlarmSettings, i: &AlarmInput) -> Vec<Alarm> {
 pub struct Settings {
     pub schedule: Vec<ScheduleEntry>,
     pub alarms: AlarmSettings,
+    /// älteste Aufnahmen löschen, wenn weniger als `alarms.disk_free_gb` frei ist
+    pub delete_oldest_recordings: bool,
+}
+
+/// Welche Aufnahmen weg müssen, damit wieder `need` Bytes frei sind
+/// (älteste zuerst, die neueste – womöglich laufende – bleibt immer).
+pub fn recordings_to_delete(files: &[FileEntry], need: u64) -> Vec<String> {
+    let mut sorted: Vec<&FileEntry> = files.iter().collect();
+    sorted.sort_by_key(|f| f.modified_ms);
+    sorted.pop();
+    let mut freed = 0;
+    let mut out = Vec::new();
+    for f in sorted {
+        if freed >= need {
+            break;
+        }
+        freed += f.bytes;
+        out.push(f.name.clone());
+    }
+    out
 }
 
 pub fn load_json<T: for<'de> Deserialize<'de> + Default>(path: &Path) -> T {
@@ -448,6 +468,15 @@ mod tests {
         assert!(!allowed(Role::Operator, "PUT", "/api/config"));
         assert!(allowed(Role::Admin, "PUT", "/api/config"));
         assert_ne!(new_token(), new_token());
+    }
+
+    #[test]
+    fn oldest_recordings_go_first_newest_stays() {
+        let f = |n: &str, t: u64, b: u64| FileEntry { name: n.into(), bytes: b, modified_ms: t };
+        let files = vec![f("c", 3, 10), f("a", 1, 10), f("b", 2, 10)];
+        assert_eq!(recordings_to_delete(&files, 15), vec!["a", "b"]);
+        assert_eq!(recordings_to_delete(&files, 1000), vec!["a", "b"], "neueste bleibt");
+        assert!(recordings_to_delete(&files[..1], 5).is_empty());
     }
 
     #[test]

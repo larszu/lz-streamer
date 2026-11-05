@@ -46,11 +46,13 @@ pub struct InputConfig {
     pub kind: InputKind,
     pub device: u32,
     pub connection: Connection,
+    /// Beschnitt in Pixeln des Eingangs (oben, unten, links, rechts)
+    pub crop: [u32; 4],
 }
 
 impl Default for InputConfig {
     fn default() -> Self {
-        Self { kind: InputKind::Auto, device: 0, connection: Connection::Auto }
+        Self { kind: InputKind::Auto, device: 0, connection: Connection::Auto, crop: [0; 4] }
     }
 }
 
@@ -222,6 +224,8 @@ pub enum SrtMode {
     Caller,
     #[default]
     Listener,
+    /// beide Seiten rufen gleichzeitig an (für Firewalls ohne Portfreigabe)
+    Rendezvous,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -263,6 +267,11 @@ impl SrtConfig {
                 format!("srt://{h}:{}?mode=caller", self.port)
             }
             SrtMode::Listener => format!("srt://:{}?mode=listener", self.port),
+            SrtMode::Rendezvous => {
+                let h = self.effective_host();
+                let h = if h.contains(':') && !h.starts_with('[') { format!("[{h}]") } else { h.to_string() };
+                format!("srt://{h}:{}?mode=rendezvous", self.port)
+            }
         }
     }
 
@@ -307,6 +316,7 @@ pub fn parse_target(s: &str) -> Option<Target> {
         q.split('&').find_map(|kv| match kv.split_once('=') {
             Some(("mode", "caller")) => Some(SrtMode::Caller),
             Some(("mode", "listener")) => Some(SrtMode::Listener),
+            Some(("mode", "rendezvous")) => Some(SrtMode::Rendezvous),
             _ => None,
         })
     });
@@ -531,6 +541,9 @@ mod tests {
         assert_eq!(s.uri(), "srt://[fe80::1]:9001?mode=caller");
         s.mode = SrtMode::Listener;
         assert_eq!(s.uri(), "srt://:9001?mode=listener");
+        s.mode = SrtMode::Rendezvous;
+        s.host = "198.51.100.7".into();
+        assert_eq!(s.uri(), "srt://198.51.100.7:9001?mode=rendezvous");
     }
 
     #[test]

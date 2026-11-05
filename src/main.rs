@@ -62,6 +62,11 @@ enum Cmd {
         /// Reserve am Decoder-Ausgang in ms
         #[arg(long, default_value_t = 60)]
         reserve: u32,
+        /// Ausgabeformat, z. B. 3840x2160 (größer als HD: Testbild wird hochskaliert)
+        #[arg(long, default_value = "1280x720")]
+        format: String,
+        #[arg(long, default_value_t = 50)]
+        fps: u32,
     },
     /// Gefundene Encoder, Geräte und fehlende Bausteine anzeigen
     Info,
@@ -101,7 +106,7 @@ fn main() -> Result<()> {
             };
             std::process::exit(code);
         }
-        Cmd::Latenz { encoder, h265, srt_latency, runden, ohne_ton, decoder, demux, reserve } => {
+        Cmd::Latenz { encoder, h265, srt_latency, runden, ohne_ton, decoder, demux, reserve, format, fps } => {
             let opts = latency::MeasureOptions {
                 codec: if h265 { Codec::H265 } else { Codec::H264 },
                 encoder,
@@ -111,6 +116,9 @@ fn main() -> Result<()> {
                 decoder,
                 demux_latency_ms: demux,
                 output_buffer_ms: reserve,
+                width: format.split('x').next().and_then(|w| w.parse().ok()).unwrap_or(1280),
+                height: format.split('x').nth(1).and_then(|h| h.parse().ok()).unwrap_or(720),
+                fps,
                 ..Default::default()
             };
             let r = latency::measure(&opts)?;

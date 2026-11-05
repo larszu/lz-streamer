@@ -49,12 +49,14 @@ fn threads() -> usize {
 /// Mehrere Threads sind Pflicht: einthreadig schafft videoscale HD→UHD am
 /// M-Mac nur ≈ 25 fps, mit 8 Threads 50 fps auch mit Lanczos.
 pub fn scaler(cfg: &EncoderConfig) -> String {
+    // Lanczos mit Hüllkurve 3 statt 2: gemessen +0,3 dB PSNR-Y und +0,8 VMAF-NEG
+    // bei +1,8 ms je UHD-Bild (docs/skalierung.md)
     let method = match cfg.video.scale_quality {
-        ScaleQuality::Fast => "bilinear",
-        ScaleQuality::High => "lanczos",
+        ScaleQuality::Fast => "method=bilinear",
+        ScaleQuality::High => "method=lanczos envelope=3",
     };
     let n = threads();
-    format!("videoconvert n-threads={n} ! videoscale n-threads={n} method={method} add-borders=true")
+    format!("videoconvert n-threads={n} ! videoscale n-threads={n} {method} add-borders=true")
 }
 
 /// Das Testbild entsteht wie eine HD-Kamera höchstens in 1920×1080 und wird
@@ -65,13 +67,24 @@ pub fn test_source_size(cfg: &EncoderConfig) -> (u32, u32) {
     if v.width > 1920 || v.height > 1080 { (1920, 1080) } else { (v.width, v.height) }
 }
 
+/// `videocrop` für den Beschnitt, leer ohne Beschnitt.
+pub fn crop(cfg: &EncoderConfig) -> String {
+    let [t, b, l, r] = cfg.input.crop;
+    if t + b + l + r == 0 { String::new() } else { format!(" ! videocrop top={t} bottom={b} left={l} right={r}") }
+}
+
 pub fn primary_video(cfg: &EncoderConfig, input: &ResolvedInput) -> String {
     let caps = raw_caps(cfg);
+    let crop = crop(cfg);
     match input {
         ResolvedInput::Test => {
             let (w, h) = test_source_size(cfg);
             let src_caps = format!("video/x-raw,format=NV12,width={w},height={h},framerate={}/1,pixel-aspect-ratio=1/1", cfg.video.fps);
-            let scale = if (w, h) == (cfg.video.width, cfg.video.height) { String::new() } else { format!(" ! {}", scaler(cfg)) };
+            let scale = if (w, h) == (cfg.video.width, cfg.video.height) && crop.is_empty() {
+                String::new()
+            } else {
+                format!("{crop} ! {}", scaler(cfg))
+            };
             format!(
                 "videotestsrc name=testsrc is-live=true pattern=smpte ! {src_caps} \
                  ! timeoverlay halignment=right valignment=bottom font-desc={}{scale} ! {caps}",
@@ -80,7 +93,7 @@ pub fn primary_video(cfg: &EncoderConfig, input: &ResolvedInput) -> String {
         }
         ResolvedInput::Decklink { device, connection } => format!(
             "decklinkvideosrc name=capsrc device-number={device} connection={connection} mode=auto \
-             drop-no-signal-frames=true ! deinterlace ! {} \
+             drop-no-signal-frames=true ! deinterlace{crop} ! {} \
              ! videorate max-duplication-time=100000000 ! {caps}",
             scaler(cfg)
         ),
@@ -375,7 +388,7 @@ mod tests {
         assert_eq!(test_source_size(&cfg), (1920, 1080));
         let d = primary_video(&cfg, &ResolvedInput::Test);
         assert!(d.contains("width=1920,height=1080"));
-        assert!(d.contains("method=lanczos"));
+        assert!(d.contains("method=lanczos envelope=3"));
         assert!(d.contains("width=3840,height=2160"));
         cfg.video.scale_quality = ScaleQuality::Fast;
         assert!(primary_video(&cfg, &ResolvedInput::Test).contains("method=bilinear"));
@@ -393,6 +406,16 @@ mod tests {
         }
         crate::latency::ensure_init();
         gstreamer::parse::launch(&d).map(|_| ()).unwrap_or_else(|e| panic!("{e}\n{d}"));
+    }
+
+    #[test]
+    fn crop_only_when_set() {
+        let mut cfg = EncoderConfig::default();
+        assert_eq!(crop(&cfg), "");
+        cfg.input.crop = [0, 0, 240, 240];
+        assert_eq!(crop(&cfg), " ! videocrop top=0 bottom=0 left=240 right=240");
+        let d = primary_video(&cfg, &ResolvedInput::Test);
+        assert!(d.contains("videocrop") && d.contains("videoscale"));
     }
 
     #[test]

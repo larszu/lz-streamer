@@ -105,6 +105,20 @@ impl Ops {
                 uptime_s: sysinfo::System::uptime(),
             };
 
+            // Platz schaffen: älteste Aufnahmen löschen
+            let (auto_delete, min_free) = {
+                let s = self.settings.lock().await;
+                (s.delete_oldest_recordings, s.alarms.disk_free_gb as f64)
+            };
+            if auto_delete && min_free > 0.0 && info.disk_total_gb > 0.0 && info.disk_free_gb < min_free {
+                let need = ((min_free - info.disk_free_gb) * 1e9) as u64;
+                let files = admin::list_files(&rec_dir, &[".ts", ".mp4"]);
+                for name in admin::recordings_to_delete(&files, need) {
+                    if std::fs::remove_file(rec_dir.join(&name)).is_ok() {
+                        sup.log("warn", format!("Platz knapp – älteste Aufnahme gelöscht: {name}")).await;
+                    }
+                }
+            }
             let snap = sup.snapshot().await;
             let cfg = sup.config().await;
             let st = snap.status.as_ref();
