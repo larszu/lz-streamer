@@ -463,15 +463,17 @@ $('#add-schedule').onclick = () => {
 const alarmLabels = {
   signal_loss_s: 'Kein Signal länger als (s)', no_peer_s: 'Keine Gegenstelle länger als (s)', min_bitrate_kbps: 'Bitrate unter (kbit/s)',
   max_lost_per_min: 'Verluste je Minute über', max_restarts: 'Neustarts in 10 min ab', cpu_percent: 'CPU über (%)',
-  memory_percent: 'Speicher über (%)', disk_free_gb: 'Freier Platz unter (GB)'
+  memory_percent: 'Speicher über (%)', disk_free_gb: 'Freier Platz unter (GB)',
+  loudness_target: 'Ziel-Lautheit (LUFS)', loudness_tolerance_lu: 'Erlaubte Abweichung (LU)', silence_s: 'Spur still länger als (s)',
+  true_peak_max_dbtp: 'True Peak über (dBTP)'
 };
 function renderAlarmFields() {
   const host = $('#alarm-fields'); host.innerHTML = '';
   for (const [k, label] of Object.entries(alarmLabels)) {
     const l = document.createElement('label'); l.className = 'field';
     const i = document.createElement('input'); i.className = 'input'; i.inputMode = 'numeric'; i.value = settings.alarms[k];
-    i.oninput = () => { settings.alarms[k] = parseInt(i.value, 10) || 0; saveSettings(); };
-    const sp = document.createElement('span'); sp.textContent = label + ' (0 = aus)';
+    i.oninput = () => { const v = parseFloat(i.value.replace(',', '.')); settings.alarms[k] = Number.isFinite(v) ? v : 0; saveSettings(); };
+    const sp = document.createElement('span'); sp.textContent = label + (k === 'loudness_target' || k === 'true_peak_max_dbtp' ? '' : ' (0 = aus)');
     l.append(sp, i); host.append(l);
   }
 }
@@ -551,3 +553,23 @@ const _render = render;
 render = function (st) { _render(st); renderOps(st); };
 
 $('#auto-delete').onchange = e => { settings.delete_oldest_recordings = e.target.checked; saveSettings(); };
+
+// ---------------- Lautheit je Spur
+function renderMeters(st) {
+  const tr = (st.runtime.status?.audio_tracks || []).filter(t => st.config.role === 'encoder' || t.selected);
+  $('#audio-card').hidden = !tr.length;
+  if (!tr.length) return;
+  const target = st.loudness_target ?? -23;
+  const pos = v => Math.max(0, Math.min(100, (v + 60) / 60 * 100));
+  const f = v => v == null ? dash : fmt.format(v);
+  $('#meters').innerHTML = tr.map(t => {
+    const l = t.loudness || {};
+    const m = l.momentary;
+    const state = m == null ? '' : (l.true_peak > -1 ? 'error' : Math.abs((l.short_term ?? m) - target) > 5 ? 'warn' : '');
+    return `<div class="meter"><header>${esc(t.name || 'Spur ' + (t.index + 1))} <small>${esc(t.language || '')}${l.silent_s >= 2 ? ' · still' : ''}</small></header>
+      <div class="bar" role="meter" aria-label="Momentary-Lautheit" aria-valuemin="-60" aria-valuemax="0" aria-valuenow="${m ?? -60}"><span data-s="${state}" style="inline-size:${m == null ? 0 : pos(m)}%"></span><i style="inset-inline-start:${pos(target)}%"></i></div>
+      <div class="vals"><span>M <b>${f(m)}</b></span><span>S <b>${f(l.short_term)}</b></span><span>I <b>${f(l.integrated)}</b> LUFS</span><span>LRA <b>${f(l.lra)}</b> LU</span><span>TP <b>${f(l.true_peak)}</b> dBTP</span></div></div>`;
+  }).join('');
+}
+const _render2 = render;
+render = function (st) { _render2(st); renderMeters(st); };

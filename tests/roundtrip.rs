@@ -376,3 +376,33 @@ fn extra_outputs_srt_and_udp() {
     assert_eq!(e.outputs.len(), 2);
     assert_eq!(e.outputs[1].connected, None);
 }
+
+/// Testton −20 dBFS je Kanal, Spur mit −3 dB → −23 LUFS nach R 128,
+/// gemessen am Encoder und nach AAC/SRT am Decoder.
+#[test]
+fn loudness_per_track_minus23() {
+    use lz_streamer::audio::AudioTrack;
+    init();
+    let port = free_port();
+    let mut cfg = encoder_cfg(port, SrtMode::Listener);
+    cfg.audio.tracks = vec![
+        AudioTrack { name: "Programm".into(), channels: vec![1, 2], gain_db: -3.0, ..Default::default() },
+        AudioTrack { name: "Stumm".into(), channels: vec![3, 4], mute: true, ..Default::default() },
+    ];
+    let mut enc = Channel::start_encoder(&cfg, &[], &ChannelOptions::default()).unwrap();
+    let mut dec = Channel::start_decoder(&decoder_cfg(port, SrtMode::Caller), &ChannelOptions::default()).unwrap();
+    let (e, d) = run_until(&mut enc, &mut dec, Duration::from_secs(20), |e, d| {
+        e.audio_tracks.first().and_then(|t| t.loudness.as_ref()).is_some_and(|l| l.short_term.is_some() && e.uptime_s >= 4.0)
+            && d.audio_tracks.iter().any(|t| t.selected && t.loudness.as_ref().is_some_and(|l| l.short_term.is_some()))
+    });
+    let l = e.audio_tracks[0].loudness.clone().unwrap();
+    eprintln!("Encoder: {l:?}");
+    assert!((l.integrated.unwrap() + 23.0).abs() <= 0.1, "I = {:?}", l.integrated);
+    assert!((l.momentary.unwrap() + 23.0).abs() <= 0.2, "M = {:?}", l.momentary);
+    assert!((l.true_peak.unwrap() + 23.0).abs() <= 0.5, "TP = {:?}", l.true_peak);
+    let muted = e.audio_tracks[1].loudness.clone().unwrap();
+    assert!(muted.momentary.is_none() && muted.silent_s > 0.0, "{muted:?}");
+    let dl = d.audio_tracks.iter().find(|t| t.selected).unwrap().loudness.clone().unwrap();
+    eprintln!("Decoder: {dl:?}");
+    assert!((dl.momentary.unwrap() + 23.0).abs() <= 0.5, "nach AAC: M = {:?}", dl.momentary);
+}

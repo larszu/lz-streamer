@@ -63,6 +63,8 @@ pub struct TrackInfo {
     pub language: Option<String>,
     pub name: Option<String>,
     pub selected: bool,
+    /// Lautheit nach EBU R 128 (Encoder: je Spur hinter Matrix und Pegel; Decoder: ausgegebene Spur)
+    pub loudness: Option<crate::loudness::Loudness>,
     #[serde(skip)]
     pub demux_pad: String,
     #[serde(skip)]
@@ -668,6 +670,17 @@ impl Channel {
         })
     }
 
+    fn update_loudness(&mut self, i: usize, mut l: crate::loudness::Loudness) {
+        let mut list = self.tracks.lock().unwrap();
+        // Decoder: lvl0 misst die ausgegebene Spur
+        let idx = if self.role == Role::Decoder { list.iter().position(|t| t.selected) } else { Some(i) };
+        let Some(t) = idx.and_then(|i| list.get_mut(i)) else { return };
+        let silent = l.momentary.is_none_or(|m| m < crate::loudness::SILENCE_LUFS);
+        let prev = t.loudness.as_ref().map(|p| p.silent_s).unwrap_or(0.0);
+        l.silent_s = if silent { prev + 0.5 } else { 0.0 };
+        t.loudness = Some(l);
+    }
+
     /// Neueste Datei zum Aufnahme-Muster (falls die Startmeldung beim
     /// Hochfahren schon verbraucht wurde).
     fn newest_recording(&self) -> Option<String> {
@@ -746,6 +759,13 @@ impl Channel {
                 }
                 gst::MessageView::Eos(_) => out.push(ChildMsg::Fatal { text: "Strom zu Ende (EOS)".into() }),
                 gst::MessageView::Element(e) => {
+                    let src = msg.src().map(|s| s.name().to_string()).unwrap_or_default();
+                    if let (Some(i), Some(l)) = (
+                        src.strip_prefix("lvl").and_then(|n| n.parse::<usize>().ok()),
+                        e.structure().and_then(crate::loudness::from_message),
+                    ) {
+                        self.update_loudness(i, l);
+                    }
                     if let Some(st) = e.structure() {
                         if st.name() == "splitmuxsink-fragment-opened" {
                             if let Ok(loc) = st.get::<String>("location") {
