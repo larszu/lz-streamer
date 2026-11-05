@@ -1,0 +1,60 @@
+name: Release Windows
+# Nur auf Zuruf (privates Repo: Actions-Minuten kosten). Baut lz-streamer.exe gegen GStreamer MSVC
+# und haengt das ZIP an den Release des angegebenen Tags.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release-Tag, z. B. v0.1.0"
+        required: true
+permissions:
+  contents: write
+env:
+  GST_VERSION: "1.26.8"
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.tag }}
+      - name: GStreamer installieren
+        shell: pwsh
+        run: |
+          $base = "https://gstreamer.freedesktop.org/data/pkg/windows/$env:GST_VERSION/msvc"
+          foreach ($f in "gstreamer-1.0-msvc-x86_64-$env:GST_VERSION.msi", "gstreamer-1.0-devel-msvc-x86_64-$env:GST_VERSION.msi") {
+            Invoke-WebRequest "$base/$f" -OutFile $f
+            Start-Process msiexec -ArgumentList "/i $f /qn ADDLOCAL=ALL" -Wait
+          }
+          $root = "C:\Program Files\gstreamer\1.0\msvc_x86_64"
+          if (-not (Test-Path $root)) { $root = "C:\gstreamer\1.0\msvc_x86_64" }
+          "GSTREAMER_ROOT=$root" | Out-File -Append $env:GITHUB_ENV
+          "$root\bin" | Out-File -Append $env:GITHUB_PATH
+          "PKG_CONFIG_PATH=$root\lib\pkgconfig" | Out-File -Append $env:GITHUB_ENV
+      - name: pkg-config
+        shell: pwsh
+        run: |
+          choco install pkgconfiglite -y --no-progress
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Bauen
+        shell: pwsh
+        run: |
+          $v = "${{ inputs.tag }}".TrimStart("v")
+          (Get-Content Cargo.toml) -replace '^version = ".*"', "version = `"$v`"" | Set-Content Cargo.toml
+          cargo build --release
+      - name: Paketieren
+        shell: pwsh
+        run: |
+          $d = "lz-streamer-${{ inputs.tag }}-windows-x64"
+          New-Item -ItemType Directory $d | Out-Null
+          Copy-Item target\release\lz-streamer.exe $d\
+          Copy-Item README.md $d\
+          Copy-Item packaging\WINDOWS-LIESMICH.txt $d\LIESMICH.txt
+          Compress-Archive $d "$d.zip"
+          & "$env:GSTREAMER_ROOT\bin\gst-inspect-1.0.exe" --version
+          .\$d\lz-streamer.exe --help
+      - name: An Release haengen
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: pwsh
+        run: gh release upload "${{ inputs.tag }}" "lz-streamer-${{ inputs.tag }}-windows-x64.zip" --clobber
