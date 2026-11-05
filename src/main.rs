@@ -1,5 +1,4 @@
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -143,7 +142,9 @@ fn main() -> Result<()> {
 async fn serve(port: u16, bind: String, cfg_path: PathBuf, autostart: bool) -> Result<()> {
     let cfg = load_config(&cfg_path);
     let run_dir = std::env::temp_dir().join(format!("lz-streamer-{port}"));
-    let sup = Supervisor::new(cfg, cfg_path.clone(), run_dir);
+    let data = lz_streamer::admin::DataDir::new(cfg_path.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| PathBuf::from(".")));
+    let sup = Supervisor::new(cfg, cfg_path.clone(), run_dir, data.recordings());
+    let ops = lz_streamer::ops::Ops::new(data);
     let caps = Capabilities::probe();
     for m in caps.missing() {
         tracing::warn!("{m}");
@@ -156,8 +157,10 @@ async fn serve(port: u16, bind: String, cfg_path: PathBuf, autostart: bool) -> R
             sup.log("ok", format!("Gefunden: {} ({}, Nr. {})", d.name, d.direction, d.device)).await;
         }
     }
-    let app = Arc::new(App { sup: sup.clone(), caps, devices: tokio::sync::RwLock::new(devices) });
+    let app = App::new(sup.clone(), ops.clone(), caps, devices);
     tokio::spawn(sup.clone().run());
+    tokio::spawn(ops.clone().monitor(sup.clone()));
+    tokio::spawn(ops.clone().scheduler(sup.clone()));
     if autostart {
         sup.start().await;
     }

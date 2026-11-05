@@ -1,11 +1,13 @@
 //! lz-streamer – eigener Video-Encoder/Decoder auf Rust + GStreamer.
 
+pub mod admin;
 pub mod audio;
 pub mod caps;
 pub mod channel;
 pub mod config;
 pub mod devices;
 pub mod latency;
+pub mod ops;
 pub mod pipeline;
 pub mod server;
 pub mod stats;

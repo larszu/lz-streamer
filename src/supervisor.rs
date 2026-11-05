@@ -54,6 +54,8 @@ pub struct Supervisor {
     pub config_path: PathBuf,
     pub preview_path: PathBuf,
     run_dir: PathBuf,
+    /// Aufnahmeordner, wenn in der Konfiguration keiner steht
+    pub record_dir: PathBuf,
 }
 
 fn now_ms() -> u64 {
@@ -66,7 +68,7 @@ const STALL_SECS: u64 = 8;
 const SILENT_SECS: u64 = 6;
 
 impl Supervisor {
-    pub fn new(config: Config, config_path: PathBuf, run_dir: PathBuf) -> Arc<Self> {
+    pub fn new(config: Config, config_path: PathBuf, run_dir: PathBuf, record_dir: PathBuf) -> Arc<Self> {
         let _ = std::fs::create_dir_all(&run_dir);
         let exe = std::env::current_exe().expect("eigener Programmpfad");
         Arc::new(Self {
@@ -87,6 +89,7 @@ impl Supervisor {
             config_path,
             preview_path: run_dir.join("preview.jpg"),
             run_dir,
+            record_dir,
         })
     }
 
@@ -179,7 +182,11 @@ impl Supervisor {
 
     fn spawn_child(&self, cfg: &Config) -> std::io::Result<Child> {
         let cfg_file = self.run_dir.join("channel.json");
-        std::fs::write(&cfg_file, serde_json::to_vec(cfg).unwrap())?;
+        let mut cfg = cfg.clone();
+        if cfg.encoder.record.dir.trim().is_empty() {
+            cfg.encoder.record.dir = self.record_dir.to_string_lossy().to_string();
+        }
+        std::fs::write(&cfg_file, serde_json::to_vec(&cfg).unwrap())?;
         let _ = std::fs::remove_file(&self.preview_path);
         Command::new(&self.exe)
             .arg("channel")
