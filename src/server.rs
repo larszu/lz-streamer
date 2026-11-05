@@ -88,6 +88,7 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/api/caption", post(caption))
         .route("/api/control", get(controls).post(control))
         .route("/api/devices/refresh", post(refresh_devices))
+        .route("/api/devices/uvc", get(uvc_devices))
         .route("/api/preview.jpg", get(preview))
         // Verwaltung
         .route("/api/presets", get(presets).post(save_preset))
@@ -366,6 +367,12 @@ async fn control(State(app): S, Json(r): Json<ControlReq>) -> Response {
         Ok(()) => Json(json!({"ok": true, "controls": control_list(&app).await})).into_response(),
         Err(e) => err(StatusCode::BAD_REQUEST, e),
     }
+}
+
+/// USB-Videogeräte (nur auf Abruf, der Geräte-Monitor ist teuer)
+async fn uvc_devices() -> impl IntoResponse {
+    let list = tokio::task::spawn_blocking(devices::uvc_devices).await.unwrap_or_default();
+    Json(list.into_iter().map(|(index, name)| json!({"index": index, "name": name})).collect::<Vec<_>>())
 }
 
 async fn refresh_devices(State(app): S) -> impl IntoResponse {

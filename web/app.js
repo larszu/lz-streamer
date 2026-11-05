@@ -486,6 +486,23 @@ $('#cfg-import').addEventListener('change', async e => {
   e.target.value = '';
 });
 
+// UVC-Geräte einmal abrufen, wenn der Eingang auf UVC steht
+let uvcLoaded = false;
+async function loadUvc() {
+  if (uvcLoaded) return;
+  uvcLoaded = true;
+  try {
+    const list = await (await fetch('/api/devices/uvc')).json();
+    const sel = $('#uvc-device');
+    const cur = cfg?.encoder?.input?.uvc_device ?? 0;
+    sel.replaceChildren(...(list.length ? list : [{ index: 0, name: 'kein Gerät gefunden' }]).map(d => new Option(`${d.index}: ${d.name}`, d.index)));
+    sel.value = String(cur);
+  } catch { uvcLoaded = false; }
+}
+document.addEventListener('change', e => { if (e.target.matches?.('[data-path="encoder.input.kind"]') && e.target.value === 'uvc') loadUvc(); });
+const _render8 = render;
+render = function (st) { _render8(st); if (st.config.encoder.input.kind === 'uvc') loadUvc(); };
+
 const alarmLabels = {
   signal_loss_s: 'Kein Signal länger als (s)', no_peer_s: 'Keine Gegenstelle länger als (s)', min_bitrate_kbps: 'Bitrate unter (kbit/s)',
   max_lost_per_min: 'Verluste je Minute über', max_restarts: 'Neustarts in 10 min ab', cpu_percent: 'CPU über (%)',
