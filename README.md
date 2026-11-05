@@ -18,6 +18,14 @@ Eigener Video-Encoder und -Decoder: **Eingang → Encoder → SRT** (dazu option
   - Endet der Aufpasser, beendet sich auch der Kanal. Es bleiben keine verwaisten Prozesse zurück.
 - **Live-Status:** Vorschaubild, Signal und Eingangsformat, Bitrate, SRT-RTT, Verluste und Wiederholungen, Encoder (Hardware/Software), Bilder/s, Laufzeit, Neustarts, Ereignisliste. Mit „Signalverlust testen“ lässt sich das Standbild ohne Kabelziehen ausprobieren.
 - **Ton wie im Broadcast:** Matrix vom Eingang (2/8/16 eingebettete SDI-Kanäle) auf bis zu 8 Tonspuren je Ausgang, Mono/Stereo/Downmix, Pegel, Stumm, Sprachkennung (ISO 639) im TS. Der Decoder wählt die Spur nach Sprache oder Nummer.
+- **Grafiken (OGraf):** Neben den Untertiteln (Ebene 1) nimmt Ebene 2 beliebige OGraf-Grafiken des Renderers auf, etwa Bauchbinde (`lz-lower-third`), Titel oder Liedtexte (`lz-lyrics`). Bedienung in der Karte „Grafik“, über `POST /api/graphics` oder per OSC an `127.0.0.1:4211`:
+  - `/lzs/gfx/show s:grafik [s:JSON]` lädt und blendet ein
+  - `/lzs/gfx/next` und `/lzs/gfx/prev` schalten weiter und zurück
+  - `/lzs/gfx/update s:JSON` ändert den Inhalt
+  - `/lzs/gfx/stop` blendet aus, `/lzs/gfx/clear` entlädt
+  - `/lzs/gfx/custom s:id [s:JSON]` löst eine eigene Aktion der Grafik aus
+
+  In Companion geht das mit dem Modul „Generic OSC“. Verbindet sich der Renderer neu, zeigt er die laufende Grafik wieder.
 - **Klare Sprache:** Eine zusätzliche Tonspur, in der DeepFilterNet3 Musik, Geräusch und Hall um einen einstellbaren Wert absenkt (Vorgabe −9 dB). Bei erkanntem Gesang wird nicht abgesenkt. Die Spur ist 30 ms verzögert und bleibt über die Zeitstempel lippensynchron; die Hauptspur bleibt unverändert. Messung: [docs/klare-sprache.md](docs/klare-sprache.md).
 - **VST3-Plugins je Tonspur** (z. B. LZ Defeedback): Das Plugin läuft in einem eigenen Hilfsprozess. Stürzt es ab oder antwortet es nicht innerhalb einer halben Blockdauer, geht der Ton unbearbeitet weiter, ohne Lücke und ohne Neustart des Kanals; der Hilfsprozess startet von selbst neu. Die Anzeige je Spur zeigt „aktiv“ oder „Bypass“. Gefunden werden die Plugins in den üblichen VST3-Ordnern.
 - **Mehrere Ausgänge** aus demselben Strom: weitere SRT-Ziele (auch Rendezvous), TS über UDP/RTP (auch Multicast), dazu RTMP.
@@ -144,6 +152,7 @@ lz-streamer serve ── axum (REST + Weboberfläche, eingebettet) ── Aufpas
 | `GET/POST /api/standby`, `GET/DELETE /api/standby/{name}`, `POST …/use` | Standbilder |
 | `GET /api/recordings`, `GET/DELETE /api/recordings/{name}` | Aufnahmen |
 | `GET /api/plugins` | installierte VST3-Plugins |
+| `GET/POST /api/graphics` | Zustand der Grafik-Ebenen; Befehl `{"action":"show","graphicId":"lz-lower-third","data":{…}}` (`load`, `show`, `play`, `next`, `prev`, `update`, `stop`, `clear`, `custom`) |
 | `POST /api/login` · `/api/logout`, `GET /api/me`, `GET/POST /api/users`, `DELETE /api/users/{name}` | Anmeldung und Benutzer; ohne Benutzer bleibt die Oberfläche offen, der erste wird Administrator |
 
 ## Bezug zum Vorbild

@@ -552,10 +552,7 @@ fn graphics_burn_in_and_renderer_loss() {
     use std::io::Write;
     init();
     let port = free_port();
-    let gport = {
-        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        l.local_addr().unwrap().port()
-    };
+    let gport = free_gfx_ports();
     let mut cfg = encoder_cfg(port, SrtMode::Listener);
     cfg.graphics.burn = BurnTarget::All;
     cfg.graphics.frame_port = gport;
@@ -637,10 +634,7 @@ fn graphics_burn_in_1080p50_keeps_frame_rate() {
     use std::io::Write;
     init();
     let port = free_port();
-    let gport = {
-        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        l.local_addr().unwrap().port()
-    };
+    let gport = free_gfx_ports();
     let mut cfg = encoder_cfg(port, SrtMode::Listener);
     cfg.video.width = 1920;
     cfg.video.height = 1080;
@@ -748,4 +742,70 @@ fn clear_speech_track_arrives_next_to_main_track() {
     assert!(e.audio_tracks[0].clear_speech.is_none());
     assert!(e.fps > cfg.video.fps as f64 * 0.9, "{:.1} fps", e.fps);
     eprintln!("Klare Sprache: {st:?}, Encoder {:.1} fps, Decoder {} Bilder", e.fps, d.frames);
+}
+
+/// U4: Ebene 2 (freie Grafik) liegt zusätzlich zu Ebene 1 im Bild und
+/// verschwindet allein, wenn ihre Verbindung endet.
+#[test]
+fn second_graphics_layer_is_composited() {
+    use lz_streamer::config::BurnTarget;
+    use std::io::Write;
+    init();
+    let port = free_port();
+    // zwei aufeinanderfolgende freie Ports
+    let gport = free_gfx_ports();
+    let mut cfg = encoder_cfg(port, SrtMode::Listener);
+    cfg.graphics.burn = BurnTarget::All;
+    cfg.graphics.frame_port = gport;
+    let mut enc = Channel::start_encoder(&cfg, &[], &ChannelOptions::default()).unwrap();
+    if let Some(src) = enc.pipeline().by_name("testsrc") {
+        src.set_property_from_str("pattern", "black");
+    }
+    let mut dec = Channel::start_decoder(&decoder_cfg(port, SrtMode::Caller), &ChannelOptions::default()).unwrap();
+    let (_, d) = run_until(&mut enc, &mut dec, Duration::from_secs(10), |_, d| d.frames >= 25 && d.luma.is_some_and(|l| l < 40.0));
+    let dark = d.luma.unwrap();
+    let (w, h) = (cfg.video.width as usize, cfg.video.height as usize);
+    let half = |top: bool| {
+        let mut f = vec![0u8; w * h * 4];
+        let rows = if top { 0..h / 4 } else { h * 3 / 4..h };
+        for y in rows {
+            for x in 0..w {
+                f[(y * w + x) * 4..(y * w + x) * 4 + 4].copy_from_slice(&[255, 255, 255, 255]);
+            }
+        }
+        f
+    };
+    let mut l1 = std::net::TcpStream::connect(("127.0.0.1", gport)).unwrap();
+    l1.write_all(&half(false)).unwrap();
+    let (_, d) = run_until(&mut enc, &mut dec, Duration::from_secs(10), |e, d| {
+        e.graphics.as_ref().is_some_and(|g| g.graphic_visible && !g.layer2_visible) && d.luma.is_some_and(|l| l > dark + 20.0)
+    });
+    let one = d.luma.unwrap();
+    let mut l2 = std::net::TcpStream::connect(("127.0.0.1", gport + 1)).unwrap();
+    l2.write_all(&half(true)).unwrap();
+    let (e, d) = run_until(&mut enc, &mut dec, Duration::from_secs(10), |e, d| {
+        e.graphics.as_ref().is_some_and(|g| g.layer2_visible) && d.luma.is_some_and(|l| l > one + 20.0)
+    });
+    let both = d.luma.unwrap();
+    assert_eq!(e.graphics.as_ref().unwrap().frame_ports, vec![gport, gport + 1]);
+    drop(l2);
+    let (_, d) = run_until(&mut enc, &mut dec, Duration::from_secs(10), |e, d| {
+        e.graphics.as_ref().is_some_and(|g| g.graphic_visible && !g.layer2_visible) && d.luma.is_some_and(|l| l < both - 20.0)
+    });
+    eprintln!("Luma dunkel {dark:.0}, Ebene 1 {one:.0}, beide {both:.0}, Ebene 2 weg {:.0}", d.luma.unwrap());
+    drop(l1);
+}
+
+/// zwei aufeinanderfolgende freie Ports (Grafik-Ebene 1 und 2); pro Testlauf
+/// verschieden, damit parallel laufende Tests sich nicht in die Quere kommen
+fn free_gfx_ports() -> u16 {
+    use std::sync::atomic::{AtomicU16, Ordering};
+    static NEXT: AtomicU16 = AtomicU16::new(0);
+    let base = 20000 + (std::process::id() % 2000) as u16 * 10;
+    loop {
+        let p = base + NEXT.fetch_add(2, Ordering::Relaxed);
+        if std::net::TcpListener::bind(("127.0.0.1", p)).is_ok() && std::net::TcpListener::bind(("127.0.0.1", p + 1)).is_ok() {
+            return p;
+        }
+    }
 }

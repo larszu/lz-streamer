@@ -69,6 +69,12 @@ pub struct GfxStatus {
     pub renderer_connected: bool,
     pub graphic_visible: bool,
     pub frame_port: u16,
+    /// Bild-Port je Ebene (1: Untertitel, 2: freie Grafik)
+    #[serde(default)]
+    pub frame_ports: Vec<u16>,
+    /// freie Grafik (Ebene 2) sichtbar
+    #[serde(default)]
+    pub layer2_visible: bool,
     /// Rückfall-Einblendung des Untertiteltexts aktiv
     pub text_fallback: bool,
 }
@@ -589,8 +595,11 @@ impl Channel {
                 );
             }
             let gfx = match pipeline.by_name("gfx") {
-                Some(el) => match crate::gfx::FrameReceiver::listen(cfg.graphics.frame_port, cfg.video.width, cfg.video.height) {
+                Some(el) => match crate::gfx::FrameReceiver::listen(&cfg.graphics.layer_ports(), cfg.video.width, cfg.video.height) {
                     Ok(r) => {
+                        if r.ports.len() < cfg.graphics.layer_ports().len() {
+                            event(&events, "warn", format!("Grafik-Port {} für Ebene 2 belegt – nur Untertitel-Ebene", cfg.graphics.layer_ports()[1]));
+                        }
                         r.attach(&el);
                         if let Some(e2) = pipeline.by_name("gfx").filter(|e| e != &el) {
                             r.attach(&e2);
@@ -598,7 +607,7 @@ impl Channel {
                         Some(r)
                     }
                     Err(e) => {
-                        event(&events, "warn", format!("Grafik-Port {} nicht frei: {e} – ohne Grafik", cfg.graphics.frame_port));
+                        event(&events, "warn", format!("Grafik-Ports {:?} nicht frei: {e} – ohne Grafik", cfg.graphics.layer_ports()));
                         None
                     }
                 },
@@ -1235,7 +1244,9 @@ impl Channel {
             graphics: self.gfx.as_ref().map(|g| GfxStatus {
                 renderer_connected: g.connected(),
                 graphic_visible: g.has_graphic(),
-                frame_port: g.port,
+                frame_port: g.port(),
+                frame_ports: g.ports.clone(),
+                layer2_visible: g.layer_visible(1),
                 text_fallback,
             }),
             captions: CaptionStatus {
