@@ -9,7 +9,6 @@ const fmt0 = new Intl.NumberFormat('de-DE', { maximumFractionDigits: 0 });
 let cfg = null;          // aktuelle Konfiguration (Quelle der Wahrheit: Formular)
 let last = null;         // letzter /api/state
 let saveTimer = 0;
-let celebrated = false;
 
 // ---------- Darstellung ----------
 function setTheme(t) {
@@ -65,7 +64,6 @@ function applyVisibility() {
   $$('[data-role]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.role === role)));
   $('#enc-form').hidden = role !== 'encoder';
   $('#dec-form').hidden = role !== 'decoder';
-  $('#cl-title').firstChild.textContent = role === 'encoder' ? 'Bereit zum Senden ' : 'Bereit zum Empfangen ';
   $('#enc-device-field').hidden = cfg.encoder.input.kind === 'test';
 }
 
@@ -114,7 +112,6 @@ $('#bitrate').addEventListener('input', e => {
 });
 $$('[data-role]').forEach(b => b.addEventListener('click', () => {
   if (cfg.role === b.dataset.role) return;
-  celebrated = false;
   changed('role', b.dataset.role);
 }));
 
@@ -234,7 +231,6 @@ function render(st) {
     tile('Neustarts', fmt0.format(rt.restarts), '', rt.restarts ? 'warn' : ''),
   ].join('');
 
-  renderChecklist(st);
 
   // Ereignisse (neueste oben)
   $('#ev-restarts').textContent = rt.restarts ? `${rt.restarts} Neustart${rt.restarts > 1 ? 's' : ''}` : '';
@@ -243,28 +239,6 @@ function render(st) {
     || '<li><time></time><span>Noch nichts passiert.</span></li>';
 }
 
-function renderChecklist(st) {
-  const rt = st.runtime, s = rt.status, role = st.config.role;
-  const srt = role === 'encoder' ? st.config.encoder.srt : st.config.decoder.srt;
-  const items = role === 'encoder' ? [
-    ['Eingang gewählt', true],
-    ['Ziel festgelegt', srt.mode === 'listener' || !!srt.host.trim()],
-    ['Kanal läuft', !!s],
-    ['Gegenstelle verbunden', !!s?.srt.connected],
-  ] : [
-    ['Quelle festgelegt', srt.mode === 'listener' || !!srt.host.trim()],
-    ['Empfang läuft', !!s],
-    ['Bild kommt an', !!s && s.fps > 0],
-  ];
-  const done = items.filter(i => i[1]).length;
-  $('#cl-count').textContent = `${done} von ${items.length}`;
-  $('#cl-progress').style.setProperty('--p', done / items.length);
-  done === items.length ? ($('#cl-progress').dataset.done = '') : delete $('#cl-progress').dataset.done;
-  const html = items.map(([t, d]) => `<li ${d ? 'data-done' : ''}>${t}</li>`).join('');
-  if ($('#cl-list').dataset.html !== html) { $('#cl-list').innerHTML = html; $('#cl-list').dataset.html = html; }
-  if (done === items.length && !celebrated) { celebrated = true; toast(role === 'encoder' ? 'Stream steht.' : 'Bild kommt an.'); }
-  if (!rt.running) celebrated = false;
-}
 
 function fillSelect(sel, devices, current) {
   const key = devices.map(d => d.device + d.name).join('|');

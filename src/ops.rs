@@ -156,7 +156,9 @@ impl Ops {
                 memory_percent: info.memory_percent,
                 disk_free_gb: if info.disk_total_gb > 0.0 { info.disk_free_gb } else { f64::MAX },
                 last_error: snap.last_error.clone(),
+                // Short-Term braucht 3 s Anlauf; vorher keine Lautheitsalarme
                 tracks: st
+                    .filter(|s| s.uptime_s >= 6.0)
                     .map(|s| {
                         s.audio_tracks
                             .iter()
