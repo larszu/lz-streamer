@@ -57,6 +57,12 @@ enum Cmd {
         ohne_ton: bool,
         #[arg(long, default_value = "auto")]
         decoder: String,
+        /// Puffer des TS-Demuxers in ms
+        #[arg(long, default_value_t = 40)]
+        demux: u32,
+        /// Reserve am Decoder-Ausgang in ms
+        #[arg(long, default_value_t = 60)]
+        reserve: u32,
     },
     /// Gefundene Encoder, Geräte und fehlende Bausteine anzeigen
     Info,
@@ -96,7 +102,7 @@ fn main() -> Result<()> {
             };
             std::process::exit(code);
         }
-        Cmd::Latenz { encoder, h265, srt_latency, runden, ohne_ton, decoder } => {
+        Cmd::Latenz { encoder, h265, srt_latency, runden, ohne_ton, decoder, demux, reserve } => {
             let opts = latency::MeasureOptions {
                 codec: if h265 { Codec::H265 } else { Codec::H264 },
                 encoder,
@@ -104,12 +110,19 @@ fn main() -> Result<()> {
                 rounds: runden.max(1),
                 audio: !ohne_ton,
                 decoder,
+                demux_latency_ms: demux,
+                output_buffer_ms: reserve,
                 ..Default::default()
             };
             let r = latency::measure(&opts)?;
             println!(
                 "Encoder {} · SRT-Latenz {} ms · Testbild→SRT→Decoder-Ausgang: Median {} ms (min {}, max {}) · Einzelwerte {:?} · gemeldete Pipeline-Latenz Encoder {:?} ms, Decoder {:?} ms",
                 r.encoder, r.srt_latency_ms, r.median_ms, r.min_ms, r.max_ms, r.samples_ms, r.encoder_pipeline_ms, r.decoder_pipeline_ms
+            );
+            let s = &r.stages;
+            println!(
+                "Aufschlüsselung (Median): Quelle {} ms · Encode {} ms · Parser+Mux {} ms · SRT+Demux+Decode {} ms · Ausgabe {} ms",
+                s.source_ms, s.encode_ms, s.mux_ms, s.transport_decode_ms, s.output_ms
             );
             Ok(())
         }
