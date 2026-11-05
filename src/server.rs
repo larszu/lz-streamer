@@ -29,6 +29,7 @@ pub struct App {
     pub devices: RwLock<Vec<CaptureDevice>>,
     pub users: RwLock<Vec<User>>,
     sessions: Mutex<HashMap<String, (String, Role)>>,
+    pub renderer: Arc<crate::renderer::RendererHub>,
 }
 
 impl App {
@@ -41,6 +42,7 @@ impl App {
             devices: RwLock::new(devices),
             users: RwLock::new(users),
             sessions: Mutex::new(HashMap::new()),
+            renderer: Arc::default(),
         })
     }
 }
@@ -73,6 +75,7 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/app.js", get(|| async { asset("text/javascript; charset=utf-8", JS) }))
         .route("/fonts/public-sans.woff2", get(|| async { asset("font/woff2", FONT) }))
         .route("/fonts/public-sans-ext.woff2", get(|| async { asset("font/woff2", FONT_EXT) }))
+        .route("/renderer", get(renderer_ws))
         .route("/api/state", get(state))
         .route("/api/config", get(get_config).put(put_config))
         .route("/api/start", post(start))
@@ -127,6 +130,7 @@ async fn current_user(app: &App, headers: &HeaderMap) -> Option<(String, Role)> 
 /// eine Sitzung, und die Rolle entscheidet über Schreibzugriffe.
 async fn auth(State(app): S, req: Request, next: Next) -> Response {
     let path = req.uri().path().to_string();
+    // /renderer ist kein /api-Pfad und nimmt nur Verbindungen von 127.0.0.1 an (siehe renderer_ws)
     if !path.starts_with("/api/") || path == "/api/login" || path == "/api/me" {
         return next.run(req).await;
     }
@@ -220,6 +224,20 @@ async fn delete_user(State(app): S, Path(name): Path<String>) -> Response {
     ok()
 }
 
+// ------------------------------------------------------------ Grafik-Renderer
+
+async fn renderer_ws(
+    State(app): S,
+    axum::extract::ConnectInfo(addr): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    ws: axum::extract::WebSocketUpgrade,
+) -> Response {
+    if !addr.ip().is_loopback() {
+        return err(StatusCode::FORBIDDEN, "Renderer nur lokal");
+    }
+    let (sup, hub) = (app.sup.clone(), app.renderer.clone());
+    ws.on_upgrade(move |s| crate::renderer::serve(s, sup, hub))
+}
+
 // ------------------------------------------------------------ Kanal
 
 async fn state(State(app): S, headers: HeaderMap) -> impl IntoResponse {
@@ -240,6 +258,7 @@ async fn state(State(app): S, headers: HeaderMap) -> impl IntoResponse {
         "alarms": alarms,
         "system": *app.ops.system.lock().await,
         "loudness_target": app.ops.settings.lock().await.alarms.loudness_target,
+        "renderer": app.renderer.state.lock().await.clone(),
         "user": {"open": open, "name": me.as_ref().map(|m| m.0.clone()), "role": me.map(|m| m.1).unwrap_or(Role::Admin)},
         "version": env!("CARGO_PKG_VERSION"),
     }))

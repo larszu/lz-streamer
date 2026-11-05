@@ -46,6 +46,8 @@ pub struct ChannelStatus {
     pub audio_tracks: Vec<TrackInfo>,
     /// Untertitel: CEA-608/708 im Strom
     pub captions: CaptionStatus,
+    /// eingebrannte Grafik
+    pub graphics: Option<GfxStatus>,
     pub luma: Option<f64>,
     pub uptime_s: f64,
 }
@@ -62,8 +64,19 @@ pub struct CaptionStatus {
     pub text: Option<String>,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct GfxStatus {
+    pub renderer_connected: bool,
+    pub graphic_visible: bool,
+    pub frame_port: u16,
+    /// Rückfall-Einblendung des Untertiteltexts aktiv
+    pub text_fallback: bool,
+}
+
 #[derive(Default)]
 struct CaptionCounter {
+    /// Decoder: (Zeitpunkt, Text) jeder Anzeige – für Verzugsmessungen
+    shown: Mutex<Vec<(Instant, String)>>,
     frames: AtomicU64,
     last: Mutex<Option<Instant>>,
     text: Mutex<Option<String>>,
@@ -139,6 +152,8 @@ fn configure_audio(pipeline: &gst::Pipeline, cfg: &EncoderConfig) {
 pub enum ChildMsg {
     Status(ChannelStatus),
     Event { level: String, text: String },
+    /// neuer Untertiteltext (für den Grafik-Renderer)
+    Caption { text: String },
     Fatal { text: String },
 }
 
@@ -207,6 +222,9 @@ pub struct Channel {
     tracks: Arc<Mutex<Vec<TrackInfo>>>,
     cc: Arc<CaptionCounter>,
     asr: Option<crate::asr::AsrRunner>,
+    gfx: Option<crate::gfx::FrameReceiver>,
+    caption_seen: Option<(String, Instant)>,
+    srt_count: u32,
 }
 
 /// Text in die Live-Untertitelquelle `ccin` schieben (etwas in die Zukunft
@@ -243,8 +261,38 @@ fn count_captions(pad: &gst::Pad, cc: &Arc<CaptionCounter>) {
     });
 }
 
-/// Text aus `cea608tott` (Decoder) einsammeln.
+/// Sichtbarer Text aus einer `cea608tojson`-Zeile (Zeilen → Chunks → Text).
+pub fn caption_json_text(json: &str) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_str(json).ok()?;
+    let lines = v.get("lines")?.as_array()?;
+    let text: Vec<String> = lines
+        .iter()
+        .map(|l| {
+            l.get("chunks")
+                .and_then(|c| c.as_array())
+                .map(|c| c.iter().filter_map(|x| x.get("text").and_then(|t| t.as_str())).collect::<String>())
+                .unwrap_or_default()
+                .trim()
+                .to_string()
+        })
+        .filter(|t| !t.is_empty())
+        .collect();
+    (!text.is_empty()).then(|| text.join(" "))
+}
+
+/// Text aus `cea608tojson` (Decoder, Ausgabe zur Anzeigezeit) einsammeln.
 fn hook_caption_text(bin: &gst::Bin, cc: &Arc<CaptionCounter>) {
+    // cea608tojson verlangt Dauern, der Extraktor liefert keine
+    if let Some(pad) = bin.by_name("ccjson").and_then(|e| e.static_pad("sink")) {
+        pad.add_probe(gst::PadProbeType::BUFFER, |_, info| {
+            if let Some(gst::PadProbeData::Buffer(b)) = info.data.as_mut() {
+                if b.duration().is_none() {
+                    b.make_mut().set_duration(gst::ClockTime::from_mseconds(20));
+                }
+            }
+            gst::PadProbeReturn::Ok
+        });
+    }
     let Some(sink) = bin.by_name("ccsink").and_then(|s| s.downcast::<gst_app::AppSink>().ok()) else { return };
     let cc = cc.clone();
     sink.set_callbacks(
@@ -253,10 +301,14 @@ fn hook_caption_text(bin: &gst::Bin, cc: &Arc<CaptionCounter>) {
                 let sample = s.pull_sample().map_err(|_| gst::FlowError::Eos)?;
                 if let Some(buf) = sample.buffer() {
                     if let Ok(map) = buf.map_readable() {
-                        let t = String::from_utf8_lossy(map.as_slice()).trim().to_string();
-                        if !t.is_empty() {
+                        let raw = String::from_utf8_lossy(map.as_slice()).to_string();
+                        if std::env::var("LZS_CC_DEBUG").is_ok() {
+                            eprintln!("CCJSON {raw}");
+                        }
+                        if let Some(t) = caption_json_text(&raw) {
                             cc.frames.fetch_add(1, Ordering::Relaxed);
                             *cc.last.lock().unwrap() = Some(Instant::now());
+                            cc.shown.lock().unwrap().push((Instant::now(), t.clone()));
                             *cc.text.lock().unwrap() = Some(t);
                         }
                     }
@@ -486,6 +538,41 @@ impl Channel {
             configure_audio(&pipeline, cfg);
             let cc: Arc<CaptionCounter> = Arc::default();
             count_captions(&venc.static_pad("sink").unwrap(), &cc);
+            if let Some(v2) = pipeline.by_name("venc2") {
+                set_props(&v2, &caps::encoder_props(enc.factory, cfg.video.bitrate_kbps, cfg.video.gop_frames()), &events);
+            }
+            if let Some(sink) = pipeline.by_name("cctext").and_then(|s| s.downcast::<gst_app::AppSink>().ok()) {
+                let c = cc.clone();
+                sink.set_callbacks(
+                    gst_app::AppSinkCallbacks::builder()
+                        .new_sample(move |s| {
+                            let sample = s.pull_sample().map_err(|_| gst::FlowError::Eos)?;
+                            if let Some(t) = sample.buffer().and_then(|b| b.map_readable().ok().map(|m| String::from_utf8_lossy(m.as_slice()).trim().to_string())) {
+                                if !t.is_empty() {
+                                    *c.text.lock().unwrap() = Some(t);
+                                }
+                            }
+                            Ok(gst::FlowSuccess::Ok)
+                        })
+                        .build(),
+                );
+            }
+            let gfx = match pipeline.by_name("gfx") {
+                Some(el) => match crate::gfx::FrameReceiver::listen(cfg.graphics.frame_port, cfg.video.width, cfg.video.height) {
+                    Ok(r) => {
+                        r.attach(&el);
+                        if let Some(e2) = pipeline.by_name("gfx").filter(|e| e != &el) {
+                            r.attach(&e2);
+                        }
+                        Some(r)
+                    }
+                    Err(e) => {
+                        event(&events, "warn", format!("Grafik-Port {} nicht frei: {e} – ohne Grafik", cfg.graphics.frame_port));
+                        None
+                    }
+                },
+                None => None,
+            };
             if let Some(rec) = pipeline.by_name("rec") {
                 if cfg.record.container == crate::config::RecordContainer::Mp4 {
                     // fragmentiert: Datei bleibt lesbar, auch wenn der Prozess hart endet
@@ -535,6 +622,9 @@ impl Channel {
                         stopped: false,
                         recording: None,
                         asr,
+                        gfx,
+                        caption_seen: None,
+                        srt_count: 0,
                         cc,
                         outputs: cfg
                             .outputs
@@ -772,6 +862,9 @@ impl Channel {
             tracks,
             cc,
             asr: None,
+            gfx: None,
+            caption_seen: None,
+            srt_count: 0,
         })
     }
 
@@ -786,6 +879,28 @@ impl Channel {
         t.loudness = Some(l);
     }
 
+    /// Untertiteldatei (.srt) neben der Aufnahme fortschreiben: jede Zeile von
+    /// ihrem Erscheinen bis zur nächsten (höchstens 6 s).
+    fn write_sidecar(&mut self, next: Option<&str>) {
+        let Some(rec) = self.recording.clone().or_else(|| self.newest_recording()) else { return };
+        self.recording.get_or_insert(rec.clone());
+        let path = std::path::Path::new(&rec).with_extension("srt");
+        let now_ms = self.pipeline.current_running_time().map(|t| t.mseconds()).unwrap_or(0);
+        if let Some((text, at)) = &self.caption_seen {
+            let start = now_ms.saturating_sub(at.elapsed().as_millis() as u64);
+            let end = now_ms.min(start + 6000);
+            let n = self.srt_count + 1;
+            let ts = |ms: u64| format!("{:02}:{:02}:{:02},{:03}", ms / 3_600_000, ms / 60_000 % 60, ms / 1000 % 60, ms % 1000);
+            let entry = format!("{n}\n{} --> {}\n{text}\n\n", ts(start), ts(end.max(start + 500)));
+            use std::io::Write;
+            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+                let _ = f.write_all(entry.as_bytes());
+                self.srt_count = n;
+            }
+        }
+        let _ = next;
+    }
+
     /// Neueste Datei zum Aufnahme-Muster (falls die Startmeldung beim
     /// Hochfahren schon verbraucht wurde).
     fn newest_recording(&self) -> Option<String> {
@@ -796,7 +911,10 @@ impl Channel {
         std::fs::read_dir(dir)
             .ok()?
             .filter_map(|e| e.ok())
-            .filter(|e| e.file_name().to_string_lossy().starts_with(&prefix))
+            .filter(|e| {
+                let n = e.file_name().to_string_lossy().to_string();
+                n.starts_with(&prefix) && (n.ends_with(".ts") || n.ends_with(".mp4"))
+            })
             .max_by_key(|e| e.metadata().and_then(|m| m.modified()).ok())
             .map(|e| e.path().to_string_lossy().to_string())
     }
@@ -833,6 +951,23 @@ impl Channel {
         }
     }
 
+    /// Zeilen der Spracherkennung (für Messungen).
+    pub fn asr_phrases(&self) -> Vec<crate::asr::Phrase> {
+        self.asr.as_ref().map(|a| a.phrases.lock().unwrap().clone()).unwrap_or_default()
+    }
+
+    /// Decoder: jede Untertitel-Anzeige mit Zeitpunkt (für Messungen).
+    pub fn captions_shown(&self) -> Vec<(Instant, String)> {
+        self.cc.shown.lock().unwrap().clone()
+    }
+
+    /// Laufzeit der Pipeline zu einem Zeitpunkt (ns), über die gemeinsame Systemuhr.
+    pub fn running_ns_at(&self, at: Instant) -> Option<u64> {
+        let now_rt = self.pipeline.current_running_time()?.nseconds();
+        let back = Instant::now().saturating_duration_since(at).as_nanos() as u64;
+        Some(now_rt.saturating_sub(back))
+    }
+
     /// Spracherkennung abstürzen lassen (Test „Kanal läuft weiter“).
     pub fn crash_asr(&mut self) {
         if let Some(a) = self.asr.as_mut() {
@@ -856,10 +991,25 @@ impl Channel {
             a.stop();
         }
         if self.pipeline.by_name("rec").is_some() {
-            // Aufnahme sauber abschließen: EOS durch die Pipeline, dann erst stoppen
-            self.pipeline.send_event(gst::event::Eos::new());
+            self.write_sidecar(None);
+        }
+        if let Some(rec) = self.pipeline.by_name("rec") {
+            // Aufnahme sauber abschließen: EOS nur in den Mitschnitt schicken
+            // (ein EOS an die ganze Pipeline blockiert an Live-Quellen, deren
+            // Streaming-Thread gerade wartet), dann auf „Fragment geschlossen“ warten.
+            for pad in rec.sink_pads() {
+                pad.send_event(gst::event::Eos::new());
+            }
             if let Some(bus) = self.pipeline.bus() {
-                let _ = bus.timed_pop_filtered(gst::ClockTime::from_seconds(3), &[gst::MessageType::Eos, gst::MessageType::Error]);
+                let end = Instant::now() + Duration::from_secs(3);
+                while Instant::now() < end {
+                    let Some(msg) = bus.timed_pop(gst::ClockTime::from_mseconds(100)) else { continue };
+                    if let gst::MessageView::Element(e) = msg.view() {
+                        if e.structure().is_some_and(|s| s.name() == "splitmuxsink-fragment-closed") {
+                            break;
+                        }
+                    }
+                }
             }
         }
         let _ = self.pipeline.set_state(gst::State::Null);
@@ -905,6 +1055,30 @@ impl Channel {
 
         if let Some(r) = self.rtmp.as_mut() {
             r.poll(&self.events);
+        }
+        // Untertitel: neuen Text melden (Renderer) und Rückfall-Einblendung steuern
+        let cur = self.cc.text.lock().unwrap().clone();
+        if let Some(t) = cur {
+            if self.caption_seen.as_ref().is_none_or(|(s, _)| *s != t) {
+                out.push(ChildMsg::Caption { text: t.clone() });
+                self.write_sidecar(Some(&t));
+                self.caption_seen = Some((t, Instant::now()));
+            }
+        }
+        let mut text_fallback = false;
+        if let Some(ov) = self.pipeline.by_name("cctxt") {
+            let graphic = self.gfx.as_ref().is_some_and(|g| g.has_graphic());
+            let fresh = self.caption_seen.as_ref().filter(|(_, at)| at.elapsed() < Duration::from_secs(6));
+            match (graphic, fresh) {
+                (false, Some((t, _))) => {
+                    if ov.property::<Option<String>>("text").as_deref() != Some(t.as_str()) {
+                        ov.set_property("text", t.as_str());
+                    }
+                    ov.set_property("silent", false);
+                    text_fallback = true;
+                }
+                _ => ov.set_property("silent", true),
+            }
         }
         if let Some(a) = self.asr.as_mut() {
             for t in a.poll() {
@@ -1005,6 +1179,12 @@ impl Channel {
                 .collect(),
             recording: self.recording.clone().or_else(|| self.newest_recording()),
             audio_tracks: self.tracks.lock().unwrap().clone(),
+            graphics: self.gfx.as_ref().map(|g| GfxStatus {
+                renderer_connected: g.connected(),
+                graphic_visible: g.has_graphic(),
+                frame_port: g.port,
+                text_fallback,
+            }),
             captions: CaptionStatus {
                 asr: self.asr.as_ref().map(|a| a.status()),
                 frames: self.cc.frames.load(Ordering::Relaxed),

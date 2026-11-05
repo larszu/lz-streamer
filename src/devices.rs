@@ -48,6 +48,7 @@ pub fn resolve_input(cfg: &InputConfig, devices: &[CaptureDevice]) -> ResolvedIn
     let has_input = |n: u32| devices.iter().any(|d| d.direction == "input" && d.device == n);
     match cfg.kind {
         InputKind::Test => ResolvedInput::Test,
+        InputKind::File => ResolvedInput::File { path: cfg.file.clone() },
         InputKind::Decklink => ResolvedInput::Decklink { device: cfg.device, connection: cfg.connection.gst_nick() },
         InputKind::Auto => {
             if has_input(cfg.device) {

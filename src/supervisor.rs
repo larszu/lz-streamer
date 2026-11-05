@@ -56,6 +56,8 @@ pub struct Supervisor {
     run_dir: PathBuf,
     /// Aufnahmeordner, wenn in der Konfiguration keiner steht
     pub record_dir: PathBuf,
+    /// neue Untertiteltexte aus dem Kanal (für den Grafik-Renderer)
+    pub captions: tokio::sync::broadcast::Sender<String>,
 }
 
 fn now_ms() -> u64 {
@@ -90,6 +92,7 @@ impl Supervisor {
             preview_path: run_dir.join("preview.jpg"),
             run_dir,
             record_dir,
+            captions: tokio::sync::broadcast::channel(32).0,
         })
     }
 
@@ -261,6 +264,9 @@ impl Supervisor {
                                     st.status = Some(s);
                                 }
                                 ChildMsg::Event { level, text } => Self::push(&mut st, &level, text),
+                                ChildMsg::Caption { text } => {
+                                    let _ = self.captions.send(text);
+                                }
                                 ChildMsg::Fatal { text } => {
                                     Self::push(&mut st, "error", text.clone());
                                     fatal = Some(text);

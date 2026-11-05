@@ -19,6 +19,8 @@ pub enum InputKind {
     Auto,
     Test,
     Decklink,
+    /// Videodatei, läuft in Echtzeit wie ein Live-Eingang (für Tests und Zuspieler)
+    File,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -48,11 +50,13 @@ pub struct InputConfig {
     pub connection: Connection,
     /// Beschnitt in Pixeln des Eingangs (oben, unten, links, rechts)
     pub crop: [u32; 4],
+    /// Pfad bei Eingang „Datei“
+    pub file: String,
 }
 
 impl Default for InputConfig {
     fn default() -> Self {
-        Self { kind: InputKind::Auto, device: 0, connection: Connection::Auto, crop: [0; 4] }
+        Self { kind: InputKind::Auto, device: 0, connection: Connection::Auto, crop: [0; 4], file: String::new() }
     }
 }
 
@@ -360,6 +364,38 @@ pub struct EncoderConfig {
     pub outputs: Vec<ExtraOutput>,
     pub record: RecordConfig,
     pub captions: CaptionConfig,
+    pub graphics: GraphicsConfig,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum BurnTarget {
+    #[default]
+    Off,
+    /// in alle Ausgänge einbrennen
+    All,
+    /// nur RTMP mit Grafik, SRT/Aufnahme sauber (zweiter Encoder)
+    Rtmp,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct GraphicsConfig {
+    pub burn: BurnTarget,
+    /// Renderer-Programm (LZ Vision Mixer Graphics); leer = nicht starten, nur annehmen
+    pub renderer: String,
+    /// TCP-Port, auf dem der Kanal die Renderer-Bilder annimmt
+    pub frame_port: u16,
+    /// OGraf-Grafik für Untertitel
+    pub graphic: String,
+    /// weiterer Grafikordner für den Renderer
+    pub graphics_dir: String,
+}
+
+impl Default for GraphicsConfig {
+    fn default() -> Self {
+        Self { burn: BurnTarget::Off, renderer: String::new(), frame_port: 4201, graphic: "lz-captions".into(), graphics_dir: String::new() }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
