@@ -106,6 +106,9 @@ pub struct TrackInfo {
     /// VST3-Plugins der Spur: läuft oder Bypass
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub plugins: Vec<crate::plugin::PluginStatus>,
+    /// Klare Sprache: aktuelle Absenkung, Gesang erkannt
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clear_speech: Option<crate::clearspeech::ClearSpeechStatus>,
     #[serde(skip)]
     pub demux_pad: String,
     #[serde(skip)]
@@ -149,6 +152,9 @@ fn configure_audio(pipeline: &gst::Pipeline, cfg: &EncoderConfig) {
     for (i, track) in crate::audio::effective_tracks(&cfg.audio.tracks).iter().enumerate() {
         if let Some(l) = pipeline.by_name(&format!("lev{i}")).and_then(|e| e.downcast::<crate::lzloudness::LzLoudness>().ok()) {
             l.set_config(track.leveler.clone());
+        }
+        if let Some(c) = pipeline.by_name(&format!("cs{i}")).and_then(|e| e.downcast::<crate::clearspeech::LzClearSpeech>().ok()) {
+            c.set_config(track.clear_speech.clone());
         }
         for (j, p) in track.plugins.iter().enumerate() {
             if let Some(e) = pipeline.by_name(&format!("plug{i}_{j}")).and_then(|e| e.downcast::<crate::plugin::LzPlugin>().ok()) {
@@ -482,6 +488,7 @@ impl Channel {
     pub fn start_encoder(cfg: &EncoderConfig, devices: &[CaptureDevice], opts: &ChannelOptions) -> Result<Self> {
         crate::lzloudness::register();
         crate::plugin::register();
+        crate::clearspeech::register();
         let events: Events = Arc::default();
         let input = devices::resolve_input(&cfg.input, devices);
         if !caps::element_available("fallbackswitch") {
@@ -1211,6 +1218,11 @@ impl Channel {
                         .by_name(&format!("lev{i}"))
                         .and_then(|e| e.downcast::<crate::lzloudness::LzLoudness>().ok())
                         .and_then(|l| l.gain());
+                    tr.clear_speech = self
+                        .pipeline
+                        .by_name(&format!("cs{i}"))
+                        .and_then(|e| e.downcast::<crate::clearspeech::LzClearSpeech>().ok())
+                        .and_then(|c| c.status());
                     // Plugin-Plätze sind je Spur nummeriert; deaktivierte fehlen in der Pipeline
                     tr.plugins = (0..16)
                         .filter_map(|j| self.pipeline.by_name(&format!("plug{i}_{j}")))
