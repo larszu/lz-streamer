@@ -15,6 +15,8 @@ pub enum ResolvedInput {
     Test,
     Decklink { device: u32, connection: &'static str },
     File { path: String },
+    /// UVC-Gerät (Nummer), Ton vom Standard-Toneingang
+    Uvc { index: u32, audio: bool },
 }
 
 impl ResolvedInput {
@@ -25,6 +27,7 @@ impl ResolvedInput {
             ResolvedInput::Decklink { device, connection } => {
                 format!("DeckLink/UltraStudio Nr. {device} ({})", connection.to_uppercase())
             }
+            ResolvedInput::Uvc { index, .. } => format!("USB-Video (UVC) Nr. {index}"),
         }
     }
 }
@@ -100,6 +103,11 @@ pub fn primary_video(cfg: &EncoderConfig, input: &ResolvedInput) -> String {
             quote(path),
             scaler(cfg)
         ),
+        ResolvedInput::Uvc { index, .. } => format!(
+            "{} ! videoconvert ! {deint}{crop} ! {} ! videorate max-duplication-time=100000000 ! {caps}",
+            uvc_source(*index),
+            scaler(cfg)
+        ),
         ResolvedInput::Decklink { device, connection } => format!(
             "decklinkvideosrc name=capsrc device-number={device} connection={connection} mode=auto \
              drop-no-signal-frames=true{} ! {deint}{crop} ! {} \
@@ -142,6 +150,15 @@ pub fn audio_caps(n: u32) -> String {
     format!("audio/x-raw,format=F32LE,layout=interleaved,rate=48000,channels={n},channel-mask=(bitmask)0x0")
 }
 
+/// Videoquelle für ein UVC-Gerät: AVFoundation am Mac, V4L2 unter Linux
+pub fn uvc_source(index: u32) -> String {
+    if cfg!(target_os = "macos") {
+        format!("avfvideosrc name=capsrc device-index={index} do-timestamp=true")
+    } else {
+        format!("v4l2src name=capsrc device=/dev/video{index} do-timestamp=true")
+    }
+}
+
 pub fn primary_audio(input: &ResolvedInput, n: u32) -> String {
     let caps = audio_caps(n);
     match input {
@@ -159,6 +176,14 @@ pub fn primary_audio(input: &ResolvedInput, n: u32) -> String {
              ! audioconvert mix-matrix={} ! {caps} ! clocksync",
             crate::audio::matrix_string(&(0..n).map(|i| if i % 2 == 0 { vec![1.0f32, 0.0] } else { vec![0.0, 1.0] }).collect::<Vec<_>>())
         ),
+        // UAC: 2 Kanäle vom Standard-Toneingang, auf die Eingangskanäle verteilt wie bei der Datei
+        ResolvedInput::Uvc { audio: true, .. } => format!(
+            "autoaudiosrc name=capasrc ! audioconvert ! audioresample \
+             ! audio/x-raw,format=F32LE,layout=interleaved,rate=48000,channels=2,channel-mask=(bitmask)0x3 \
+             ! audioconvert mix-matrix={} ! {caps}",
+            crate::audio::matrix_string(&(0..n).map(|i| if i % 2 == 0 { vec![1.0f32, 0.0] } else { vec![0.0, 1.0] }).collect::<Vec<_>>())
+        ),
+        ResolvedInput::Uvc { audio: false, .. } => format!("audiotestsrc name=capasrc is-live=true wave=silence ! {caps}"),
         ResolvedInput::Decklink { device, .. } => format!(
             "decklinkaudiosrc name=capasrc device-number={device} channels={n} ! audioconvert ! audioresample ! {caps}"
         ),
@@ -572,6 +597,19 @@ mod tests {
         let (a, c, lev, lvl) = (d.find("lzplugin name=plug0_0").unwrap(), d.find("lzplugin name=plug0_2").unwrap(), d.find("lzloudness name=lev0").unwrap(), d.find("ebur128level name=lvl0").unwrap());
         assert!(a < c && c < lev && lev < lvl, "{d}");
         assert!(!d.contains("plug0_1"));
+    }
+
+    #[test]
+    fn uvc_input() {
+        let cfg = EncoderConfig::default();
+        let d = encoder_description(&cfg, &parts(&ResolvedInput::Uvc { index: 1, audio: true }));
+        let src = if cfg!(target_os = "macos") { "avfvideosrc name=capsrc device-index=1" } else { "v4l2src name=capsrc device=/dev/video1" };
+        assert!(d.contains(src), "{d}");
+        assert!(d.contains("autoaudiosrc name=capasrc"), "{d}");
+        assert!(d.contains("deinterlace method=linear"));
+        let d = encoder_description(&cfg, &parts(&ResolvedInput::Uvc { index: 0, audio: false }));
+        assert!(d.contains("audiotestsrc name=capasrc is-live=true wave=silence"), "{d}");
+        assert_eq!(ResolvedInput::Uvc { index: 2, audio: true }.label(), "USB-Video (UVC) Nr. 2");
     }
 
     #[test]

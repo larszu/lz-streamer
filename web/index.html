@@ -99,13 +99,19 @@
         <div class="row2">
           <label class="field"><span>Quelle</span>
             <select class="input" data-path="encoder.input.kind">
-              <option value="auto">Automatisch</option><option value="decklink">DeckLink / UltraStudio</option><option value="test">Testbild</option><option value="file">Videodatei (Echtzeit)</option>
+              <option value="auto">Automatisch</option><option value="decklink">DeckLink / UltraStudio</option><option value="test">Testbild</option><option value="file">Videodatei (Echtzeit)</option><option value="uvc">USB-Video (UVC, z. B. AJA U-TAP)</option>
             </select></label>
           <label class="field"><span>Anschluss</span>
             <select class="input" data-path="encoder.input.connection">
               <option value="auto">Automatisch</option><option value="sdi">SDI</option><option value="hdmi">HDMI</option>
             </select></label>
         </div>
+
+        <div class="row2" data-show-mode="encoder.input.kind=uvc">
+          <label class="field"><span>UVC-Gerät</span><select class="input" data-path="encoder.input.uvc_device" data-num id="uvc-device"><option value="0">Gerät 0</option></select></label>
+          <label class="switch"><input type="checkbox" data-path="encoder.input.uvc_audio"> Ton vom Standard-Toneingang (UAC)</label>
+        </div>
+        <p class="hint" data-show-mode="encoder.input.kind=uvc">USB-Video kann höchstens 1080p60, 2 Tonkanäle und keine Untertitel aus VANC. Den Ton des Geräts in den Systemeinstellungen als Standard-Eingang wählen.</p>
         <label class="field" data-show-mode="encoder.input.kind=file"><span>Videodatei (Pfad)</span><input class="input" data-path="encoder.input.file" spellcheck="false"></label>
         <label class="field" id="enc-device-field" hidden><span>Gerät</span><select class="input" data-path="encoder.input.device" data-num id="enc-device"></select></label>
         <p class="hint" id="detected"></p>

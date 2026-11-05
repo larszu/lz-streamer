@@ -21,6 +21,8 @@ pub enum InputKind {
     Decklink,
     /// Videodatei, läuft in Echtzeit wie ein Live-Eingang (für Tests und Zuspieler)
     File,
+    /// USB-Video (UVC), z. B. AJA U-TAP: höchstens 1080p60, Ton als UAC (2 Kanäle), kein VANC
+    Uvc,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -52,11 +54,17 @@ pub struct InputConfig {
     pub crop: [u32; 4],
     /// Pfad bei Eingang „Datei“
     pub file: String,
+    /// UVC-Gerät (Nummer in der Geräteliste des Systems)
+    #[serde(default)]
+    pub uvc_device: u32,
+    /// Ton vom Standard-Toneingang (UAC des Geräts dort auswählen); sonst Stille
+    #[serde(default)]
+    pub uvc_audio: bool,
 }
 
 impl Default for InputConfig {
     fn default() -> Self {
-        Self { kind: InputKind::Auto, device: 0, connection: Connection::Auto, crop: [0; 4], file: String::new() }
+        Self { kind: InputKind::Auto, device: 0, connection: Connection::Auto, crop: [0; 4], file: String::new(), uvc_device: 0, uvc_audio: true }
     }
 }
 
