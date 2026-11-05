@@ -2,6 +2,8 @@
 
 pub mod admin;
 pub mod asr;
+#[cfg(target_os = "macos")]
+pub mod au;
 pub mod audio;
 pub mod caps;
 pub mod caption_measure;

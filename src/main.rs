@@ -121,6 +121,9 @@ enum Cmd {
     PluginHost {
         #[arg(long)]
         plugin: String,
+        /// nur prüfen (für den Scan): laden, kurz verarbeiten, `ok <latenz>` ausgeben
+        #[arg(long)]
+        probe: bool,
         #[arg(long, default_value_t = 2)]
         channels: usize,
     },
@@ -216,7 +219,7 @@ fn main() -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&r)?);
             Ok(())
         }
-        Cmd::PluginHost { plugin, channels } => lz_streamer::plugin::run_host(&plugin, channels),
+        Cmd::PluginHost { plugin, channels, probe } => if probe { lz_streamer::plugin::probe(&plugin, channels) } else { lz_streamer::plugin::run_host(&plugin, channels) },
         Cmd::KlassenMessen { korpus } => {
             let r = lz_streamer::vad::evaluate_corpus(&korpus)?;
             for (c, ok, n) in &r.per_class {

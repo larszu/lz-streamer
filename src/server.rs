@@ -30,6 +30,8 @@ pub struct App {
     pub users: RwLock<Vec<User>>,
     sessions: Mutex<HashMap<String, (String, Role)>>,
     pub renderer: Arc<crate::renderer::RendererHub>,
+    /// Plugin-Scan läuft gerade
+    pub plugin_scanning: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl App {
@@ -43,6 +45,7 @@ impl App {
             users: RwLock::new(users),
             sessions: Mutex::new(HashMap::new()),
             renderer: Arc::default(),
+            plugin_scanning: Arc::default(),
         })
     }
 }
@@ -100,6 +103,7 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/api/standby/{name}", get(standby_get).delete(standby_delete))
         .route("/api/standby/{name}/use", post(standby_use))
         .route("/api/plugins", get(plugins))
+        .route("/api/plugins/scan", post(plugins_scan))
         .route("/api/graphics", get(graphics_state).post(graphics_cmd))
         .route("/api/models", get(models))
         .route("/api/models/{name}/download", post(model_download))
@@ -536,8 +540,45 @@ async fn graphics_cmd(State(app): S, Json(c): Json<crate::renderer::GfxCommand>)
     }
 }
 
-async fn plugins() -> impl IntoResponse {
-    Json(crate::plugin::installed().into_iter().map(|(name, path)| json!({ "name": name, "path": path })).collect::<Vec<_>>())
+/// Scan im Hintergrund starten (jedes Plugin in einem eigenen Prüfprozess)
+fn start_plugin_scan(app: &Arc<App>, force: bool) {
+    use std::sync::atomic::Ordering;
+    if app.plugin_scanning.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let (flag, file, sup) = (app.plugin_scanning.clone(), app.ops.data.plugin_scan(), app.sup.clone());
+    tokio::spawn(async move {
+        let r = tokio::task::spawn_blocking(move || crate::plugin::scan_cached(&file, force)).await;
+        flag.store(false, Ordering::SeqCst);
+        if let Ok(r) = r {
+            let blocked = r.blocked.iter().map(|b| format!("{} ({})", b.name, b.reason)).collect::<Vec<_>>();
+            let text = if blocked.is_empty() {
+                format!("Plugin-Suche fertig: {} gefunden", r.plugins.len())
+            } else {
+                format!("Plugin-Suche fertig: {} gefunden, gesperrt: {}", r.plugins.len(), blocked.join(", "))
+            };
+            sup.log(if blocked.is_empty() { "info" } else { "warn" }, text).await;
+        }
+    });
+}
+
+async fn plugins(State(app): S) -> impl IntoResponse {
+    let file = app.ops.data.plugin_scan();
+    let cache: Option<crate::plugin::ScanResult> = std::fs::read(&file).ok().and_then(|b| serde_json::from_slice(&b).ok());
+    if cache.is_none() {
+        start_plugin_scan(&app, false);
+    }
+    let r = cache.unwrap_or_default();
+    Json(json!({
+        "plugins": r.plugins,
+        "blocked": r.blocked,
+        "scanning": app.plugin_scanning.load(std::sync::atomic::Ordering::SeqCst),
+    }))
+}
+
+async fn plugins_scan(State(app): S) -> impl IntoResponse {
+    start_plugin_scan(&app, true);
+    Json(json!({"scanning": true}))
 }
 
 async fn models(State(app): S) -> impl IntoResponse {
