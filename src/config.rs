@@ -90,6 +90,60 @@ pub struct VideoConfig {
     /// GOP-Länge in Millisekunden (kurz = schneller Einstieg, latenzarm).
     pub gop_ms: u32,
     pub scale_quality: ScaleQuality,
+    /// Halbbilder des Eingangs auflösen (bei Halbbild-Ausgabe aus)
+    #[serde(default)]
+    pub deinterlace: Deinterlace,
+    /// B-Frames (0 = latenzarm; jedes B-Frame kostet ≈ eine Bilddauer)
+    #[serde(default)]
+    pub bframes: u32,
+    /// Profil, z. B. baseline/main/high (H.264) oder main/main-10 (H.265); leer = Encoder wählt
+    #[serde(default)]
+    pub profile: String,
+    /// Level, z. B. "4.1"; leer = Encoder wählt
+    #[serde(default)]
+    pub level: String,
+    #[serde(default)]
+    pub entropy: Entropy,
+    /// Halbbilder ausgeben (x264), statt aufzulösen
+    #[serde(default)]
+    pub interlaced: bool,
+    /// freie Zusatzparameter für den Encoder: `name=wert name=wert`
+    #[serde(default)]
+    pub extra: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum Deinterlace {
+    /// schnell, leicht weich (bisheriges Verhalten)
+    #[default]
+    Linear,
+    /// bewegungsadaptiv, beste Qualität (Klasse von bwdif)
+    Yadif,
+    /// bewegungsadaptiv, weniger Last
+    Greedyh,
+    /// nicht auflösen
+    Off,
+}
+
+impl Deinterlace {
+    pub fn element(self) -> &'static str {
+        match self {
+            Deinterlace::Linear => "deinterlace method=linear",
+            Deinterlace::Yadif => "deinterlace method=yadif",
+            Deinterlace::Greedyh => "deinterlace method=greedyh",
+            Deinterlace::Off => "identity",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum Entropy {
+    #[default]
+    Auto,
+    Cabac,
+    Cavlc,
 }
 
 impl Default for VideoConfig {
@@ -103,6 +157,13 @@ impl Default for VideoConfig {
             bitrate_kbps: 8000,
             gop_ms: 1000,
             scale_quality: ScaleQuality::High,
+            deinterlace: Deinterlace::Linear,
+            bframes: 0,
+            profile: String::new(),
+            level: String::new(),
+            entropy: Entropy::Auto,
+            interlaced: false,
+            extra: String::new(),
         }
     }
 }
@@ -566,6 +627,12 @@ impl Config {
         v.fps = v.fps.clamp(1, 120);
         v.bitrate_kbps = v.bitrate_kbps.clamp(100, 200_000);
         v.gop_ms = v.gop_ms.clamp(40, 10_000);
+        v.bframes = v.bframes.min(4);
+        if v.interlaced {
+            v.deinterlace = Deinterlace::Off;
+        }
+        v.profile = v.profile.trim().to_lowercase();
+        v.level = v.level.trim().to_string();
         if v.encoder.trim().is_empty() {
             v.encoder = "auto".into();
         }

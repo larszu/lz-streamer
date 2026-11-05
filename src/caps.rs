@@ -138,6 +138,64 @@ pub fn encoder_props(factory: &str, bitrate_kbps: u32, gop_frames: u32) -> Vec<(
     }
 }
 
+/// Zusätzliche Encoder-Einstellungen aus den Encoder-Optionen (nach `encoder_props` setzen).
+pub fn option_props(factory: &str, v: &crate::config::VideoConfig) -> Vec<(&'static str, String)> {
+    use crate::config::Entropy;
+    let b = v.bframes.to_string();
+    let p = |k: &'static str, v: String| (k, v);
+    let mut out = Vec::new();
+    if v.bframes > 0 {
+        match factory {
+            "vtenc_h264_hw" | "vtenc_h265_hw" | "vtenc_h264" | "vtenc_h265" => out.push(p("allow-frame-reordering", "true".into())),
+            "nvh264enc" | "nvh265enc" => out.push(p("bframes", b.clone())),
+            "vah264enc" | "vah265enc" | "qsvh264enc" | "qsvh265enc" => out.push(p("b-frames", b.clone())),
+            "vaapih264enc" | "vaapih265enc" => out.push(p("max-bframes", b.clone())),
+            "x264enc" => out.push(p("bframes", b.clone())),
+            "x265enc" => out.push(p("option-string", format!("bframes={b}"))),
+            _ => {}
+        }
+    }
+    if factory == "x264enc" {
+        match v.entropy {
+            Entropy::Cabac => out.push(p("cabac", "true".into())),
+            Entropy::Cavlc => out.push(p("cabac", "false".into())),
+            Entropy::Auto => {}
+        }
+        if v.interlaced {
+            out.push(p("interlaced", "true".into()));
+        }
+        // zerolatency schaltet B-Frames ab; mit B-Frames nur die übrigen Latenz-Einstellungen
+        if v.bframes > 0 {
+            out.push(p("tune", "fastdecode".into()));
+        }
+    }
+    out
+}
+
+/// Freie Zusatzparameter `name=wert name=wert` zerlegen.
+pub fn extra_props(s: &str) -> Vec<(String, String)> {
+    s.split_whitespace().filter_map(|kv| kv.split_once('=')).filter(|(k, _)| !k.is_empty()).map(|(k, v)| (k.to_string(), v.to_string())).collect()
+}
+
+/// Caps hinter dem Encoder für Profil und Level (leer, wenn nichts gewählt).
+pub fn profile_caps(v: &crate::config::VideoConfig) -> String {
+    let mut f = Vec::new();
+    if !v.profile.is_empty() {
+        f.push(format!("profile={}", v.profile));
+    }
+    if !v.level.is_empty() {
+        f.push(format!("level=(string){}", v.level));
+    }
+    if f.is_empty() {
+        return String::new();
+    }
+    let media = match v.codec {
+        Codec::H264 => "video/x-h264",
+        Codec::H265 => "video/x-h265",
+    };
+    format!("{media},{} ! ", f.join(","))
+}
+
 pub fn parser_for(codec: Codec) -> &'static str {
     match codec {
         Codec::H264 => "h264parse",
@@ -248,6 +306,17 @@ mod tests {
 
     #[test]
     fn x264_is_cbr_zerolatency() {
+        let mut v = crate::config::VideoConfig { bframes: 2, entropy: crate::config::Entropy::Cavlc, interlaced: true, profile: "high".into(), level: "4.1".into(), ..Default::default() };
+        let o = option_props("x264enc", &v);
+        assert!(o.contains(&("bframes", "2".into())) && o.contains(&("cabac", "false".into())) && o.contains(&("interlaced", "true".into())));
+        assert_eq!(option_props("vtenc_h264_hw", &v), vec![("allow-frame-reordering", "true".to_string())]);
+        assert_eq!(profile_caps(&v), "video/x-h264,profile=high,level=(string)4.1 ! ");
+        v.codec = Codec::H265;
+        v.level.clear();
+        v.profile = "main-10".into();
+        assert_eq!(profile_caps(&v), "video/x-h265,profile=main-10 ! ");
+        assert!(option_props("x264enc", &crate::config::VideoConfig::default()).is_empty());
+        assert_eq!(extra_props(" threads=4  sliced-threads=true kaputt =x"), vec![("threads".into(), "4".into()), ("sliced-threads".into(), "true".into())]);
         let p = encoder_props("x264enc", 8000, 25);
         assert!(p.contains(&("tune", "zerolatency".into())));
         assert!(p.iter().any(|(k, v)| *k == "option-string" && v.contains("nal-hrd=cbr")));

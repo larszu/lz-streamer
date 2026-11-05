@@ -981,3 +981,40 @@ fn live_controls_without_restart() {
     let (e, _) = run_until(&mut enc, &mut dec, Duration::from_secs(2), |_, _| true);
     assert!(e.frames > frames_before + 25, "Kanal lief nicht durch");
 }
+
+/// KB-Encoder-Optionen wirken: B-Frames, Profil und Entropie stehen in der Aufnahme.
+#[test]
+fn encoder_options_reach_the_stream() {
+    init();
+    if !lz_streamer::caps::element_available("x264enc") {
+        return;
+    }
+    let port = free_port();
+    let dir = std::env::temp_dir().join(format!("lzs-opt-{port}"));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut cfg = encoder_cfg(port, SrtMode::Listener);
+    cfg.video.encoder = "x264enc".into();
+    cfg.video.bframes = 2;
+    cfg.video.profile = "main".into();
+    cfg.video.entropy = lz_streamer::config::Entropy::Cavlc;
+    cfg.video.extra = "threads=2".into();
+    cfg.record.enabled = true;
+    cfg.record.dir = dir.to_string_lossy().to_string();
+    let mut enc = Channel::start_encoder(&cfg, &[], &ChannelOptions::default()).unwrap();
+    let end = Instant::now() + Duration::from_secs(3);
+    let mut rec = None;
+    while Instant::now() < end {
+        rec = rec.or(status(&mut enc).0.recording);
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    assert_eq!(enc.pipeline().by_name("venc").unwrap().property::<u32>("threads"), 2, "Zusatzparameter");
+    enc.stop();
+    let rec = rec.unwrap();
+    let probe = |args: &[&str]| String::from_utf8_lossy(&std::process::Command::new("ffprobe").args(["-v", "error", "-select_streams", "v:0"]).args(args).arg(&rec).output().unwrap().stdout).to_string();
+    let info = probe(&["-show_entries", "stream=profile,has_b_frames", "-of", "default=nw=1"]);
+    let types = probe(&["-show_entries", "frame=pict_type", "-of", "csv=p=0"]);
+    eprintln!("{info}B-Frames: {}", types.lines().filter(|l| l.trim() == "B").count());
+    assert!(info.contains("profile=Main"), "{info}");
+    assert!(types.lines().any(|l| l.trim() == "B"), "keine B-Frames");
+    let _ = std::fs::remove_dir_all(&dir);
+}

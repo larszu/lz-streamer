@@ -126,6 +126,9 @@
         <div class="row2">
           <label class="field"><span>Format</span>
             <select class="input" id="format">
+              <option value="640x360@25">360p25 (schmal)</option>
+              <option value="960x540@25">540p25</option>
+              <option value="960x540@50">540p50</option>
               <option value="1280x720@50">720p50</option>
               <option value="1920x1080@25">1080p25</option>
               <option value="1920x1080@30">1080p30</option>
@@ -147,6 +150,15 @@
               <label class="field"><span>Encoder</span><select class="input" data-path="encoder.video.encoder" id="enc-encoder"></select></label>
               <label class="field"><span>GOP (ms)</span><input class="input" data-path="encoder.video.gop_ms" data-num inputmode="numeric"></label>
             </div>
+            <div class="row2">
+              <label class="field"><span>Halbbilder auflösen</span><select class="input" data-path="encoder.video.deinterlace"><option value="linear">schnell (linear)</option><option value="yadif">beste Qualität (yadif)</option><option value="greedyh">bewegungsadaptiv, weniger Last</option><option value="off">nicht auflösen</option></select></label>
+              <label class="field"><span>B-Frames (0 = latenzarm)</span><input class="input" data-path="encoder.video.bframes" data-num inputmode="numeric"></label>
+              <label class="field"><span>Profil</span><select class="input" data-path="encoder.video.profile"><option value="">automatisch</option><option value="baseline">baseline (H.264)</option><option value="main">main</option><option value="high">high (H.264)</option><option value="main-10">main-10 (H.265)</option></select></label>
+              <label class="field"><span>Level (leer = automatisch)</span><input class="input" data-path="encoder.video.level" placeholder="4.1"></label>
+              <label class="field"><span>Entropie (x264)</span><select class="input" data-path="encoder.video.entropy"><option value="auto">automatisch</option><option value="cabac">CABAC</option><option value="cavlc">CAVLC</option></select></label>
+              <label class="field"><span>Zusatzparameter (name=wert …)</span><input class="input" data-path="encoder.video.extra" spellcheck="false" placeholder="threads=4"></label>
+            </div>
+            <label class="switch"><input type="checkbox" data-path="encoder.video.interlaced"> Halbbilder ausgeben (x264)</label>
             <div class="row2">
               <label class="field"><span>Skalierung</span>
                 <select class="input" data-path="encoder.video.scale_quality"><option value="high">Hochwertig (Lanczos)</option><option value="fast">Schnell (bilinear)</option></select></label>

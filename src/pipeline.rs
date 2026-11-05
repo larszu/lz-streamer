@@ -77,6 +77,7 @@ pub fn crop(cfg: &EncoderConfig) -> String {
 
 pub fn primary_video(cfg: &EncoderConfig, input: &ResolvedInput) -> String {
     let caps = raw_caps(cfg);
+    let deint = cfg.video.deinterlace.element();
     let crop = crop(cfg);
     match input {
         ResolvedInput::Test => {
@@ -95,13 +96,13 @@ pub fn primary_video(cfg: &EncoderConfig, input: &ResolvedInput) -> String {
         }
         ResolvedInput::File { path } => format!(
             "filesrc location={} ! decodebin name=fsrc  fsrc. ! video/x-raw ! queue max-size-buffers=0 max-size-bytes=0 max-size-time=1000000000 \
-             ! videoconvert ! deinterlace{crop} ! {} ! videorate max-duplication-time=100000000 ! {caps} ! clocksync name=filesync",
+             ! videoconvert ! {deint}{crop} ! {} ! videorate max-duplication-time=100000000 ! {caps} ! clocksync name=filesync",
             quote(path),
             scaler(cfg)
         ),
         ResolvedInput::Decklink { device, connection } => format!(
             "decklinkvideosrc name=capsrc device-number={device} connection={connection} mode=auto \
-             drop-no-signal-frames=true{} ! deinterlace{crop} ! {} \
+             drop-no-signal-frames=true{} ! {deint}{crop} ! {} \
              ! videorate max-duplication-time=100000000 ! {caps}",
             if cfg.captions.source == CaptionSource::Sdi { " output-cc=true" } else { "" },
             scaler(cfg)
@@ -202,7 +203,8 @@ pub fn encoder_description(cfg: &EncoderConfig, parts: &EncoderParts) -> String 
         }
         _ => "vt. ! queue name=vencq max-size-buffers=3 max-size-bytes=0 max-size-time=0",
     };
-    d.push(format!("{enc_src} ! {} name=venc ! {parser} config-interval=-1{inserter} ! tee name=ve", parts.encoder));
+    let pcaps = crate::caps::profile_caps(&cfg.video);
+    d.push(format!("{enc_src} ! {} name=venc ! {pcaps}{parser} config-interval=-1{inserter} ! tee name=ve", parts.encoder));
     if let Some(b) = caption_branch(cfg) {
         d.push(b);
     }
@@ -570,6 +572,25 @@ mod tests {
         let (a, c, lev, lvl) = (d.find("lzplugin name=plug0_0").unwrap(), d.find("lzplugin name=plug0_2").unwrap(), d.find("lzloudness name=lev0").unwrap(), d.find("ebur128level name=lvl0").unwrap());
         assert!(a < c && c < lev && lev < lvl, "{d}");
         assert!(!d.contains("plug0_1"));
+    }
+
+    #[test]
+    fn encoder_options_in_pipeline() {
+        let mut cfg = EncoderConfig::default();
+        let d = encoder_description(&cfg, &parts(&ResolvedInput::File { path: "/x.mp4".into() }));
+        assert!(d.contains("deinterlace method=linear"), "{d}");
+        assert!(!d.contains("profile="));
+        cfg.video.deinterlace = Deinterlace::Yadif;
+        cfg.video.profile = "high".into();
+        cfg.video.level = "4.2".into();
+        let d = encoder_description(&cfg, &parts(&ResolvedInput::File { path: "/x.mp4".into() }));
+        assert!(d.contains("deinterlace method=yadif"), "{d}");
+        assert!(d.contains("name=venc ! video/x-h264,profile=high,level=(string)4.2 ! h264parse"), "{d}");
+        cfg.video.interlaced = true;
+        let mut c = crate::config::Config { encoder: cfg, ..Default::default() };
+        c.normalize();
+        let d = encoder_description(&c.encoder, &parts(&ResolvedInput::File { path: "/x.mp4".into() }));
+        assert!(!d.contains("deinterlace method"), "Halbbild-Ausgabe löst nicht auf: {d}");
     }
 
     #[test]
