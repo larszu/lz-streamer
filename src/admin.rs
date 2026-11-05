@@ -89,6 +89,10 @@ impl DataDir {
     pub fn recordings(&self) -> PathBuf {
         self.root.join("aufnahmen")
     }
+    /// Ergebnis des Plugin-Scans (Zwischenspeicher mit Sperrliste)
+    pub fn plugin_scan(&self) -> PathBuf {
+        self.root.join("plugins.json")
+    }
     pub fn users(&self) -> PathBuf {
         self.root.join("benutzer.json")
     }

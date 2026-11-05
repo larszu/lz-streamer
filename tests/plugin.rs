@@ -25,6 +25,18 @@ fn defeedback_crash_bypass_restart() {
         eprintln!("LZ Defeedback nicht installiert – übersprungen");
         return;
     };
+    crash_bypass_restart(&path);
+}
+
+/// P2: dieselbe Prüfung mit einer Audio Unit. Apples AUHipass ist immer da und
+/// dämpft den 440-Hz-Sinus wie LZ Defeedback (Grenzfrequenz weit darüber).
+#[cfg(target_os = "macos")]
+#[test]
+fn audio_unit_crash_bypass_restart() {
+    crash_bypass_restart("au:aufx:hpas:appl");
+}
+
+fn crash_bypass_restart(path: &str) {
     // SAFETY: Test setzt die Variable vor jedem Hilfsprozess
     unsafe { std::env::set_var("LZS_PLUGIN_HOST_EXE", env!("CARGO_BIN_EXE_lz-streamer")) };
     gst::init().unwrap();
@@ -38,7 +50,7 @@ fn defeedback_crash_bypass_restart() {
     .downcast::<gst::Pipeline>()
     .unwrap();
     let pl = p.by_name("pl").unwrap().downcast::<lz_streamer::plugin::LzPlugin>().unwrap();
-    pl.set_path(&path);
+    pl.set_path(path);
     let sink = p.by_name("out").unwrap().downcast::<gst_app::AppSink>().unwrap();
     p.set_state(gst::State::Playing).unwrap();
 
@@ -87,4 +99,37 @@ fn defeedback_crash_bypass_restart() {
     p.set_state(gst::State::Null).unwrap();
     assert_eq!(gaps, 0, "Lücken im Ton");
     eprintln!("vorher {st:?}\nnachher {st2:?}");
+}
+
+/// P2: Ein absichtlich abstürzendes Plugin landet beim Scan auf der Sperrliste,
+/// der Scan läuft weiter; der zweite Scan nimmt das Ergebnis aus dem Zwischenspeicher.
+#[cfg(target_os = "macos")]
+#[test]
+fn scan_survives_crashing_plugin() {
+    use lz_streamer::plugin::{ScanResult, scan};
+    // SAFETY: Test setzt die Variable vor jedem Hilfsprozess
+    unsafe { std::env::set_var("LZS_PLUGIN_HOST_EXE", env!("CARGO_BIN_EXE_lz-streamer")) };
+    let dir = std::env::temp_dir().join(format!("lzs-crash-{}", std::process::id()));
+    let bin = dir.join("Absturz.vst3/Contents/MacOS");
+    std::fs::create_dir_all(&bin).unwrap();
+    let src = dir.join("absturz.c");
+    std::fs::write(&src, "#include <stdlib.h>\n__attribute__((constructor)) static void boom(void) { abort(); }\nvoid *GetPluginFactory(void) { return 0; }\n").unwrap();
+    let ok = std::process::Command::new("cc").args(["-dynamiclib", "-o"]).arg(bin.join("Absturz")).arg(&src).status().map(|s| s.success()).unwrap_or(false);
+    if !ok {
+        eprintln!("kein C-Compiler – übersprungen");
+        return;
+    }
+    let crash = dir.join("Absturz.vst3").to_string_lossy().into_owned();
+    let cands = vec![(crash.clone(), "Absturz".to_string(), "vst3"), ("au:aufx:hpas:appl".to_string(), "Apple: AUHipass".to_string(), "au")];
+    let r = scan(&cands, &ScanResult::default(), false);
+    assert_eq!(r.plugins.iter().map(|p| p.id.as_str()).collect::<Vec<_>>(), vec!["au:aufx:hpas:appl"], "{r:?}");
+    assert_eq!(r.blocked.len(), 1, "{r:?}");
+    assert_eq!(r.blocked[0].id, crash);
+    eprintln!("gesperrt: {:?}", r.blocked[0]);
+    // zweiter Lauf: nichts neu prüfen (ohne Hilfsprozess dauerte das sonst wieder)
+    let t = std::time::Instant::now();
+    let r2 = scan(&cands, &r, false);
+    assert_eq!(r2, r);
+    assert!(t.elapsed() < std::time::Duration::from_millis(100), "Zwischenspeicher nicht genutzt");
+    let _ = std::fs::remove_dir_all(&dir);
 }

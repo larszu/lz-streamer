@@ -27,7 +27,7 @@ Eigener Video-Encoder und -Decoder: **Eingang → Encoder → SRT** (dazu option
 
   In Companion geht das mit dem Modul „Generic OSC“. Verbindet sich der Renderer neu, zeigt er die laufende Grafik wieder.
 - **Klare Sprache:** Eine zusätzliche Tonspur, in der DeepFilterNet3 Musik, Geräusch und Hall um einen einstellbaren Wert absenkt (Vorgabe −9 dB). Bei erkanntem Gesang wird nicht abgesenkt. Die Spur ist 30 ms verzögert und bleibt über die Zeitstempel lippensynchron; die Hauptspur bleibt unverändert. Messung: [docs/klare-sprache.md](docs/klare-sprache.md).
-- **VST3-Plugins je Tonspur** (z. B. LZ Defeedback): Das Plugin läuft in einem eigenen Hilfsprozess. Stürzt es ab oder antwortet es nicht innerhalb einer halben Blockdauer, geht der Ton unbearbeitet weiter, ohne Lücke und ohne Neustart des Kanals; der Hilfsprozess startet von selbst neu. Die Anzeige je Spur zeigt „aktiv“ oder „Bypass“. Gefunden werden die Plugins in den üblichen VST3-Ordnern.
+- **Plugins je Tonspur, VST3 und am Mac Audio Units** (z. B. LZ Defeedback, Apples AU-Effekte): Das Plugin läuft in einem eigenen Hilfsprozess. Stürzt es ab oder antwortet es nicht innerhalb einer halben Blockdauer, geht der Ton unbearbeitet weiter, ohne Lücke und ohne Neustart des Kanals; der Hilfsprozess startet von selbst neu. Die Anzeige je Spur zeigt „aktiv“ oder „Bypass“. Gefunden werden die Plugins in den üblichen VST3-Ordnern und über die AU-Registrierung des Mac. Jedes wird beim ersten Mal in einem eigenen Prozess geprüft. Wer dabei abstürzt oder hängt, kommt auf eine Sperrliste. Das Ergebnis bleibt zwischengespeichert, „Plugins neu suchen“ prüft erneut.
 - **Mehrere Ausgänge** aus demselben Strom: weitere SRT-Ziele (auch Rendezvous), TS über UDP/RTP (auch Multicast), dazu RTMP.
 - **Aufnahme parallel** zum Stream: TS oder fragmentiertes MP4, Segmente, alle Tonspuren. Mit Untertiteln liegen neben jedem Segment `.srt` und `.vtt`, deren Zeiten aus dem gesendeten 608-Strom stammen. Aufnahmen-Liste mit Download; älteste löschen, wenn die Platte voll wird.
 - **Verwaltung:**
@@ -151,7 +151,7 @@ lz-streamer serve ── axum (REST + Weboberfläche, eingebettet) ── Aufpas
 | `GET /api/alarms` · `/api/stats?minutes=` · `/api/system` · `/api/report.csv` | Alarme, Verlauf, Systemlast, Bericht |
 | `GET/POST /api/standby`, `GET/DELETE /api/standby/{name}`, `POST …/use` | Standbilder |
 | `GET /api/recordings`, `GET/DELETE /api/recordings/{name}` | Aufnahmen |
-| `GET /api/plugins` | installierte VST3-Plugins |
+| `GET /api/plugins` · `POST /api/plugins/scan` | geprüfte Plugins und Sperrliste · neu prüfen |
 | `GET/POST /api/graphics` | Zustand der Grafik-Ebenen; Befehl `{"action":"show","graphicId":"lz-lower-third","data":{…}}` (`load`, `show`, `play`, `next`, `prev`, `update`, `stop`, `clear`, `custom`) |
 | `POST /api/login` · `/api/logout`, `GET /api/me`, `GET/POST /api/users`, `DELETE /api/users/{name}` | Anmeldung und Benutzer; ohne Benutzer bleibt die Oberfläche offen, der erste wird Administrator |
 
