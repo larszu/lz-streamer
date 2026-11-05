@@ -336,6 +336,25 @@ pub struct Settings {
 
 /// Welche Aufnahmen weg müssen, damit wieder `need` Bytes frei sind
 /// (älteste zuerst, die neueste – womöglich laufende – bleibt immer).
+/// Untertiteldateien (.srt/.vtt), die neben einer Aufnahme liegen
+pub fn subtitle_files(dir: &std::path::Path, recording: &str) -> Vec<String> {
+    let stem = std::path::Path::new(recording).with_extension("");
+    ["srt", "vtt"]
+        .iter()
+        .map(|e| stem.with_extension(e))
+        .filter(|p| dir.join(p).is_file())
+        .filter_map(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+        .collect()
+}
+
+/// Aufnahme samt Untertiteldateien löschen
+pub fn remove_recording(dir: &std::path::Path, name: &str) -> std::io::Result<()> {
+    for s in subtitle_files(dir, name) {
+        let _ = std::fs::remove_file(dir.join(s));
+    }
+    std::fs::remove_file(dir.join(name))
+}
+
 pub fn recordings_to_delete(files: &[FileEntry], need: u64) -> Vec<String> {
     let mut sorted: Vec<&FileEntry> = files.iter().collect();
     sorted.sort_by_key(|f| f.modified_ms);

@@ -127,3 +127,27 @@ M="$HOME/Library/Application Support/lz-streamer/modelle/ggml-small.bin"
   --referenz $D/de_de.ref.txt --modell "$M" --sprache de --modus roll-up2 --chunk 3000
 # Übersetzung: --referenz $D/de_de.ref.en.txt --uebersetzen
 ```
+
+## Untertiteldateien zur Aufnahme (U5)
+
+Stand: 05.11.2026. Neben jedem Aufnahme-Segment entstehen `.srt` und `.vtt`, die beim Mitschnitt fortlaufend neu geschrieben werden.
+- **Beginn einer Zeile:** Die Zeit stammt nicht aus der Einspeisung, sondern aus dem fertigen 608-Strom. `tttocea608` → `cea608tojson` meldet, wann die Zeile sichtbar wird.
+- **Ende einer Zeile:** die eingespeiste Anzeigedauer, spätestens die nächste Zeile.
+- **Bezugspunkt:** der Segmentbeginn (`running-time` aus `splitmuxsink-fragment-opened`).
+
+Abgleich mit den 608-Untertiteln, die ffmpeg (`movie=…[out0+subcc]`) aus der Aufnahme liest, Pop-on, 25p:
+
+| Zeile | Abweichung ffmpeg − Datei |
+|---|---|
+| erste | −68 … −9 ms |
+| ab der zweiten | +148 … +229 ms |
+
+**Bewertung:**
+- Ab der zweiten Zeile setzt ffmpeg Beginn *und* Ende gleichmäßig rund 150–230 ms später als `cea608tojson`.
+- Ein unabhängiger Player (VLC) fehlt hier, deshalb ist offen, welche Seite die Anzeige genauer trifft.
+- Die Abnahme „< 200 ms“ ist damit gegenüber ffmpeg nicht sicher erreicht.
+
+**Nicht umgesetzt:**
+- `.scc`
+- **SDI-Untertitel:** Sie kommen ohne Text-Zweig und landen nicht in den Dateien.
+- **WebVTT-Spur in HLS:** Sie kommt mit der HLS-Ausgabe (#23).

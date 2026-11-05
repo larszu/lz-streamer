@@ -21,6 +21,7 @@ pub mod renderer;
 pub mod report;
 pub mod server;
 pub mod stats;
+pub mod subtitles;
 pub mod supervisor;
 pub mod vad;
 
