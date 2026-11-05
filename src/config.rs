@@ -452,6 +452,33 @@ pub struct CaptionConfig {
     pub file: String,
     pub mode: CaptionMode,
     pub asr: crate::asr::AsrConfig,
+    /// zweite Untertitelsprache (608 CC3), aus der Spracherkennung übersetzt
+    #[serde(default)]
+    pub second: SecondCaptions,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct SecondCaptions {
+    pub enabled: bool,
+    /// Sprachkennung der zweiten Sprache (Whisper übersetzt nur ins Englische)
+    pub language: String,
+    /// Whisper-Modell für die Übersetzung; ein kleineres, weil zwei Erkennungen
+    /// gleichzeitig laufen (small + small schafft ein M1 Pro nicht in Echtzeit)
+    pub model: String,
+}
+
+impl Default for SecondCaptions {
+    fn default() -> Self {
+        Self { enabled: false, language: "eng".into(), model: "base".into() }
+    }
+}
+
+impl CaptionConfig {
+    /// zweite Sprache: übersetzt aus der Spracherkennung oder live eingespeist
+    pub fn second_active(&self) -> bool {
+        self.second.enabled && matches!(self.source, CaptionSource::Speech | CaptionSource::Live)
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -489,6 +516,8 @@ pub struct DecoderConfig {
     pub show_captions: bool,
     /// VANC-Zeile für CC am DeckLink-Ausgang (0 = aus, üblich 9 bei HD)
     pub cc_line: u32,
+    /// welche Untertitel: 1 = CC1 (Hauptsprache), 3 = CC3 (zweite Sprache)
+    pub caption_channel: u8,
 }
 
 impl Default for DecoderConfig {
@@ -506,6 +535,7 @@ impl Default for DecoderConfig {
             audio_language: String::new(),
             show_captions: false,
             cc_line: 0,
+            caption_channel: 1,
         }
     }
 }

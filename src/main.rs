@@ -99,6 +99,12 @@ enum Cmd {
         /// ins Englische übersetzen
         #[arg(long)]
         uebersetzen: bool,
+        /// zusätzlich Englisch auf CC3 (Übersetzung); Pfad zur englischen Referenz
+        #[arg(long)]
+        zweitsprache: Option<PathBuf>,
+        /// Whisper-Modell der Übersetzung (z. B. base, small)
+        #[arg(long)]
+        zweitmodell: Option<String>,
         /// pop-on, roll-up2, roll-up3 …
         #[arg(long, default_value = "roll-up2")]
         modus: String,
@@ -200,7 +206,7 @@ fn main() -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&m)?);
             Ok(())
         }
-        Cmd::UntertitelLiveMessen { video, onsets, referenz, modell, sprache, uebersetzen, modus, chunk, woerter, ungetaktet } => {
+        Cmd::UntertitelLiveMessen { video, onsets, referenz, modell, sprache, uebersetzen, zweitsprache, zweitmodell, modus, chunk, woerter, ungetaktet } => {
             let mode: lz_streamer::config::CaptionMode = serde_json::from_value(serde_json::Value::String(modus))?;
             let m = lz_streamer::caption_measure::LiveMeasure {
                 video,
@@ -209,6 +215,8 @@ fn main() -> Result<()> {
                 language: sprache,
                 model_path: modell.to_string_lossy().to_string(),
                 translate: uebersetzen,
+                second: zweitsprache,
+                second_model: zweitmodell,
                 mode,
                 chunk_ms: chunk,
                 word_mode: woerter,

@@ -25,6 +25,10 @@ pub struct LiveMeasure {
     pub chunk_ms: u32,
     pub word_mode: bool,
     pub paced: bool,
+    /// zweite Sprache (Übersetzung auf CC3) zusätzlich; Referenz dafür
+    pub second: Option<PathBuf>,
+    /// Modell für die Übersetzung (sonst Vorgabe)
+    pub second_model: Option<String>,
     pub work_dir: PathBuf,
 }
 
@@ -71,6 +75,16 @@ pub struct Report {
     pub sidecar_entries: usize,
     pub recording_608_entries: usize,
     pub asr_text: String,
+    /// Übersetzung (CC3): Zeile übersetzt bzw. am CC3-Decoder angezeigt – gegen das erste Wort
+    pub delay_cc3_asr_line: Stats,
+    pub delay_cc3_decoder_line: Stats,
+    /// Zusatzverzug der Übersetzung: Median CC3 − Median CC1 (Erkennung bzw. Anzeige)
+    pub extra_delay_cc3_asr_ms: Option<f64>,
+    pub extra_delay_cc3_decoder_ms: Option<f64>,
+    pub wer_cc3: Option<f64>,
+    /// WER der übersetzten Zeilen (am Encoder) gegen die englische Referenz
+    pub wer_cc3_asr: Option<f64>,
+    pub cc3_text: String,
 }
 
 fn words(s: &str) -> Vec<String> {
@@ -160,16 +174,31 @@ pub fn run(m: &LiveMeasure) -> Result<Report> {
     enc.record.dir = rec_dir.to_string_lossy().to_string();
     enc.graphics.burn = BurnTarget::All;
     enc.graphics.frame_port = 0;
+    enc.captions.second.enabled = m.second.is_some();
+    if let Some(sm) = &m.second_model {
+        enc.captions.second.model = sm.clone();
+    }
     let mut e = Channel::start_encoder(&enc, &[], &ChannelOptions::default())?;
     let mut dec = DecoderConfig::default();
     dec.srt.host = "127.0.0.1".into();
     dec.srt.port = port;
     dec.output = OutputKind::None;
     let mut d = Channel::start_decoder(&dec, &ChannelOptions::default())?;
+    // zweiter Empfänger auf CC3
+    let mut d3 = if m.second.is_some() {
+        let mut dec3 = dec.clone();
+        dec3.caption_channel = 3;
+        Some(Channel::start_decoder(&dec3, &ChannelOptions::default())?)
+    } else {
+        None
+    };
 
     let end = Instant::now() + Duration::from_secs_f64(total + 8.0);
     let mut recording = None;
     while Instant::now() < end {
+        if let Some(d3) = d3.as_mut() {
+            let _ = d3.poll();
+        }
         for ch in [&mut e, &mut d] {
             for msg in ch.poll() {
                 match msg {
@@ -182,10 +211,19 @@ pub fn run(m: &LiveMeasure) -> Result<Report> {
         std::thread::sleep(Duration::from_millis(200));
     }
     let phrases = e.asr_phrases();
+    let phrases2 = e.asr2_phrases();
     let shown: Vec<(u64, String)> = d.captions_shown().into_iter().filter_map(|(at, t)| e.running_ns_at(at).map(|rt| (rt, t))).collect();
     let pushed: Vec<(u64, &crate::asr::Phrase)> = phrases.iter().filter_map(|p| e.running_ns_at(p.at).map(|rt| (rt, p))).collect();
+    let pushed2: Vec<(u64, &crate::asr::Phrase)> = phrases2.iter().filter_map(|p| e.running_ns_at(p.at).map(|rt| (rt, p))).collect();
+    let shown3: Vec<(u64, String)> = d3
+        .as_ref()
+        .map(|d3| d3.captions_shown().into_iter().filter_map(|(at, t)| e.running_ns_at(at).map(|rt| (rt, t))).collect())
+        .unwrap_or_default();
     e.stop();
     d.stop();
+    if let Some(d3) = d3.as_mut() {
+        d3.stop();
+    }
 
     let ms = |ns: i128| ns as f64 / 1e6;
     let mut asr_line = Vec::new();
@@ -253,6 +291,34 @@ pub fn run(m: &LiveMeasure) -> Result<Report> {
         prev = cur;
     }
     let dec_texts = vec![dec_words.join(" ")];
+    let (delay_asr, delay_dec) = (stats(asr_line.clone()), stats(dec_line.clone()));
+    // Übersetzung: dieselben Zeilenmaße wie für CC1
+    let mut cc3_asr = Vec::new();
+    let mut cc3_dec = Vec::new();
+    for (at, p) in &pushed2 {
+        let Some(fw) = p.first_word_ns else { continue };
+        cc3_asr.push(ms(*at as i128 - fw as i128));
+        if let Some((rt, _)) = shown3.iter().find(|(rt, t)| *rt + 500_000_000 >= *at && overlap(&p.text, t) >= 0.5) {
+            cc3_dec.push(ms(*rt as i128 - fw as i128));
+        }
+    }
+    let (c3a, c3d) = (stats(cc3_asr), stats(cc3_dec));
+    // neu hinzugekommene Wörter wie beim Decoder-Text oben
+    let mut cc3_words: Vec<String> = Vec::new();
+    let mut prev: Vec<String> = Vec::new();
+    for (_, t) in &shown3 {
+        let cur = words(t);
+        if cur.len() >= prev.len() && cur[..prev.len()] == prev[..] {
+            // dieselbe Zeile wächst: erst beim Abschluss zählen
+            prev = cur;
+            continue;
+        }
+        cc3_words.extend(prev.iter().cloned());
+        prev = cur;
+    }
+    cc3_words.extend(prev);
+    let cc3_text = cc3_words.join(" ");
+    let wer_cc3 = m.second.as_ref().and_then(|p| std::fs::read_to_string(p).ok()).map(|r| wer(&r, &cc3_text));
     Ok(Report {
         video: m.video.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default(),
         language: m.language.clone(),
@@ -266,8 +332,8 @@ pub fn run(m: &LiveMeasure) -> Result<Report> {
         lines: phrases.len(),
         wer_asr: wer(&reference, &asr_text),
         wer_decoder: wer(&reference, &dec_texts.join(" ")),
-        delay_asr_line: stats(asr_line),
-        delay_decoder_line: stats(dec_line),
+        delay_asr_line: delay_asr.clone(),
+        delay_decoder_line: delay_dec.clone(),
         delay_decoder_first_word: stats(first_word),
         delay_sidecar_line: stats(line_delay(&sidecar, 0.0)),
         delay_recording_608_line: stats(line_delay(&cc608, start_pts)),
@@ -275,6 +341,13 @@ pub fn run(m: &LiveMeasure) -> Result<Report> {
         recording_608_entries: cc608.len(),
         recording: rec,
         asr_text,
+        extra_delay_cc3_asr_ms: c3a.median_ms.zip(delay_asr.median_ms).map(|(a, b)| a - b),
+        extra_delay_cc3_decoder_ms: c3d.median_ms.zip(delay_dec.median_ms).map(|(a, b)| a - b),
+        delay_cc3_asr_line: c3a,
+        delay_cc3_decoder_line: c3d,
+        wer_cc3,
+        wer_cc3_asr: m.second.as_ref().and_then(|p| std::fs::read_to_string(p).ok()).map(|r| wer(&r, &phrases2.iter().map(|p| p.text.as_str()).collect::<Vec<_>>().join(" "))),
+        cc3_text,
     })
 }
 

@@ -28,6 +28,14 @@ impl Default for Replacement {
     }
 }
 
+/// Kerne für Whisper: fest eingestellt oder alle (höchstens 8)
+fn threads(wanted: u32) -> i32 {
+    if wanted > 0 {
+        return wanted.min(16) as i32;
+    }
+    std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).clamp(1, 8) as i32
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct AsrConfig {
@@ -44,6 +52,9 @@ pub struct AsrConfig {
     /// Namen, Fachbegriffe: erkannt → geschrieben
     pub replacements: Vec<Replacement>,
     /// ins Englische übersetzen (Whisper-eigene Übersetzung)
+    /// Rechenkerne für Whisper (0 = automatisch, höchstens 8)
+    #[serde(default)]
+    pub threads: u32,
     pub translate: bool,
     /// Wort für Wort senden (für Roll-up) statt ganzer Zeilen
     pub word_mode: bool,
@@ -62,6 +73,7 @@ impl Default for AsrConfig {
             chunk_ms: 3000,
             replacements: Vec::new(),
             translate: false,
+            threads: 0,
             word_mode: false,
             // gemessen: bringt am Decoder nichts (docs/untertitel-messung.md)
             paced: false,
@@ -382,7 +394,7 @@ impl AsrRunner {
                 }
             }
             if asr.find_property("n-threads").is_some() {
-                let n = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).clamp(1, 8) as i32;
+                let n = threads(self.cfg.threads);
                 let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| asr.set_property_from_str("n-threads", &n.to_string())));
             }
         }
@@ -546,8 +558,7 @@ pub fn measure_file(audio: &std::path::Path, cfg: &AsrConfig, reference: Option<
         if !cfg.language.is_empty() {
             asr.set_property("language", cfg.language.as_str());
         }
-        let n = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).clamp(1, 8) as i32;
-        asr.set_property("n-threads", n);
+        asr.set_property("n-threads", threads(cfg.threads));
     }
     let sink = p.by_name("t").unwrap().downcast::<gst_app::AppSink>().unwrap();
     p.set_state(gst::State::Playing)?;
