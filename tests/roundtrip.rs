@@ -559,7 +559,8 @@ fn graphics_burn_in_and_renderer_loss() {
     let mut cfg = encoder_cfg(port, SrtMode::Listener);
     cfg.graphics.burn = BurnTarget::All;
     cfg.graphics.frame_port = gport;
-    let mut enc = Channel::start_encoder(&cfg, &[], &ChannelOptions::default()).unwrap();
+    let preview = std::env::temp_dir().join(format!("lzs-gfx-preview-{port}.jpg"));
+    let mut enc = Channel::start_encoder(&cfg, &[], &ChannelOptions { preview_path: Some(preview.clone()) }).unwrap();
     if let Some(src) = enc.pipeline().by_name("testsrc") {
         src.set_property_from_str("pattern", "black");
     }
@@ -582,6 +583,15 @@ fn graphics_burn_in_and_renderer_loss() {
     });
     assert!(e.graphics.unwrap().renderer_connected);
     let bright = d.luma.unwrap();
+    // Vorschaubild (Schnappschuss): obere Hälfte dunkel, untere hell
+    let end = Instant::now() + Duration::from_secs(5);
+    while std::fs::metadata(&preview).map(|m| m.len()).unwrap_or(0) == 0 && Instant::now() < end {
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    std::thread::sleep(Duration::from_millis(800));
+    eprintln!("Vorschau {} Byte", std::fs::metadata(&preview).map(|m| m.len()).unwrap_or(0));
+    let (top, bottom) = jpeg_halves(&preview);
+    assert!(bottom > top + 100.0, "Vorschau zeigt die Grafik nicht: oben {top:.0}, unten {bottom:.0}");
     assert!(e.fps > 20.0, "Bildrate mit Grafik: {}", e.fps);
 
     // Renderer stürzt ab: Verbindung weg → Grafik weg, Bild läuft weiter
@@ -659,4 +669,27 @@ fn graphics_burn_in_1080p50_keeps_frame_rate() {
     eprintln!("1080p50 mit Grafik: {fps:.1} fps");
     assert!(fps >= 48.5, "Bildverlust: {fps:.1} fps");
     drop(sock);
+}
+
+/// Mittlere Helligkeit der oberen und unteren Bildhälfte eines JPEGs.
+fn jpeg_halves(path: &std::path::Path) -> (f64, f64) {
+    use gstreamer as gst;
+    let p = gst::parse::launch(&format!(
+        "filesrc location=\"{}\" ! jpegparse ! jpegdec ! videoconvert ! videoscale ! video/x-raw,format=GRAY8,width=64,height=36 ! appsink name=s",
+        path.display()
+    ))
+    .unwrap()
+    .downcast::<gst::Pipeline>()
+    .unwrap();
+    let sink = p.by_name("s").unwrap().downcast::<gstreamer_app::AppSink>().unwrap();
+    p.set_state(gst::State::Playing).unwrap();
+    let sample = sink.pull_sample().unwrap();
+    let map = sample.buffer().unwrap().map_readable().unwrap();
+    let d = map.as_slice();
+    let half = d.len() / 2;
+    let mean = |x: &[u8]| x.iter().map(|&v| v as f64).sum::<f64>() / x.len() as f64;
+    let r = (mean(&d[..half]), mean(&d[half..]));
+    drop(map);
+    p.set_state(gst::State::Null).unwrap();
+    r
 }

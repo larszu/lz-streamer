@@ -104,6 +104,17 @@ enum Cmd {
         modus: String,
         #[arg(long, default_value_t = 3000)]
         chunk: u32,
+        /// Wort für Wort senden (Roll-up)
+        #[arg(long)]
+        woerter: bool,
+        /// Ausgabe nicht nach Sprechzeit takten
+        #[arg(long)]
+        ungetaktet: bool,
+    },
+    /// Sprache/Musik/Pause-Erkennung an einem Korpus prüfen (<ordner>/<klasse>/*.wav)
+    KlassenMessen {
+        #[arg(long)]
+        korpus: PathBuf,
     },
     /// Gefundene Encoder, Geräte und fehlende Bausteine anzeigen
     Info,
@@ -178,7 +189,7 @@ fn main() -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&m)?);
             Ok(())
         }
-        Cmd::UntertitelLiveMessen { video, onsets, referenz, modell, sprache, uebersetzen, modus, chunk } => {
+        Cmd::UntertitelLiveMessen { video, onsets, referenz, modell, sprache, uebersetzen, modus, chunk, woerter, ungetaktet } => {
             let mode: lz_streamer::config::CaptionMode = serde_json::from_value(serde_json::Value::String(modus))?;
             let m = lz_streamer::caption_measure::LiveMeasure {
                 video,
@@ -189,10 +200,27 @@ fn main() -> Result<()> {
                 translate: uebersetzen,
                 mode,
                 chunk_ms: chunk,
+                word_mode: woerter,
+                paced: !ungetaktet,
                 work_dir: std::env::temp_dir(),
             };
             let r = lz_streamer::caption_measure::run(&m)?;
             println!("{}", serde_json::to_string_pretty(&r)?);
+            Ok(())
+        }
+        Cmd::KlassenMessen { korpus } => {
+            let r = lz_streamer::vad::evaluate_corpus(&korpus)?;
+            for (c, ok, n) in &r.per_class {
+                println!("{c:?}: {ok}/{n} = {:.1} %", if *n > 0 { *ok as f64 * 100.0 / *n as f64 } else { 0.0 });
+            }
+            println!("Verwechslungen: {:?}", r.confusion.iter().filter(|(a, b, _)| a != b).collect::<Vec<_>>());
+            // Gruppe „Musik“ (Gesang oder Orgel) – das, was A2/K1 brauchen
+            let music: usize = r.confusion.iter().filter(|(a, b, _)| a.is_music() && b.is_music()).map(|(_, _, n)| n).sum();
+            let music_all: usize = r.confusion.iter().filter(|(a, _, _)| a.is_music()).map(|(_, _, n)| n).sum();
+            if music_all > 0 {
+                println!("Musik als Musik erkannt: {music}/{music_all} = {:.1} %", music as f64 * 100.0 / music_all as f64);
+            }
+            println!("Rechenzeit: {:.0} µs je 10 ms Audio", r.us_per_10ms);
             Ok(())
         }
         Cmd::Info => {

@@ -23,6 +23,8 @@ pub struct LiveMeasure {
     pub translate: bool,
     pub mode: CaptionMode,
     pub chunk_ms: u32,
+    pub word_mode: bool,
+    pub paced: bool,
     pub work_dir: PathBuf,
 }
 
@@ -48,6 +50,9 @@ pub struct Report {
     pub translate: bool,
     pub mode: String,
     pub chunk_ms: u32,
+    pub word_mode: bool,
+    pub paced: bool,
+    pub model: String,
     pub utterances: usize,
     pub lines: usize,
     pub wer_asr: f64,
@@ -145,6 +150,8 @@ pub fn run(m: &LiveMeasure) -> Result<Report> {
     enc.captions.source = CaptionSource::Speech;
     enc.captions.mode = m.mode;
     enc.captions.asr.chunk_ms = m.chunk_ms;
+    enc.captions.asr.word_mode = m.word_mode;
+    enc.captions.asr.paced = m.paced;
     enc.captions.asr.model_path = m.model_path.clone();
     enc.captions.asr.model = Path::new(&m.model_path).file_stem().map(|s| s.to_string_lossy().trim_start_matches("ggml-").to_string()).unwrap_or_default();
     enc.captions.asr.language = m.language.clone();
@@ -252,6 +259,9 @@ pub fn run(m: &LiveMeasure) -> Result<Report> {
         translate: m.translate,
         mode: m.mode.gst_nick().into(),
         chunk_ms: m.chunk_ms,
+        word_mode: m.word_mode,
+        paced: m.paced,
+        model: enc.captions.asr.model.clone(),
         utterances: onsets.len(),
         lines: phrases.len(),
         wer_asr: wer(&reference, &asr_text),

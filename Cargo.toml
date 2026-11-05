@@ -24,6 +24,7 @@ dirs = "7.0.0"
 getrandom = "0.2"
 futures-util = "0.3"
 rosc = "0.11"
+rustfft = "6"
 rand_core = { version = "0.6", features = ["getrandom"] }
 sysinfo = "0.39.6"
 gstreamer = { version = "0.25.4", features = ["v1_22"] }
@@ -40,3 +41,4 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
 tokio-tungstenite = "0.28"
+gstreamer-app = "0.25.2"
