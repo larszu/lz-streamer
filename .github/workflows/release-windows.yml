@@ -53,7 +53,8 @@ jobs:
           Copy-Item packaging\WINDOWS-LIESMICH.txt $d\LIESMICH.txt
           Compress-Archive $d "$d.zip"
           & "$env:GSTREAMER_ROOT\bin\gst-inspect-1.0.exe" --version
-          .\$d\lz-streamer.exe --help
+          & "$d\lz-streamer.exe" --help
+          if ($LASTEXITCODE -ne 0) { throw "lz-streamer.exe startet nicht" }
       - name: An Release haengen
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
