@@ -661,7 +661,8 @@ function renderControls(st) {
   const on = st.config.role === 'encoder' && (st.controls || []).length;
   $('#ctl-card').hidden = !on;
   if (!on || $('#ctl-list').contains(document.activeElement)) return;
-  const relevant = st.controls.filter(c => !(c.path.endsWith('leveler.preset') && !st.config.encoder.audio.tracks[+c.path.split('.')[2]]?.leveler?.enabled));
+  const relevant = st.controls.filter(c => !(c.path.endsWith('leveler.preset') && !st.config.encoder.audio.tracks[+c.path.split('.')[2]]?.leveler?.enabled)
+    && !(c.path === 'graphics.layer2.visible' && st.config.encoder.graphics.burn === 'off'));
   // nur neu aufbauen, wenn sich etwas geändert hat (sonst gehen Klicks ins Leere)
   const sig = JSON.stringify(relevant.map(c => [c.path, c.value])) + installedPlugins.length;
   if (sig === renderControls.sig) return;

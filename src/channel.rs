@@ -657,6 +657,16 @@ impl Channel {
 
             let venc = pipeline.by_name("venc").unwrap();
             set_props(&venc, &caps::encoder_props(enc.factory, cfg.video.bitrate_kbps, cfg.video.gop_frames()), &events);
+            set_props(&venc, &caps::option_props(enc.factory, &cfg.video), &events);
+            for (k, v) in caps::extra_props(&cfg.video.extra) {
+                if venc.find_property(&k).is_none() {
+                    event(&events, "warn", format!("Zusatzparameter {k}: {} kennt ihn nicht", enc.factory));
+                    continue;
+                }
+                if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| venc.set_property_from_str(&k, &v))).is_err() {
+                    event(&events, "warn", format!("Zusatzparameter {k}={v} nicht gesetzt"));
+                }
+            }
             count_frames(&venc.static_pad("sink").unwrap(), &counters);
             {
                 let e = encoded.clone();
@@ -688,6 +698,7 @@ impl Channel {
             hook_recording_cues(&pipeline, &cc, "");
             if let Some(v2) = pipeline.by_name("venc2") {
                 set_props(&v2, &caps::encoder_props(enc.factory, cfg.video.bitrate_kbps, cfg.video.gop_frames()), &events);
+                set_props(&v2, &caps::option_props(enc.factory, &cfg.video), &events);
             }
             if let Some(sink) = pipeline.by_name("cctext").and_then(|s| s.downcast::<gst_app::AppSink>().ok()) {
                 let c = cc.clone();
