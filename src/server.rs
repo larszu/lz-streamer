@@ -79,6 +79,7 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/api/stop", post(stop))
         .route("/api/signal", post(signal))
         .route("/api/keyframe", post(keyframe))
+        .route("/api/caption", post(caption))
         .route("/api/devices/refresh", post(refresh_devices))
         .route("/api/preview.jpg", get(preview))
         // Verwaltung
@@ -273,6 +274,15 @@ async fn signal(State(app): S, Json(r): Json<SignalReq>) -> impl IntoResponse {
 
 async fn keyframe(State(app): S) -> impl IntoResponse {
     Json(json!({"ok": app.sup.command(&ChildCmd::Keyframe).await}))
+}
+
+#[derive(Deserialize)]
+struct CaptionReq {
+    text: String,
+}
+
+async fn caption(State(app): S, Json(r): Json<CaptionReq>) -> impl IntoResponse {
+    Json(json!({"ok": app.sup.command(&ChildCmd::Caption { text: r.text }).await}))
 }
 
 async fn refresh_devices(State(app): S) -> impl IntoResponse {

@@ -547,3 +547,21 @@ function renderMeters(st) {
 }
 const _render2 = render;
 render = function (st) { _render2(st); renderMeters(st); };
+
+// ---------------- Untertitel
+$('#caption-send').addEventListener('submit', async e => {
+  e.preventDefault();
+  const text = $('#caption-text').value.trim(); if (!text) return;
+  await api('POST', '/api/caption', { text }); $('#caption-text').value = '';
+});
+function renderCaptions(st) {
+  const s = st.runtime.status, enc = st.config.role === 'encoder';
+  $('#caption-send').hidden = !(enc && s && st.config.encoder.captions.source === 'live');
+  const cc = s?.captions;
+  $('#chip-cc').hidden = !cc?.present;
+  const line = $('#caption-line');
+  line.hidden = !(cc?.text && cc.present);
+  if (cc?.text) line.textContent = cc.text;
+}
+const _render3 = render;
+render = function (st) { _render3(st); renderCaptions(st); };

@@ -7,7 +7,7 @@
 //! Standby ───────────────►        ▲ sink_1                 └► Vorschau (JPEG)        └► RTMP-Abgriff
 //! ```
 
-use crate::config::{Codec, EncoderConfig, OutputKind, OutputType, RecordContainer, ScaleQuality, StandbyPattern};
+use crate::config::{CaptionSource, Codec, EncoderConfig, OutputKind, OutputType, RecordContainer, ScaleQuality, StandbyPattern};
 
 /// Eingang nach Auflösung von „Automatisch“.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -93,8 +93,9 @@ pub fn primary_video(cfg: &EncoderConfig, input: &ResolvedInput) -> String {
         }
         ResolvedInput::Decklink { device, connection } => format!(
             "decklinkvideosrc name=capsrc device-number={device} connection={connection} mode=auto \
-             drop-no-signal-frames=true ! deinterlace{crop} ! {} \
+             drop-no-signal-frames=true{} ! deinterlace{crop} ! {} \
              ! videorate max-duplication-time=100000000 ! {caps}",
+            if cfg.captions.source == CaptionSource::Sdi { " output-cc=true" } else { "" },
             scaler(cfg)
         ),
     }
@@ -175,10 +176,15 @@ pub fn encoder_description(cfg: &EncoderConfig, parts: &EncoderParts) -> String 
         raw_caps(cfg)
     ));
     d.push(format!(
-        "vt. ! queue name=vencq max-size-buffers=3 max-size-bytes=0 max-size-time=0 ! {} name=venc \
-         ! {parser} config-interval=-1 ! tee name=ve",
-        parts.encoder
+        "vt. ! queue name=vencq max-size-buffers=3 max-size-bytes=0 max-size-time=0{} ! {} name=venc \
+         ! {parser} config-interval=-1{} ! tee name=ve",
+        if caption_branch(cfg).is_some() { " ! cccombiner name=ccc" } else { "" },
+        parts.encoder,
+        if cfg.captions.source != CaptionSource::Off { format!(" ! {} name=ccins", cc_inserter(cfg.video.codec)) } else { String::new() }
     ));
+    if let Some(b) = caption_branch(cfg) {
+        d.push(b);
+    }
     d.push("ve. ! queue max-size-buffers=0 max-size-bytes=0 max-size-time=2000000000 ! mux.".into());
     if parts.rtmp {
         d.push(
@@ -271,6 +277,42 @@ pub fn encoder_description(cfg: &EncoderConfig, parts: &EncoderParts) -> String 
     d.join("  ")
 }
 
+pub fn cc_inserter(codec: Codec) -> &'static str {
+    match codec {
+        Codec::H264 => "h264ccinserter",
+        Codec::H265 => "h265ccinserter",
+    }
+}
+
+pub fn cc_extractor(codec: Codec) -> &'static str {
+    match codec {
+        Codec::H264 => "h264ccextractor",
+        Codec::H265 => "h265ccextractor",
+    }
+}
+
+/// Untertitelquelle → CEA-608 im 708-cc_data-Rahmen → `cccombiner` vor dem
+/// Encoder. Der Inserter hinter dem Parser schreibt sie als SEI ins Video.
+/// Bei SDI hängt die Meta schon am Bild (`output-cc=true`), dann kein Zweig.
+pub fn caption_branch(cfg: &EncoderConfig) -> Option<String> {
+    let c = &cfg.captions;
+    let tail = format!(
+        "tttocea608 name=cc608 mode={} ! ccconverter ! closedcaption/x-cea-708,format=cc_data,framerate={}/1 \
+         ! queue max-size-buffers=0 max-size-bytes=0 max-size-time=2000000000 ! ccc.caption",
+        c.mode.gst_nick(),
+        cfg.video.fps
+    );
+    match c.source {
+        CaptionSource::File if !c.file.trim().is_empty() => {
+            Some(format!("filesrc location={} ! subparse ! text/x-raw,format=utf8 ! {tail}", quote(c.file.trim())))
+        }
+        CaptionSource::Live => Some(format!(
+            "appsrc name=ccin is-live=true format=time do-timestamp=false caps=text/x-raw,format=utf8 ! {tail}"
+        )),
+        _ => None,
+    }
+}
+
 /// Teil-Pipeline für RTMP: gespeist aus den Abgriffen der Haupt-Pipeline,
 /// damit ein RTMP-Abbruch den SRT-Ausgang nicht mitreißt.
 pub fn rtmp_description(url: &str, audio: bool) -> String {
@@ -299,12 +341,14 @@ pub fn decoder_video_branch(
     device: u32,
     deck_mode: &str,
     ts_offset_ns: i64,
+    captions: (bool, u32),
 ) -> String {
     let parser = crate::caps::parser_for(codec);
+    let (show, cc_line) = captions;
     let sink = match output {
         OutputKind::Window => format!("autovideosink name=vsink sync=true async=false ts-offset={ts_offset_ns}"),
         OutputKind::Decklink => format!(
-            "videoconvert ! decklinkvideosink name=vsink device-number={device} mode={} sync=true async=false ts-offset={ts_offset_ns}",
+            "videoconvert ! decklinkvideosink name=vsink device-number={device} mode={} cc-line={cc_line} sync=true async=false ts-offset={ts_offset_ns}",
             if deck_mode.trim().is_empty() { "auto" } else { deck_mode.trim() }
         ),
         OutputKind::None => {
@@ -313,10 +357,15 @@ pub fn decoder_video_branch(
     };
     // libav dekodiert sonst im Frame-Threading und hält dafür mehrere Bilder zurück
     let dec_props = if decoder.starts_with("avdec_") { " thread-type=slice" } else { "" };
+    let overlay = if show && output != OutputKind::None { "cea608overlay ! videoconvert ! " } else { "" };
+    let extractor = cc_extractor(codec);
     format!(
-        "queue name=vq max-size-buffers=0 max-size-bytes=0 max-size-time=1000000000 ! {parser} ! {decoder} name=vdec{dec_props} \
+        "queue name=vq max-size-buffers=0 max-size-bytes=0 max-size-time=1000000000 ! {parser} ! tee name=pt  \
+         pt. ! queue max-size-buffers=0 max-size-bytes=0 max-size-time=1000000000 ! {decoder} name=vdec{dec_props} \
          ! videoconvert name=vconv ! tee name=dt  \
-         dt. ! queue max-size-buffers=2 max-size-bytes=0 max-size-time=0 ! {sink}  \
+         pt. ! queue leaky=downstream max-size-buffers=0 max-size-bytes=0 max-size-time=2000000000 ! {extractor} \
+         ! ccconverter ! closedcaption/x-cea-608,format=raw ! cea608tott ! text/x-raw,format=utf8 ! appsink name=ccsink sync=false async=false max-buffers=20 drop=true  \
+         dt. ! queue max-size-buffers=2 max-size-bytes=0 max-size-time=0 ! {overlay}{sink}  \
          dt. ! queue leaky=downstream max-size-buffers=1 max-size-bytes=0 max-size-time=0 \
          ! videorate drop-only=true max-rate=2 ! videoscale ! videoconvert ! video/x-raw,width=480,pixel-aspect-ratio=1/1 \
          ! jpegenc quality=70 ! appsink name=preview sync=false async=false max-buffers=1 drop=true"
@@ -410,6 +459,27 @@ mod tests {
     }
 
     #[test]
+    fn caption_sources() {
+        let mut cfg = EncoderConfig::default();
+        let input = ResolvedInput::Test;
+        assert!(!encoder_description(&cfg, &parts(&input)).contains("cccombiner"));
+        cfg.captions.source = CaptionSource::File;
+        cfg.captions.file = "/tmp/a.srt".into();
+        let d = encoder_description(&cfg, &parts(&input));
+        assert!(d.contains("cccombiner name=ccc ! x264enc"));
+        assert!(d.contains("h264parse config-interval=-1 ! h264ccinserter name=ccins"));
+        assert!(d.contains("subparse") && d.contains("framerate=50/1"));
+        cfg.captions.source = CaptionSource::Live;
+        cfg.captions.mode = crate::config::CaptionMode::RollUp2;
+        let d = encoder_description(&cfg, &parts(&input));
+        assert!(d.contains("appsrc name=ccin") && d.contains("mode=roll-up2"));
+        cfg.captions.source = CaptionSource::Sdi;
+        let deck = ResolvedInput::Decklink { device: 0, connection: "sdi" };
+        let d = encoder_description(&cfg, &parts(&deck));
+        assert!(d.contains("output-cc=true") && d.contains("ccinserter") && !d.contains("cccombiner"));
+    }
+
+    #[test]
     fn crop_only_when_set() {
         let mut cfg = EncoderConfig::default();
         assert_eq!(crop(&cfg), "");
@@ -471,11 +541,13 @@ mod tests {
 
     #[test]
     fn decoder_branches() {
-        let v = decoder_video_branch(Codec::H264, "vtdec_hw", OutputKind::Decklink, 0, "1080p50", -120_000_000);
+        let v = decoder_video_branch(Codec::H264, "vtdec_hw", OutputKind::Decklink, 0, "1080p50", -120_000_000, (true, 9));
+        assert!(v.contains("cc-line=9") && v.contains("cea608overlay") && v.contains("h264ccextractor"));
         assert!(v.contains("ts-offset=-120000000"));
-        assert!(v.contains("h264parse ! vtdec_hw name=vdec"));
+        assert!(v.contains("h264parse ! tee name=pt") && v.contains("vtdec_hw name=vdec"));
         assert!(v.contains("decklinkvideosink name=vsink device-number=0 mode=1080p50"));
-        let v = decoder_video_branch(Codec::H265, "avdec_h265", OutputKind::None, 0, "", 0);
+        let v = decoder_video_branch(Codec::H265, "avdec_h265", OutputKind::None, 0, "", 0, (true, 0));
+        assert!(v.contains("h265ccextractor") && !v.contains("cea608overlay"));
         assert!(v.contains("thread-type=slice"));
         assert!(v.contains("GRAY8") && v.contains("h265parse"));
         assert!(decoder_audio_branch(OutputKind::Window, false, 0, 0).contains("fakesink"));

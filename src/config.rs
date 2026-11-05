@@ -359,6 +359,52 @@ pub struct EncoderConfig {
     /// weitere Ausgänge (SRT, UDP, RTP) neben dem Haupt-SRT
     pub outputs: Vec<ExtraOutput>,
     pub record: RecordConfig,
+    pub captions: CaptionConfig,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum CaptionSource {
+    #[default]
+    Off,
+    /// CEA-608/708 aus dem SDI-VANC des DeckLink-Eingangs durchreichen
+    Sdi,
+    /// Untertiteldatei (.srt/.vtt) zeitgenau einspielen
+    File,
+    /// Text live per API, OSC oder Spracherkennung
+    Live,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum CaptionMode {
+    #[default]
+    PopOn,
+    RollUp2,
+    RollUp3,
+    RollUp4,
+    PaintOn,
+}
+
+impl CaptionMode {
+    pub fn gst_nick(self) -> &'static str {
+        match self {
+            CaptionMode::PopOn => "pop-on",
+            CaptionMode::RollUp2 => "roll-up2",
+            CaptionMode::RollUp3 => "roll-up3",
+            CaptionMode::RollUp4 => "roll-up4",
+            CaptionMode::PaintOn => "paint-on",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(default)]
+pub struct CaptionConfig {
+    pub source: CaptionSource,
+    /// Pfad zur Untertiteldatei bei `file`
+    pub file: String,
+    pub mode: CaptionMode,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -392,6 +438,10 @@ pub struct DecoderConfig {
     pub audio_track: u32,
     /// bevorzugte Sprache (z. B. "deu"); hat Vorrang vor `audio_track`
     pub audio_language: String,
+    /// CEA-608 ins Bild einblenden (Fenster/DeckLink)
+    pub show_captions: bool,
+    /// VANC-Zeile für CC am DeckLink-Ausgang (0 = aus, üblich 9 bei HD)
+    pub cc_line: u32,
 }
 
 impl Default for DecoderConfig {
@@ -407,6 +457,8 @@ impl Default for DecoderConfig {
             output_buffer_ms: 60,
             audio_track: 0,
             audio_language: String::new(),
+            show_captions: false,
+            cc_line: 0,
         }
     }
 }
