@@ -128,3 +128,69 @@ async fn schedule_alarms_report_recordings() {
     assert_eq!(call(&r, "DELETE", "/api/recordings/lz-test_000.ts", None, None).await.0, StatusCode::OK);
     assert_eq!(call(&r, "GET", "/api/recordings/..%2Fconfig.json", None, None).await.0, StatusCode::BAD_REQUEST);
 }
+
+/// Renderer-Protokoll: Hello mit Format und Bild-Port, Laden der
+/// Untertitel-Grafik bei aktivem Einbrennen, `update {text}` je Untertitel.
+#[tokio::test]
+async fn renderer_websocket_protocol() {
+    use futures_util::{SinkExt, StreamExt};
+    let _ = gstreamer::init();
+    let root = std::env::temp_dir().join(format!("lzs-api-ws-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let data = DataDir::new(root.clone());
+    let mut cfg = Config::default();
+    cfg.encoder.graphics.burn = lz_streamer::config::BurnTarget::All;
+    cfg.encoder.graphics.frame_port = 4777;
+    let sup = Supervisor::new(cfg, root.join("config.json"), root.join("run"), data.recordings());
+    let app = App::new(sup.clone(), Ops::new(data), Capabilities::probe(), vec![]);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, router(app).into_make_service_with_connect_info::<std::net::SocketAddr>()).await.unwrap();
+    });
+    let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/renderer")).await.unwrap();
+    let mut next = async || -> Value {
+        loop {
+            if let Some(Ok(tokio_tungstenite::tungstenite::Message::Text(t))) = ws.next().await {
+                return serde_json::from_str(&t).unwrap();
+            }
+        }
+    };
+    let hello = next().await;
+    assert_eq!(hello["type"], "hello");
+    assert_eq!(hello["framePorts"][0], 4777);
+    assert_eq!(hello["format"]["width"], 1920);
+    let load = next().await;
+    assert_eq!((load["type"].as_str(), load["graphicId"].as_str()), (Some("load"), Some("lz-captions")));
+    assert_eq!(next().await["type"], "play");
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    sup.captions.send("Guten Abend".into()).unwrap();
+    let up = next().await;
+    assert_eq!(up["type"], "update");
+    assert_eq!(up["data"]["text"], "Guten Abend");
+    drop(next);
+    ws.send(tokio_tungstenite::tungstenite::Message::Text(r#"{"type":"library","graphics":[{"id":"lz-captions"}]}"#.into())).await.unwrap();
+}
+
+/// PDF-Bericht: entsteht mit erwarteten Abschnitten (braucht Chrome; sonst HTML).
+#[tokio::test]
+async fn report_pdf_has_sections() {
+    let (r, _) = app("pdf");
+    let resp = r.clone().oneshot(Request::get("/api/report.pdf").body(Body::empty()).unwrap()).await.unwrap();
+    let ct = resp.headers()[header::CONTENT_TYPE].to_str().unwrap().to_string();
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    if lz_streamer::report::find_browser().is_none() {
+        assert!(ct.starts_with("text/html"));
+        return;
+    }
+    assert_eq!(ct, "application/pdf");
+    assert!(bytes.starts_with(b"%PDF"), "kein PDF");
+    let f = std::env::temp_dir().join(format!("lzs-bericht-{}.pdf", std::process::id()));
+    std::fs::write(&f, &bytes).unwrap();
+    if let Ok(o) = std::process::Command::new("pdftotext").arg(&f).arg("-").output() {
+        let t = String::from_utf8_lossy(&o.stdout);
+        for s in ["Betriebsbericht", "Kennzahlen", "Verlauf", "Ereignisse und Alarme"] {
+            assert!(t.contains(s), "Abschnitt {s} fehlt im PDF");
+        }
+    }
+}

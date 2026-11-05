@@ -29,6 +29,7 @@ pub struct App {
     pub devices: RwLock<Vec<CaptureDevice>>,
     pub users: RwLock<Vec<User>>,
     sessions: Mutex<HashMap<String, (String, Role)>>,
+    pub renderer: Arc<crate::renderer::RendererHub>,
 }
 
 impl App {
@@ -41,6 +42,7 @@ impl App {
             devices: RwLock::new(devices),
             users: RwLock::new(users),
             sessions: Mutex::new(HashMap::new()),
+            renderer: Arc::default(),
         })
     }
 }
@@ -73,6 +75,7 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/app.js", get(|| async { asset("text/javascript; charset=utf-8", JS) }))
         .route("/fonts/public-sans.woff2", get(|| async { asset("font/woff2", FONT) }))
         .route("/fonts/public-sans-ext.woff2", get(|| async { asset("font/woff2", FONT_EXT) }))
+        .route("/renderer", get(renderer_ws))
         .route("/api/state", get(state))
         .route("/api/config", get(get_config).put(put_config))
         .route("/api/start", post(start))
@@ -91,6 +94,8 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/api/stats", get(stats))
         .route("/api/system", get(system))
         .route("/api/report.csv", get(report))
+        .route("/api/report.pdf", get(report_pdf))
+        .route("/api/report.html", get(report_html))
         .route("/api/standby", get(standby_list).post(standby_upload))
         .route("/api/standby/{name}", get(standby_get).delete(standby_delete))
         .route("/api/standby/{name}/use", post(standby_use))
@@ -127,6 +132,7 @@ async fn current_user(app: &App, headers: &HeaderMap) -> Option<(String, Role)> 
 /// eine Sitzung, und die Rolle entscheidet über Schreibzugriffe.
 async fn auth(State(app): S, req: Request, next: Next) -> Response {
     let path = req.uri().path().to_string();
+    // /renderer ist kein /api-Pfad und nimmt nur Verbindungen von 127.0.0.1 an (siehe renderer_ws)
     if !path.starts_with("/api/") || path == "/api/login" || path == "/api/me" {
         return next.run(req).await;
     }
@@ -220,6 +226,20 @@ async fn delete_user(State(app): S, Path(name): Path<String>) -> Response {
     ok()
 }
 
+// ------------------------------------------------------------ Grafik-Renderer
+
+async fn renderer_ws(
+    State(app): S,
+    axum::extract::ConnectInfo(addr): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    ws: axum::extract::WebSocketUpgrade,
+) -> Response {
+    if !addr.ip().is_loopback() {
+        return err(StatusCode::FORBIDDEN, "Renderer nur lokal");
+    }
+    let (sup, hub) = (app.sup.clone(), app.renderer.clone());
+    ws.on_upgrade(move |s| crate::renderer::serve(s, sup, hub))
+}
+
 // ------------------------------------------------------------ Kanal
 
 async fn state(State(app): S, headers: HeaderMap) -> impl IntoResponse {
@@ -240,6 +260,7 @@ async fn state(State(app): S, headers: HeaderMap) -> impl IntoResponse {
         "alarms": alarms,
         "system": *app.ops.system.lock().await,
         "loudness_target": app.ops.settings.lock().await.alarms.loudness_target,
+        "renderer": app.renderer.state.lock().await.clone(),
         "user": {"open": open, "name": me.as_ref().map(|m| m.0.clone()), "role": me.map(|m| m.1).unwrap_or(Role::Admin)},
         "version": env!("CARGO_PKG_VERSION"),
     }))
@@ -536,4 +557,53 @@ async fn model_delete(State(app): S, Path(name): Path<String>) -> Response {
     let Some(n) = admin::safe_name(&name) else { return err(StatusCode::BAD_REQUEST, "Ungültiger Name") };
     let _ = std::fs::remove_file(app.sup.models_dir().join(format!("ggml-{n}.bin")));
     ok()
+}
+
+// ------------------------------------------------------------ PDF-Bericht
+
+#[derive(Deserialize)]
+struct RangeQ {
+    from: Option<String>,
+    to: Option<String>,
+}
+
+/// Zeitpunkt als ms seit 1970 oder „JJJJ-MM-TTTHH:MM“ (Ortszeit).
+fn parse_time(s: &str) -> Option<u64> {
+    if let Ok(n) = s.parse::<u64>() {
+        return Some(n);
+    }
+    let dt = chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M").ok()?;
+    dt.and_local_timezone(chrono::Local).single().map(|d| d.timestamp_millis() as u64)
+}
+
+async fn report_data(app: &App, q: &RangeQ) -> (String, String) {
+    let all: Vec<_> = app.ops.stats.lock().await.iter().cloned().collect();
+    let to = q.to.as_deref().and_then(parse_time).unwrap_or_else(|| all.last().map(|p| p.at_ms).unwrap_or(0));
+    let from = q.from.as_deref().and_then(parse_time).unwrap_or_else(|| all.first().map(|p| p.at_ms).unwrap_or(0));
+    let pts: Vec<_> = all.into_iter().filter(|p| p.at_ms >= from && p.at_ms <= to).collect();
+    let events = app.sup.snapshot().await.events;
+    let host = app.ops.system.lock().await.hostname.clone();
+    let name = format!("lz-streamer-bericht-{}", chrono::Local::now().format("%Y-%m-%d_%H-%M"));
+    (crate::report::html(&pts, &events, from, to, &host), name)
+}
+
+async fn report_html(State(app): S, Query(q): Query<RangeQ>) -> Response {
+    let (html, _) = report_data(&app, &q).await;
+    asset("text/html; charset=utf-8", html)
+}
+
+async fn report_pdf(State(app): S, Query(q): Query<RangeQ>) -> Response {
+    let (html, name) = report_data(&app, &q).await;
+    match crate::report::to_pdf(&html, &std::env::temp_dir()).await {
+        Ok(pdf) => (
+            [
+                (header::CONTENT_TYPE, "application/pdf".to_string()),
+                (header::CONTENT_DISPOSITION, format!("attachment; filename=\"{name}.pdf\"")),
+            ],
+            pdf,
+        )
+            .into_response(),
+        // ohne Chrome: druckfertiges HTML (im Browser „Als PDF sichern“)
+        Err(_) => asset("text/html; charset=utf-8", html),
+    }
 }

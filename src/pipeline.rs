@@ -7,19 +7,21 @@
 //! Standby ───────────────►        ▲ sink_1                 └► Vorschau (JPEG)        └► RTMP-Abgriff
 //! ```
 
-use crate::config::{CaptionSource, Codec, EncoderConfig, OutputKind, OutputType, RecordContainer, ScaleQuality, StandbyPattern};
+use crate::config::{BurnTarget, CaptionSource, Codec, EncoderConfig, OutputKind, OutputType, RecordContainer, ScaleQuality, StandbyPattern};
 
 /// Eingang nach Auflösung von „Automatisch“.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ResolvedInput {
     Test,
     Decklink { device: u32, connection: &'static str },
+    File { path: String },
 }
 
 impl ResolvedInput {
     pub fn label(&self) -> String {
         match self {
             ResolvedInput::Test => "Testbild (keine Capture-Hardware)".into(),
+            ResolvedInput::File { path } => format!("Datei {} (Echtzeit)", std::path::Path::new(path).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()),
             ResolvedInput::Decklink { device, connection } => {
                 format!("DeckLink/UltraStudio Nr. {device} ({})", connection.to_uppercase())
             }
@@ -91,6 +93,12 @@ pub fn primary_video(cfg: &EncoderConfig, input: &ResolvedInput) -> String {
                 quote("Sans 28")
             )
         }
+        ResolvedInput::File { path } => format!(
+            "filesrc location={} ! decodebin name=fsrc  fsrc. ! video/x-raw ! queue max-size-buffers=0 max-size-bytes=0 max-size-time=1000000000 \
+             ! videoconvert ! deinterlace{crop} ! {} ! videorate max-duplication-time=100000000 ! {caps} ! clocksync name=filesync",
+            quote(path),
+            scaler(cfg)
+        ),
         ResolvedInput::Decklink { device, connection } => format!(
             "decklinkvideosrc name=capsrc device-number={device} connection={connection} mode=auto \
              drop-no-signal-frames=true{} ! deinterlace{crop} ! {} \
@@ -143,6 +151,13 @@ pub fn primary_audio(input: &ResolvedInput, n: u32) -> String {
              ! audioconvert mix-matrix={} ! {caps}",
             crate::audio::matrix_string(&vec![vec![1.0f32]; n as usize])
         ),
+        // Stereo der Datei auf die Eingangskanäle verteilen: 1 = L, 2 = R, 3 = L …
+        ResolvedInput::File { .. } => format!(
+            "fsrc. ! audio/x-raw ! queue max-size-buffers=0 max-size-bytes=0 max-size-time=1000000000 ! audioconvert ! audioresample \
+             ! audio/x-raw,format=F32LE,layout=interleaved,rate=48000,channels=2,channel-mask=(bitmask)0x3 \
+             ! audioconvert mix-matrix={} ! {caps} ! clocksync",
+            crate::audio::matrix_string(&(0..n).map(|i| if i % 2 == 0 { vec![1.0f32, 0.0] } else { vec![0.0, 1.0] }).collect::<Vec<_>>())
+        ),
         ResolvedInput::Decklink { device, .. } => format!(
             "decklinkaudiosrc name=capasrc device-number={device} channels={n} ! audioconvert ! audioresample ! {caps}"
         ),
@@ -171,34 +186,46 @@ pub fn encoder_description(cfg: &EncoderConfig, parts: &EncoderParts) -> String 
     let parser = crate::caps::parser_for(cfg.video.codec);
     let mut d = Vec::new();
 
+    let has_cc = caption_branch(cfg).is_some();
     d.push(format!(
-        "fallbackswitch name=vsw timeout={timeout_ns} immediate-fallback=true ! videoconvert ! {} ! tee name=vt",
-        raw_caps(cfg)
+        "fallbackswitch name=vsw timeout={timeout_ns} immediate-fallback=true ! videoconvert ! {}{} ! tee name=vt",
+        raw_caps(cfg),
+        if has_cc { " ! cccombiner name=ccc" } else { "" }
     ));
-    d.push(format!(
-        "vt. ! queue name=vencq max-size-buffers=3 max-size-bytes=0 max-size-time=0{} ! {} name=venc \
-         ! {parser} config-interval=-1{} ! tee name=ve",
-        if caption_branch(cfg).is_some() { " ! cccombiner name=ccc" } else { "" },
-        parts.encoder,
-        if cfg.captions.source != CaptionSource::Off { format!(" ! {} name=ccins", cc_inserter(cfg.video.codec)) } else { String::new() }
-    ));
+    let inserter =
+        if cfg.captions.source != CaptionSource::Off { format!(" ! {} name=ccins", cc_inserter(cfg.video.codec)) } else { String::new() };
+    let burn = burn_mode(cfg, parts.rtmp);
+    let enc_src = match burn {
+        BurnTarget::All => {
+            d.push(format!("vt. ! queue name=vencq max-size-buffers=3 max-size-bytes=0 max-size-time=0 ! {} ! tee name=vb", burn_chain(cfg)));
+            "vb. ! queue max-size-buffers=3 max-size-bytes=0 max-size-time=0"
+        }
+        _ => "vt. ! queue name=vencq max-size-buffers=3 max-size-bytes=0 max-size-time=0",
+    };
+    d.push(format!("{enc_src} ! {} name=venc ! {parser} config-interval=-1{inserter} ! tee name=ve", parts.encoder));
     if let Some(b) = caption_branch(cfg) {
         d.push(b);
     }
     d.push("ve. ! queue max-size-buffers=0 max-size-bytes=0 max-size-time=2000000000 ! mux.".into());
-    if parts.rtmp {
-        d.push(
-            "ve. ! queue leaky=downstream max-size-buffers=120 max-size-bytes=0 max-size-time=0 \
-             ! appsink name=rtmp_v sync=false async=false emit-signals=false max-buffers=120 drop=true"
-                .into(),
-        );
+    let rtmp_sink = "appsink name=rtmp_v sync=false async=false emit-signals=false max-buffers=120 drop=true";
+    if burn == BurnTarget::Rtmp {
+        // zweiter Encoder nur für RTMP mit eingebrannter Grafik
+        d.push(format!(
+            "vt. ! queue leaky=downstream max-size-buffers=3 max-size-bytes=0 max-size-time=0 ! {} ! tee name=vb  \
+             vb. ! queue max-size-buffers=3 max-size-bytes=0 max-size-time=0 ! {} name=venc2 ! {parser} config-interval=-1 \
+             ! queue leaky=downstream max-size-buffers=120 max-size-bytes=0 max-size-time=0 ! {rtmp_sink}",
+            burn_chain(cfg),
+            parts.encoder
+        ));
+    } else if parts.rtmp {
+        d.push(format!("ve. ! queue leaky=downstream max-size-buffers=120 max-size-bytes=0 max-size-time=0 ! {rtmp_sink}"));
     }
-    d.push(
-        "vt. ! queue leaky=downstream max-size-buffers=1 max-size-bytes=0 max-size-time=0 \
+    let preview_src = if burn == BurnTarget::Off { "vt" } else { "vb" };
+    d.push(format!(
+        "{preview_src}. ! queue leaky=downstream max-size-buffers=1 max-size-bytes=0 max-size-time=0 \
          ! videorate drop-only=true max-rate=2 ! videoscale ! videoconvert ! video/x-raw,width=480,pixel-aspect-ratio=1/1 \
          ! jpegenc quality=70 ! appsink name=preview sync=false async=false max-buffers=1 drop=true"
-            .into(),
-    );
+    ));
     d.push(format!("{} ! valve name=sigv drop=false ! vsw.sink_0", primary_video(cfg, parts.input)));
     d.push(format!("{} ! vsw.sink_1", standby_video(cfg, parts.image_ok)));
 
@@ -242,6 +269,9 @@ pub fn encoder_description(cfg: &EncoderConfig, parts: &EncoderParts) -> String 
         }
         d.push(format!("{} ! valve name=siga drop=false ! asw.sink_0", primary_audio(parts.input, n)));
         d.push(format!("audiotestsrc is-live=true wave=silence ! {} ! asw.sink_1", audio_caps(n)));
+    } else if matches!(parts.input, ResolvedInput::File { .. }) {
+        // Ton der Datei verwerfen, sonst bricht decodebin mit „not linked“ ab
+        d.push("fsrc. ! audio/x-raw ! fakesink sync=false".into());
     }
 
     if let Some(location) = parts.record {
@@ -321,13 +351,39 @@ pub fn caption_branch(cfg: &EncoderConfig) -> Option<String> {
     );
     match c.source {
         CaptionSource::File if !c.file.trim().is_empty() => {
-            Some(format!("filesrc location={} ! subparse ! text/x-raw,format=utf8 ! {tail}", quote(c.file.trim())))
+            // Text zusätzlich abgreifen: für die Grafik und die Rückfall-Einblendung
+            let tap = if cfg.graphics.burn != BurnTarget::Off {
+                "tee name=cct ! queue ! ".to_string()
+            } else {
+                String::new()
+            };
+            let side = if tap.is_empty() { String::new() } else { "  cct. ! queue ! appsink name=cctext sync=true async=false".to_string() };
+            Some(format!("filesrc location={} ! subparse ! text/x-raw,format=utf8 ! {tap}{tail}{side}", quote(c.file.trim())))
         }
         CaptionSource::Live | CaptionSource::Speech => Some(format!(
             "appsrc name=ccin is-live=true format=time do-timestamp=false caps=text/x-raw,format=utf8 ! {tail}"
         )),
         _ => None,
     }
+}
+
+/// Einbrennen wirklich aktiv? „Nur RTMP“ ohne aktives RTMP heißt: nichts.
+pub fn burn_mode(cfg: &EncoderConfig, rtmp: bool) -> BurnTarget {
+    match cfg.graphics.burn {
+        BurnTarget::Rtmp if !rtmp => BurnTarget::Off,
+        b => b,
+    }
+}
+
+/// Untertiteltext als Rückfallebene (ohne Renderer) und darüber die
+/// OGraf-Grafik vom Renderer. Beide lassen Bildformat und Metadaten stehen.
+pub fn burn_chain(cfg: &EncoderConfig) -> String {
+    let size = (cfg.video.height / 18).max(16);
+    format!(
+        "textoverlay name=cctxt silent=true valignment=bottom halignment=center line-alignment=center wrap-mode=word \
+         shaded-background=true font-desc={} ! overlaycomposition name=gfx",
+        quote(&format!("Sans Bold {size}px"))
+    )
 }
 
 /// Teil-Pipeline für RTMP: gespeist aus den Abgriffen der Haupt-Pipeline,
@@ -381,7 +437,7 @@ pub fn decoder_video_branch(
          pt. ! queue max-size-buffers=0 max-size-bytes=0 max-size-time=1000000000 ! {decoder} name=vdec{dec_props} \
          ! videoconvert name=vconv ! tee name=dt  \
          pt. ! queue leaky=downstream max-size-buffers=0 max-size-bytes=0 max-size-time=2000000000 ! {extractor} \
-         ! ccconverter ! closedcaption/x-cea-608,format=raw ! cea608tott ! text/x-raw,format=utf8 ! appsink name=ccsink sync=false async=false max-buffers=20 drop=true  \
+         ! ccconverter ! closedcaption/x-cea-608,format=raw ! cea608tojson name=ccjson unbuffered=true ! appsink name=ccsink sync=false async=false max-buffers=20 drop=true  \
          dt. ! queue max-size-buffers=2 max-size-bytes=0 max-size-time=0 ! {overlay}{sink}  \
          dt. ! queue leaky=downstream max-size-buffers=1 max-size-bytes=0 max-size-time=0 \
          ! videorate drop-only=true max-rate=2 ! videoscale ! videoconvert ! video/x-raw,width=480,pixel-aspect-ratio=1/1 \
@@ -483,7 +539,7 @@ mod tests {
         cfg.captions.source = CaptionSource::File;
         cfg.captions.file = "/tmp/a.srt".into();
         let d = encoder_description(&cfg, &parts(&input));
-        assert!(d.contains("cccombiner name=ccc ! x264enc"));
+        assert!(d.contains("! cccombiner name=ccc ! tee name=vt"));
         assert!(d.contains("h264parse config-interval=-1 ! h264ccinserter name=ccins"));
         assert!(d.contains("subparse") && d.contains("framerate=50/1"));
         cfg.captions.source = CaptionSource::Live;
@@ -497,6 +553,24 @@ mod tests {
         let deck = ResolvedInput::Decklink { device: 0, connection: "sdi" };
         let d = encoder_description(&cfg, &parts(&deck));
         assert!(d.contains("output-cc=true") && d.contains("ccinserter") && !d.contains("cccombiner"));
+    }
+
+    #[test]
+    fn burn_modes() {
+        let mut cfg = EncoderConfig::default();
+        let input = ResolvedInput::Test;
+        cfg.graphics.burn = BurnTarget::All;
+        let d = encoder_description(&cfg, &parts(&input));
+        assert!(d.contains("overlaycomposition name=gfx ! tee name=vb"));
+        assert!(d.contains("vb. ! queue max-size-buffers=3 max-size-bytes=0 max-size-time=0 ! x264enc name=venc"));
+        assert!(d.contains("vb. ! queue leaky=downstream max-size-buffers=1"), "Vorschau zeigt das eingebrannte Bild");
+        cfg.graphics.burn = BurnTarget::Rtmp;
+        let d = encoder_description(&cfg, &parts(&input));
+        assert!(!d.contains("venc2"), "ohne RTMP kein zweiter Encoder");
+        let p = EncoderParts { rtmp: true, ..parts(&input) };
+        let d = encoder_description(&cfg, &p);
+        assert!(d.contains("x264enc name=venc2") && d.contains("appsink name=rtmp_v"));
+        assert!(d.contains("vt. ! queue name=vencq max-size-buffers=3 max-size-bytes=0 max-size-time=0 ! x264enc name=venc"), "SRT bleibt sauber");
     }
 
     #[test]

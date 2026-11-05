@@ -64,7 +64,7 @@ function applyVisibility() {
   $$('[data-role]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.role === role)));
   $('#enc-form').hidden = role !== 'encoder';
   $('#dec-form').hidden = role !== 'decoder';
-  $('#enc-device-field').hidden = cfg.encoder.input.kind === 'test';
+  $('#enc-device-field').hidden = cfg.encoder.input.kind === 'test' || cfg.encoder.input.kind === 'file';
 }
 
 function readField(el) {
@@ -588,3 +588,24 @@ function renderAsr(st) {
 }
 const _render4 = render;
 render = function (st) { _render4(st); renderAsr(st); };
+
+// ---------------- Grafik
+function renderGfx(st) {
+  const g = st.runtime.status?.graphics, r = st.renderer;
+  const h = $('#gfx-hint'); if (!h) return;
+  h.textContent = st.config.encoder.graphics.burn === 'off' ? '' :
+    (r?.connected ? 'Renderer verbunden' : 'Kein Renderer verbunden – Untertitel erscheinen als schlichte Texteinblendung')
+    + (g ? ` · Bild-Port ${g.frame_port}${g.graphic_visible ? ' · Grafik im Bild' : ''}` : '');
+}
+const _render5 = render;
+render = function (st) { _render5(st); renderGfx(st); };
+
+// ---------------- PDF-Bericht mit Zeitraum
+function repLink() {
+  const q = new URLSearchParams();
+  if ($('#rep-from').value) q.set('from', $('#rep-from').value);
+  if ($('#rep-to').value) q.set('to', $('#rep-to').value);
+  $('#rep-pdf').href = '/api/report.pdf' + (q.toString() ? '?' + q : '');
+}
+$('#rep-from').addEventListener('change', repLink);
+$('#rep-to').addEventListener('change', repLink);

@@ -74,13 +74,14 @@
         <div class="row2">
           <label class="field"><span>Quelle</span>
             <select class="input" data-path="encoder.input.kind">
-              <option value="auto">Automatisch</option><option value="decklink">DeckLink / UltraStudio</option><option value="test">Testbild</option>
+              <option value="auto">Automatisch</option><option value="decklink">DeckLink / UltraStudio</option><option value="test">Testbild</option><option value="file">Videodatei (Echtzeit)</option>
             </select></label>
           <label class="field"><span>Anschluss</span>
             <select class="input" data-path="encoder.input.connection">
               <option value="auto">Automatisch</option><option value="sdi">SDI</option><option value="hdmi">HDMI</option>
             </select></label>
         </div>
+        <label class="field" data-show-mode="encoder.input.kind=file"><span>Videodatei (Pfad)</span><input class="input" data-path="encoder.input.file" spellcheck="false"></label>
         <label class="field" id="enc-device-field" hidden><span>Gerät</span><select class="input" data-path="encoder.input.device" data-num id="enc-device"></select></label>
         <p class="hint" id="detected"></p>
 
@@ -166,6 +167,13 @@
               <div class="list-edit" id="replacements"></div>
               <button type="button" class="btn btn--soft" id="add-replacement">Ersetzung hinzufügen</button>
             </div>
+            <p class="group-title">Grafik einbrennen (OGraf)</p>
+            <div class="row2">
+              <label class="field"><span>Einbrennen</span><select class="input" data-path="encoder.graphics.burn"><option value="off">Aus</option><option value="all">In alle Ausgänge</option><option value="rtmp">Nur RTMP (SRT bleibt sauber)</option></select></label>
+              <label class="field"><span>Grafik</span><input class="input" data-path="encoder.graphics.graphic" placeholder="lz-captions"></label>
+            </div>
+            <label class="field" data-show-mode="encoder.graphics.burn=all|rtmp"><span>Renderer-Programm (LZ Vision Mixer Graphics), leer = selbst starten</span><input class="input" data-path="encoder.graphics.renderer" spellcheck="false"></label>
+            <p class="hint" id="gfx-hint"></p>
             <p class="group-title">Beschnitt (Pixel am Eingang)</p>
             <div class="row2">
               <label class="field"><span>Oben</span><input class="input" data-path="encoder.input.crop.0" data-num inputmode="numeric"></label>
@@ -265,7 +273,11 @@
     <section class="card" aria-labelledby="st-title">
       <h2 id="st-title">Statistik <small>letzte Stunde</small></h2>
       <div id="chart" class="chart"></div>
-      <a class="btn btn--soft" href="/api/report.csv">Bericht herunterladen (CSV)</a>
+      <div class="row2 inline">
+        <label class="field"><span>Von</span><input class="input" type="datetime-local" id="rep-from"></label>
+        <label class="field"><span>Bis</span><input class="input" type="datetime-local" id="rep-to"></label>
+      </div>
+      <div class="actions"><a class="btn btn--soft" id="rep-pdf" href="/api/report.pdf">Bericht als PDF</a><a class="btn" href="/api/report.csv">CSV</a></div>
     </section>
     <section class="card" aria-labelledby="rec-title">
       <h2 id="rec-title">Aufnahmen <small id="rec-free"></small></h2>

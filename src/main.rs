@@ -83,6 +83,28 @@ enum Cmd {
         #[arg(long, default_value_t = 2000)]
         chunk: u32,
     },
+    /// Untertitel live messen: Video in Echtzeit durch Encoder (Spracherkennung) → SRT → Decoder
+    UntertitelLiveMessen {
+        #[arg(long)]
+        video: PathBuf,
+        /// Sprachbeginn je Äußerung (s) und Text, TAB-getrennt
+        #[arg(long)]
+        onsets: PathBuf,
+        #[arg(long)]
+        referenz: PathBuf,
+        #[arg(long)]
+        modell: PathBuf,
+        #[arg(long, default_value = "de")]
+        sprache: String,
+        /// ins Englische übersetzen
+        #[arg(long)]
+        uebersetzen: bool,
+        /// pop-on, roll-up2, roll-up3 …
+        #[arg(long, default_value = "roll-up2")]
+        modus: String,
+        #[arg(long, default_value_t = 3000)]
+        chunk: u32,
+    },
     /// Gefundene Encoder, Geräte und fehlende Bausteine anzeigen
     Info,
 }
@@ -156,6 +178,23 @@ fn main() -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&m)?);
             Ok(())
         }
+        Cmd::UntertitelLiveMessen { video, onsets, referenz, modell, sprache, uebersetzen, modus, chunk } => {
+            let mode: lz_streamer::config::CaptionMode = serde_json::from_value(serde_json::Value::String(modus))?;
+            let m = lz_streamer::caption_measure::LiveMeasure {
+                video,
+                onsets,
+                reference: referenz,
+                language: sprache,
+                model_path: modell.to_string_lossy().to_string(),
+                translate: uebersetzen,
+                mode,
+                chunk_ms: chunk,
+                work_dir: std::env::temp_dir(),
+            };
+            let r = lz_streamer::caption_measure::run(&m)?;
+            println!("{}", serde_json::to_string_pretty(&r)?);
+            Ok(())
+        }
         Cmd::Info => {
             let caps = Capabilities::probe();
             println!("{}", serde_json::to_string_pretty(&caps)?);
@@ -212,6 +251,10 @@ async fn serve(port: u16, bind: String, cfg_path: PathBuf, autostart: bool) -> R
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         }
     };
-    axum::serve(listener, server::router(app)).with_graceful_shutdown(shutdown).await?;
+    tokio::spawn(lz_streamer::renderer::osc_listener("127.0.0.1:4211".into(), sup.clone()));
+    tokio::spawn(lz_streamer::renderer::keep_running(sup.clone(), format!("ws://127.0.0.1:{port}/renderer")));
+    axum::serve(listener, server::router(app).into_make_service_with_connect_info::<std::net::SocketAddr>())
+        .with_graceful_shutdown(shutdown)
+        .await?;
     Ok(())
 }

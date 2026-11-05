@@ -43,6 +43,8 @@ pub struct AsrConfig {
     pub chunk_ms: u32,
     /// Namen, Fachbegriffe: erkannt → geschrieben
     pub replacements: Vec<Replacement>,
+    /// ins Englische übersetzen (Whisper-eigene Übersetzung)
+    pub translate: bool,
 }
 
 impl Default for AsrConfig {
@@ -52,8 +54,10 @@ impl Default for AsrConfig {
             model_path: String::new(),
             language: "de".into(),
             track: 0,
-            chunk_ms: 2000,
+            // gemessen am M1 Pro: 2 s schafft Whisper „small“ live nicht dauerhaft (Rückstau), 3 s schon
+            chunk_ms: 3000,
             replacements: Vec::new(),
+            translate: false,
         }
     }
 }
@@ -157,6 +161,99 @@ pub struct AsrStatus {
 /// Erkannter Text mit Verzug, an den Kanal weitergereicht.
 pub type TextSink = Arc<dyn Fn(String) + Send + Sync>;
 
+/// Whisper liefert Wort für Wort. Für CEA-608 (32 Zeichen je Zeile) werden
+/// daraus Zeilen: Schluss bei Satzende, bei 32 Zeichen oder nach einer Pause.
+#[derive(Default)]
+pub struct Phraser {
+    /// innerhalb von [ … ] oder ( … ): Geräuschbeschreibung, nicht anzeigen
+    bracket: i32,
+    words: Vec<String>,
+    first_pts: Option<u64>,
+    last_end: Option<u64>,
+    last_word_at: Option<Instant>,
+}
+
+/// Fertige Zeile: Text, Zeitstempel des ersten Wortes (ns, Laufzeit der Pipeline), Ausgabezeitpunkt.
+#[derive(Debug, Clone)]
+pub struct Phrase {
+    pub text: String,
+    pub first_word_ns: Option<u64>,
+    pub at: Instant,
+}
+
+pub const LINE_CHARS: usize = 32;
+
+impl Phraser {
+    fn take(&mut self) -> Option<Phrase> {
+        if self.words.is_empty() {
+            return None;
+        }
+        let text = self.words.join(" ").trim().to_string();
+        self.words.clear();
+        let first = self.first_pts.take();
+        self.last_end = None;
+        Some(Phrase { text, first_word_ns: first, at: Instant::now() })
+    }
+
+    /// Wort hinzufügen; liefert ggf. abgeschlossene Zeilen (vorher und/oder jetzt).
+    pub fn push(&mut self, word: &str, pts: Option<u64>, end: Option<u64>) -> Vec<Phrase> {
+        let w = word.trim();
+        let mut out = Vec::new();
+        // Whisper schreibt Geräusche als [Musik], (Applaus), [BLANK_AUDIO] – weglassen
+        let opens = w.matches(['[', '(']).count() as i32;
+        let closes = w.matches([']', ')']).count() as i32;
+        let inside = self.bracket > 0 || opens > 0;
+        self.bracket = (self.bracket + opens - closes).max(0);
+        if w.is_empty() || inside || w.starts_with('*') {
+            return out;
+        }
+        let gap = matches!((self.last_end, pts), (Some(e), Some(p)) if p > e + 800_000_000);
+        let len = self.words.iter().map(|x| x.chars().count() + 1).sum::<usize>() + w.chars().count();
+        if gap || (len > LINE_CHARS && !self.words.is_empty()) {
+            out.extend(self.take());
+        }
+        if self.words.is_empty() {
+            self.first_pts = pts;
+        }
+        self.words.push(w.to_string());
+        self.last_end = end.or(pts);
+        self.last_word_at = Some(Instant::now());
+        if w.ends_with(['.', '?', '!', ':']) {
+            out.extend(self.take());
+        }
+        out
+    }
+
+    /// Ohne neue Wörter seit `idle`: offene Zeile ausgeben.
+    pub fn flush_idle(&mut self, idle: Duration) -> Option<Phrase> {
+        if self.last_word_at.is_some_and(|t| t.elapsed() >= idle) {
+            self.last_word_at = None;
+            return self.take();
+        }
+        None
+    }
+}
+
+fn emit_phrase(
+    mut ph: Phrase,
+    repl: &[Replacement],
+    main: &gst::Pipeline,
+    seg: &AtomicU64,
+    last: &Mutex<(Option<String>, Option<f64>)>,
+    on_text: &TextSink,
+    phrases: &Mutex<Vec<Phrase>>,
+) {
+    ph.text = apply_replacements(&ph.text, repl);
+    let delay = match (main.current_running_time(), ph.first_word_ns) {
+        (Some(now), Some(p)) => Some(now.nseconds().saturating_sub(p) as f64 / 1e6),
+        _ => None,
+    };
+    seg.fetch_add(1, Ordering::Relaxed);
+    *last.lock().unwrap() = (Some(ph.text.clone()), delay);
+    on_text(ph.text.clone());
+    phrases.lock().unwrap().push(ph);
+}
+
 pub struct AsrRunner {
     cfg: AsrConfig,
     main: gst::Pipeline,
@@ -166,6 +263,9 @@ pub struct AsrRunner {
     segments: Arc<AtomicU64>,
     last: Arc<Mutex<(Option<String>, Option<f64>)>>,
     on_text: TextSink,
+    phraser: Arc<Mutex<Phraser>>,
+    /// alle ausgegebenen Zeilen (für Messungen)
+    pub phrases: Arc<Mutex<Vec<Phrase>>>,
     pub state: String,
 }
 
@@ -197,6 +297,8 @@ impl AsrRunner {
             segments: Arc::default(),
             last: Arc::default(),
             on_text,
+            phraser: Arc::default(),
+            phrases: Arc::default(),
             state: "startet".into(),
         }
     }
@@ -206,11 +308,11 @@ impl AsrRunner {
             "appsrc name=a is-live=true format=time do-timestamp=false \
              caps=audio/x-raw,format=F32LE,layout=interleaved,rate=16000,channels=1 \
              ! queue max-size-buffers=0 max-size-bytes=0 max-size-time=10000000000 \
-             ! whispertranscriber name=asr model-path={} model-preset={} chunk-duration={} live-edge-offset=500 latency=3000 \
+             ! whispertranscriber name=asr model-path={} model-preset={} chunk-duration={c} live-edge-offset=500 latency={c} \
              ! appsink name=t sync=false async=false",
             crate::pipeline::quote(&cfg.model_path),
             model_preset(&cfg.model),
-            cfg.chunk_ms.clamp(500, 10_000)
+            c = cfg.chunk_ms.clamp(500, 10_000)
         )
     }
 
@@ -225,6 +327,14 @@ impl AsrRunner {
         if let Some(asr) = p.by_name("asr") {
             if !self.cfg.language.trim().is_empty() && asr.find_property("language").is_some() {
                 asr.set_property("language", self.cfg.language.trim());
+            }
+            if self.cfg.translate {
+                asr.set_property("translate", true);
+            }
+            for p in ["suppress-nst", "suppress-blank"] {
+                if asr.find_property(p).is_some() {
+                    asr.set_property(p, true);
+                }
             }
             if asr.find_property("n-threads").is_some() {
                 let n = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).clamp(1, 8) as i32;
@@ -243,8 +353,15 @@ impl AsrRunner {
             s.set_max_bytes(16_000 * 4 * 20);
         }
         if let Some(sink) = p.by_name("t").and_then(|s| s.downcast::<gst_app::AppSink>().ok()) {
-            let (seg, last, on_text, repl, main) =
-                (self.segments.clone(), self.last.clone(), self.on_text.clone(), self.cfg.replacements.clone(), self.main.clone());
+            let (seg, last, on_text, repl, main, phraser, phrases) = (
+                self.segments.clone(),
+                self.last.clone(),
+                self.on_text.clone(),
+                self.cfg.replacements.clone(),
+                self.main.clone(),
+                self.phraser.clone(),
+                self.phrases.clone(),
+            );
             sink.set_callbacks(
                 gst_app::AppSinkCallbacks::builder()
                     .new_sample(move |s| {
@@ -255,14 +372,12 @@ impl AsrRunner {
                         if raw.is_empty() {
                             return Ok(gst::FlowSuccess::Ok);
                         }
-                        let text = apply_replacements(&raw, &repl);
-                        let delay = match (main.current_running_time(), buf.pts()) {
-                            (Some(now), Some(pts)) => Some(now.nseconds().saturating_sub(pts.nseconds()) as f64 / 1e6),
-                            _ => None,
-                        };
-                        seg.fetch_add(1, Ordering::Relaxed);
-                        *last.lock().unwrap() = (Some(text.clone()), delay);
-                        on_text(text);
+                        let pts = buf.pts().map(|p| p.nseconds());
+                        let end = buf.pts().zip(buf.duration()).map(|(p, d)| (p + d).nseconds());
+                        let done = phraser.lock().unwrap().push(&raw, pts, end);
+                        for ph in done {
+                            emit_phrase(ph, &repl, &main, &seg, &last, &on_text, &phrases);
+                        }
                         Ok(gst::FlowSuccess::Ok)
                     })
                     .build(),
@@ -287,11 +402,20 @@ impl AsrRunner {
     /// Bus prüfen, ggf. neu starten. Gibt Ereignistexte zurück.
     pub fn poll(&mut self) -> Vec<String> {
         let mut ev = Vec::new();
+        let idle = self.phraser.lock().unwrap().flush_idle(Duration::from_millis(1200));
+        if let Some(ph) = idle {
+            emit_phrase(ph, &self.cfg.replacements, &self.main, &self.segments, &self.last, &self.on_text, &self.phrases);
+        }
         if let Some(p) = self.pipeline.clone() {
             let bus = p.bus().unwrap();
             while let Some(msg) = bus.pop() {
                 if let gst::MessageView::Error(err) = msg.view() {
-                    let why = err.error().to_string();
+                    let why = format!(
+                        "{} ({}: {})",
+                        err.error(),
+                        msg.src().map(|s| s.name().to_string()).unwrap_or_default(),
+                        err.debug().unwrap_or_default().lines().last().unwrap_or_default()
+                    );
                     ev.push(format!("Spracherkennung abgebrochen: {why} – Kanal läuft weiter"));
                     self.fail(why);
                     return ev;
@@ -366,6 +490,8 @@ pub fn measure_file(audio: &std::path::Path, cfg: &AsrConfig, reference: Option<
         if !cfg.language.is_empty() {
             asr.set_property("language", cfg.language.as_str());
         }
+        let n = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).clamp(1, 8) as i32;
+        asr.set_property("n-threads", n);
     }
     let sink = p.by_name("t").unwrap().downcast::<gst_app::AppSink>().unwrap();
     p.set_state(gst::State::Playing)?;
@@ -421,6 +547,32 @@ mod tests {
         assert_eq!(apply_replacements("Willkommen bei LARS ZUMPE und srt-Technik", &list), "Willkommen bei Lars Zumpe und SRT-Technik");
         assert_eq!(apply_replacements("Ein Sortiment", &list), "Ein Sortiment", "nur ganze Wörter");
         assert_eq!(apply_replacements("Größe srt", &list), "Größe SRT");
+    }
+
+    #[test]
+    fn phraser_builds_608_lines() {
+        let mut p = Phraser::default();
+        let s = 1_000_000_000u64;
+        let mut lines = Vec::new();
+        for (i, w) in ["Guten", "Abend", "und", "herzlich", "willkommen", "zum", "Gottesdienst."].iter().enumerate() {
+            lines.extend(p.push(w, Some(i as u64 * s / 3), Some(i as u64 * s / 3 + s / 4)));
+        }
+        let texts: Vec<_> = lines.iter().map(|l| l.text.clone()).collect();
+        assert_eq!(texts, vec!["Guten Abend und herzlich", "willkommen zum Gottesdienst."]);
+        assert!(texts.iter().all(|t| t.chars().count() <= LINE_CHARS));
+        assert_eq!(lines[1].first_word_ns, Some(4 * s / 3));
+        // Pause > 0,8 s trennt
+        let l = p.push("Heute", Some(10 * s), Some(10 * s + s / 4));
+        assert!(l.is_empty());
+        let l = p.push("hören", Some(12 * s), None);
+        assert_eq!(l[0].text, "Heute");
+        // Geräusche in Klammern fallen weg, auch über mehrere Wörter
+        for w in ["[Musik]", "[", "Aufregende", "Musik", "]", "(Applaus)"] {
+            assert!(p.push(w, Some(13 * s), None).is_empty());
+        }
+        let l = p.push("Amen.", Some(13 * s), None);
+        let t: Vec<_> = l.iter().map(|x| x.text.as_str()).collect();
+        assert_eq!(t, vec!["hören", "Amen."], "Pause trennt, Klammern verschwinden");
     }
 
     #[test]

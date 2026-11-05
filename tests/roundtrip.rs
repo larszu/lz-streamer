@@ -3,6 +3,8 @@
 
 use std::time::{Duration, Instant};
 
+use gstreamer::prelude::*;
+
 use lz_streamer::channel::{Channel, ChannelOptions, ChannelStatus, ChildCmd, ChildMsg};
 use lz_streamer::config::{Codec, DecoderConfig, EncoderConfig, InputKind, OutputKind, SrtMode};
 use lz_streamer::latency::{self, free_port};
@@ -43,6 +45,7 @@ fn status(ch: &mut Channel) -> (ChannelStatus, Vec<String>) {
             ChildMsg::Status(s) => st = Some(s),
             ChildMsg::Event { text, .. } => ev.push(text),
             ChildMsg::Fatal { text } => panic!("Kanal gescheitert: {text}"),
+            ChildMsg::Caption { .. } => {}
         }
     }
     (st.unwrap(), ev)
@@ -508,9 +511,9 @@ fn speech_captions_with_whisper_model() {
     };
     let reference = "Guten Abend und herzlich willkommen zum Gottesdienst. Heute hören wir die Predigt über den barmherzigen Samariter. \
                      Bitte schalten Sie Ihre Mobiltelefone aus. Wir beginnen mit dem ersten Lied.";
-    let wav = std::env::temp_dir().join("lzs-asr-probe.aiff");
+    let wav = std::env::temp_dir().join("lzs-asr-probe.wav");
     if !wav.is_file() {
-        let ok = std::process::Command::new("say").args(["-v", "Anna", "-o"]).arg(&wav).arg(reference).status().map(|s| s.success()).unwrap_or(false);
+        let ok = std::process::Command::new("say").args(["-v", "Anna", "--file-format=WAVE", "--data-format=LEI16@16000", "-o"]).arg(&wav).arg(reference).status().map(|s| s.success()).unwrap_or(false);
         if !ok {
             eprintln!("keine Sprachausgabe – Test übersprungen");
             return;
@@ -538,4 +541,122 @@ fn speech_captions_with_whisper_model() {
         d.frames > before + 50 && e.captions.asr.as_ref().is_some_and(|a| a.state == "läuft")
     });
     assert!(d.frames > before && e.captions.asr.unwrap().state == "läuft");
+}
+
+/// Grafik einbrennen: ein „Renderer“ schickt ein BGRA-Bild mit weißem Balken
+/// auf den Bild-Port, der Decoder sieht das Bild heller. Fällt der Renderer
+/// weg, läuft das Bild ohne Grafik weiter.
+#[test]
+fn graphics_burn_in_and_renderer_loss() {
+    use lz_streamer::config::BurnTarget;
+    use std::io::Write;
+    init();
+    let port = free_port();
+    let gport = {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        l.local_addr().unwrap().port()
+    };
+    let mut cfg = encoder_cfg(port, SrtMode::Listener);
+    cfg.graphics.burn = BurnTarget::All;
+    cfg.graphics.frame_port = gport;
+    let mut enc = Channel::start_encoder(&cfg, &[], &ChannelOptions::default()).unwrap();
+    if let Some(src) = enc.pipeline().by_name("testsrc") {
+        src.set_property_from_str("pattern", "black");
+    }
+    let mut dec = Channel::start_decoder(&decoder_cfg(port, SrtMode::Caller), &ChannelOptions::default()).unwrap();
+    let (_, d) = run_until(&mut enc, &mut dec, Duration::from_secs(10), |_, d| d.frames >= 25 && d.luma.is_some_and(|l| l < 40.0));
+    let dark = d.luma.unwrap();
+
+    // Renderer: untere Hälfte weiß, deckend
+    let (w, h) = (cfg.video.width as usize, cfg.video.height as usize);
+    let mut frame = vec![0u8; w * h * 4];
+    for y in h / 2..h {
+        for x in 0..w {
+            frame[(y * w + x) * 4..(y * w + x) * 4 + 4].copy_from_slice(&[255, 255, 255, 255]);
+        }
+    }
+    let mut sock = std::net::TcpStream::connect(("127.0.0.1", gport)).unwrap();
+    sock.write_all(&frame).unwrap();
+    let (e, d) = run_until(&mut enc, &mut dec, Duration::from_secs(10), |e, d| {
+        e.graphics.as_ref().is_some_and(|g| g.graphic_visible) && d.luma.is_some_and(|l| l > dark + 40.0)
+    });
+    assert!(e.graphics.unwrap().renderer_connected);
+    let bright = d.luma.unwrap();
+    assert!(e.fps > 20.0, "Bildrate mit Grafik: {}", e.fps);
+
+    // Renderer stürzt ab: Verbindung weg → Grafik weg, Bild läuft weiter
+    drop(sock);
+    let (e, d) = run_until(&mut enc, &mut dec, Duration::from_secs(10), |e, d| {
+        e.graphics.as_ref().is_some_and(|g| !g.renderer_connected && !g.graphic_visible) && d.luma.is_some_and(|l| l < dark + 10.0)
+    });
+    let before = d.frames;
+    let (_, d) = run_until(&mut enc, &mut dec, Duration::from_secs(5), |_, d| d.frames > before + 25);
+    eprintln!("Luma dunkel {dark:.0}, mit Grafik {bright:.0}, nach Absturz {:.0}; Encoder {:.1} fps", d.luma.unwrap(), e.fps);
+}
+
+/// Ohne Renderer: Untertiteltext erscheint als Rückfall-Einblendung im Bild.
+#[test]
+fn caption_text_fallback_burned_without_renderer() {
+    use lz_streamer::config::{BurnTarget, CaptionSource};
+    init();
+    let port = free_port();
+    let mut cfg = encoder_cfg(port, SrtMode::Listener);
+    cfg.graphics.burn = BurnTarget::All;
+    cfg.graphics.frame_port = 0;
+    cfg.captions.source = CaptionSource::Live;
+    let mut enc = Channel::start_encoder(&cfg, &[], &ChannelOptions::default()).unwrap();
+    if let Some(src) = enc.pipeline().by_name("testsrc") {
+        src.set_property_from_str("pattern", "black");
+    }
+    let mut dec = Channel::start_decoder(&decoder_cfg(port, SrtMode::Caller), &ChannelOptions::default()).unwrap();
+    let (_, d) = run_until(&mut enc, &mut dec, Duration::from_secs(10), |_, d| d.frames >= 25 && d.luma.is_some_and(|l| l < 40.0));
+    let dark = d.luma.unwrap();
+    enc.command(&ChildCmd::Caption { text: "WWWWWWWWWWWWWWWWWWWWWWWW".into() });
+    let (e, d) = run_until(&mut enc, &mut dec, Duration::from_secs(8), |e, d| {
+        eprintln!("gfx {:?} luma {:?}", e.graphics, d.luma);
+        e.graphics.as_ref().is_some_and(|g| g.text_fallback) && d.luma.is_some_and(|l| l > dark + 1.5)
+    });
+    eprintln!("Luma ohne Text {dark:.1}, mit Text {:.1}", d.luma.unwrap());
+    assert!(e.graphics.unwrap().text_fallback);
+}
+
+/// 1080p50 mit eingebrannter Grafik: keine Bildverluste (Encoder hält 50 fps).
+#[test]
+fn graphics_burn_in_1080p50_keeps_frame_rate() {
+    use lz_streamer::config::BurnTarget;
+    use std::io::Write;
+    init();
+    let port = free_port();
+    let gport = {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        l.local_addr().unwrap().port()
+    };
+    let mut cfg = encoder_cfg(port, SrtMode::Listener);
+    cfg.video.width = 1920;
+    cfg.video.height = 1080;
+    cfg.video.fps = 50;
+    cfg.video.bitrate_kbps = 8000;
+    cfg.graphics.burn = BurnTarget::All;
+    cfg.graphics.frame_port = gport;
+    let mut enc = Channel::start_encoder(&cfg, &[], &ChannelOptions::default()).unwrap();
+    let mut dec = Channel::start_decoder(&decoder_cfg(port, SrtMode::Caller), &ChannelOptions::default()).unwrap();
+    // Untertitelbalken unten (wie lz-captions): 1920×200 halbtransparent
+    let (w, h) = (1920usize, 1080usize);
+    let mut frame = vec![0u8; w * h * 4];
+    for y in 860..1060 {
+        for x in 160..1760 {
+            frame[(y * w + x) * 4..(y * w + x) * 4 + 4].copy_from_slice(&[40, 40, 40, 200]);
+        }
+    }
+    let mut sock = std::net::TcpStream::connect(("127.0.0.1", gport)).unwrap();
+    sock.write_all(&frame).unwrap();
+    run_until(&mut enc, &mut dec, Duration::from_secs(10), |e, d| e.graphics.as_ref().is_some_and(|g| g.graphic_visible) && d.frames > 50);
+    let f0 = status(&mut enc).0.frames;
+    let t0 = Instant::now();
+    std::thread::sleep(Duration::from_secs(4));
+    let (e, _) = status(&mut enc);
+    let fps = (e.frames - f0) as f64 / t0.elapsed().as_secs_f64();
+    eprintln!("1080p50 mit Grafik: {fps:.1} fps");
+    assert!(fps >= 48.5, "Bildverlust: {fps:.1} fps");
+    drop(sock);
 }
