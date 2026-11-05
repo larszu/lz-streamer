@@ -552,10 +552,7 @@ fn graphics_burn_in_and_renderer_loss() {
     use std::io::Write;
     init();
     let port = free_port();
-    let gport = {
-        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        l.local_addr().unwrap().port()
-    };
+    let gport = free_gfx_ports();
     let mut cfg = encoder_cfg(port, SrtMode::Listener);
     cfg.graphics.burn = BurnTarget::All;
     cfg.graphics.frame_port = gport;
@@ -637,10 +634,7 @@ fn graphics_burn_in_1080p50_keeps_frame_rate() {
     use std::io::Write;
     init();
     let port = free_port();
-    let gport = {
-        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        l.local_addr().unwrap().port()
-    };
+    let gport = free_gfx_ports();
     let mut cfg = encoder_cfg(port, SrtMode::Listener);
     cfg.video.width = 1920;
     cfg.video.height = 1080;
@@ -759,13 +753,7 @@ fn second_graphics_layer_is_composited() {
     init();
     let port = free_port();
     // zwei aufeinanderfolgende freie Ports
-    let gport = (0..50)
-        .find_map(|_| {
-            let l = std::net::TcpListener::bind("127.0.0.1:0").ok()?;
-            let p = l.local_addr().ok()?.port();
-            std::net::TcpListener::bind(("127.0.0.1", p + 1)).ok().map(|_| p)
-        })
-        .unwrap();
+    let gport = free_gfx_ports();
     let mut cfg = encoder_cfg(port, SrtMode::Listener);
     cfg.graphics.burn = BurnTarget::All;
     cfg.graphics.frame_port = gport;
@@ -806,4 +794,18 @@ fn second_graphics_layer_is_composited() {
     });
     eprintln!("Luma dunkel {dark:.0}, Ebene 1 {one:.0}, beide {both:.0}, Ebene 2 weg {:.0}", d.luma.unwrap());
     drop(l1);
+}
+
+/// zwei aufeinanderfolgende freie Ports (Grafik-Ebene 1 und 2); pro Testlauf
+/// verschieden, damit parallel laufende Tests sich nicht in die Quere kommen
+fn free_gfx_ports() -> u16 {
+    use std::sync::atomic::{AtomicU16, Ordering};
+    static NEXT: AtomicU16 = AtomicU16::new(0);
+    let base = 20000 + (std::process::id() % 2000) as u16 * 10;
+    loop {
+        let p = base + NEXT.fetch_add(2, Ordering::Relaxed);
+        if std::net::TcpListener::bind(("127.0.0.1", p)).is_ok() && std::net::TcpListener::bind(("127.0.0.1", p + 1)).is_ok() {
+            return p;
+        }
+    }
 }

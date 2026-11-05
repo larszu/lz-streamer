@@ -114,7 +114,12 @@ pub struct Helper {
     stdin: ChildStdin,
     rx: Receiver<Vec<u8>>,
     latency: u32,
+    /// Antworten auf Blöcke, die schon im Bypass liefen (werden verworfen)
+    stale: usize,
 }
+
+/// so viele verspätete Blöcke (≈ 0,5 s bei 10 ms) duldet das Element, bevor es neu startet
+const MAX_STALE: usize = 50;
 
 impl Helper {
     fn spawn(path: &str, channels: usize) -> Option<Self> {
@@ -149,7 +154,7 @@ impl Helper {
             }
         });
         match lrx.recv_timeout(Duration::from_secs(20)) {
-            Ok(latency) => Some(Self { child, stdin, rx, latency }),
+            Ok(latency) => Some(Self { child, stdin, rx, latency, stale: 0 }),
             Err(_) => {
                 let _ = child.kill();
                 let _ = child.wait();
@@ -294,24 +299,47 @@ mod imp {
             let bytes = map.as_mut_slice();
             let ch = st.channels;
             let frames = bytes.len() / 4 / ch;
+            // Ergebnis: Some(true) verarbeitet, Some(false) verspätet (Bypass), None tot
             let ok = {
                 let h = st.helper.as_mut().unwrap();
                 let sent = h.stdin.write_all(&(frames as u32).to_le_bytes()).and_then(|_| h.stdin.write_all(bytes)).and_then(|_| h.stdin.flush());
                 // Zeitbudget: halbe Blockdauer, mindestens 5 ms
-                let budget = Duration::from_secs_f64((frames as f64 / RATE * 0.5).max(0.005));
-                match sent.ok().map(|_| h.rx.recv_timeout(budget)) {
-                    Some(Ok(out)) if out.len() == bytes.len() => {
-                        bytes.copy_from_slice(&out);
-                        true
+                let deadline = Instant::now() + Duration::from_secs_f64((frames as f64 / RATE * 0.5).max(0.005));
+                if sent.is_err() {
+                    None
+                } else {
+                    loop {
+                        match h.rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+                            // verspätete Antwort auf einen früheren Block: verwerfen
+                            Ok(_) if h.stale > 0 => h.stale -= 1,
+                            Ok(out) if out.len() == bytes.len() => {
+                                bytes.copy_from_slice(&out);
+                                break Some(true);
+                            }
+                            Ok(_) => break None,
+                            Err(RecvTimeoutError::Timeout) => {
+                                // Antwort kommt später; einmal langsam ist kein Absturz
+                                h.stale += 1;
+                                let exited = h.child.try_wait().ok().flatten().is_some();
+                                break if exited || h.stale > MAX_STALE { None } else { Some(false) };
+                            }
+                            Err(RecvTimeoutError::Disconnected) => break None,
+                        }
                     }
-                    Some(Err(RecvTimeoutError::Timeout)) => false,
-                    _ => false,
                 }
+            };
+            let ok = match ok {
+                Some(true) => true,
+                Some(false) => {
+                    st.bypassed_blocks += 1;
+                    return Ok(gst::FlowSuccess::Ok);
+                }
+                None => false,
             };
             if ok {
                 st.processed_blocks += 1;
             } else {
-                // Hilfsprozess hängt oder ist weg: Ton unverändert durchlassen, neu starten
+                // Hilfsprozess tot oder dauerhaft zu langsam: Ton unverändert durchlassen, neu starten
                 st.bypassed_blocks += 1;
                 if let Some(mut h) = st.helper.take() {
                     let _ = h.child.kill();

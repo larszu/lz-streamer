@@ -99,7 +99,9 @@ impl FrameReceiver {
     /// Größe muss dem Ausgabeformat entsprechen (so meldet es der Webserver
     /// dem Renderer).
     pub fn listen(ports: &[u16], width: u32, height: u32) -> std::io::Result<Self> {
-        let listeners = ports.iter().map(|p| TcpListener::bind(("127.0.0.1", *p))).collect::<std::io::Result<Vec<_>>>()?;
+        // Ebene 1 (Untertitel) ist Pflicht; ist ein weiterer Port belegt, fehlt nur diese Ebene
+        let mut listeners = vec![TcpListener::bind(("127.0.0.1", ports[0]))?];
+        listeners.extend(ports[1..].iter().map_while(|p| TcpListener::bind(("127.0.0.1", *p)).ok()));
         let ports = listeners.iter().map(|l| l.local_addr().map(|a| a.port())).collect::<std::io::Result<Vec<_>>>()?;
         let latest = Arc::new(Mutex::new(Latest { layers: vec![None; listeners.len()] }));
         let connected: Arc<Vec<AtomicBool>> = Arc::new(listeners.iter().map(|_| AtomicBool::new(false)).collect());

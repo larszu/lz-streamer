@@ -597,6 +597,9 @@ impl Channel {
             let gfx = match pipeline.by_name("gfx") {
                 Some(el) => match crate::gfx::FrameReceiver::listen(&cfg.graphics.layer_ports(), cfg.video.width, cfg.video.height) {
                     Ok(r) => {
+                        if r.ports.len() < cfg.graphics.layer_ports().len() {
+                            event(&events, "warn", format!("Grafik-Port {} für Ebene 2 belegt – nur Untertitel-Ebene", cfg.graphics.layer_ports()[1]));
+                        }
                         r.attach(&el);
                         if let Some(e2) = pipeline.by_name("gfx").filter(|e| e != &el) {
                             r.attach(&e2);
