@@ -59,7 +59,7 @@ function fillForm() {
 function applyVisibility() {
   for (const el of $$('[data-show-mode]')) {
     const [p, want] = el.dataset.showMode.split('=');
-    el.hidden = String(get(cfg, p)) !== want;
+    el.hidden = !want.split('|').includes(String(get(cfg, p)));
   }
   const role = cfg.role;
   $$('[data-role]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.role === role)));
@@ -197,7 +197,7 @@ function render(st) {
     peer.textContent = s.srt.connected ? (s.srt.peers > 1 ? `${s.srt.peers} Gegenstellen` : 'Gegenstelle verbunden') : 'Keine Gegenstelle';
   }
   const srt = role === 'encoder' ? st.config.encoder.srt : st.config.decoder.srt;
-  const target = srt.mode === 'caller' ? `${srt.host || '127.0.0.1'}:${srt.port}` : `Port ${srt.port}`;
+  const target = srt.mode !== 'listener' ? `${srt.host || '127.0.0.1'}:${srt.port}` : `Port ${srt.port}`;
   $('#stage-title').textContent = !running ? 'Bereit' : !s ? rt.phase.replace(/^./, c => c.toUpperCase()) : (role === 'encoder' ? 'Sendet' : 'Empfängt');
   $('#stage-sub').textContent = !running
     ? (role === 'encoder' ? `${st.detected_input} → SRT ${srt.mode === 'caller' ? 'an ' + target : 'wartet auf ' + target}` : `SRT ${srt.mode === 'caller' ? 'von ' + target : 'wartet auf ' + target}`)
@@ -281,6 +281,7 @@ function esc(s) { return String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<':
 async function poll() {
   try {
     const r = await fetch('/api/state');
+    if (r.status === 401) { showLogin(); return; }
     render(await r.json());
   } catch {
     $('#stage-title').textContent = 'Keine Verbindung';
@@ -289,3 +290,264 @@ async function poll() {
 }
 poll();
 setInterval(poll, 1000);
+
+// ================================================================ Listen-Editoren
+function rowEditor(host, items, fields, onChange, removeLabel) {
+  host.innerHTML = '';
+  items.forEach((item, i) => {
+    const row = document.createElement('div');
+    row.className = 'edit-row';
+    for (const f of fields) {
+      if (f.show && !f.show(item)) continue;
+      const lab = document.createElement('label');
+      lab.className = f.type === 'check' ? 'switch' : 'field';
+      let el;
+      if (f.type === 'select') {
+        el = document.createElement('select');
+        for (const [v, t] of f.options) el.add(new Option(t, v));
+        el.value = String(f.get ? f.get(item) : item[f.key]);
+      } else if (f.type === 'check') {
+        el = document.createElement('input'); el.type = 'checkbox';
+        el.checked = !!item[f.key];
+      } else if (f.type === 'days') {
+        el = document.createElement('div'); el.className = 'days';
+        ['Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa', 'So'].forEach((d, k) => {
+          const b = document.createElement('button'); b.type = 'button'; b.textContent = d;
+          b.setAttribute('aria-pressed', String(item.days.includes(k + 1)));
+          b.onclick = () => {
+            item.days = item.days.includes(k + 1) ? item.days.filter(x => x !== k + 1) : [...item.days, k + 1].sort();
+            b.setAttribute('aria-pressed', String(item.days.includes(k + 1)));
+            onChange();
+          };
+          el.append(b);
+        });
+      } else {
+        el = document.createElement('input');
+        el.value = f.get ? f.get(item) : (item[f.key] ?? '');
+        if (f.placeholder) el.placeholder = f.placeholder;
+        if (f.type === 'password') el.type = 'password';
+      }
+      if (f.type !== 'days') {
+        el.className = f.type === 'check' ? '' : 'input';
+        const ev = f.type === 'select' || f.type === 'check' ? 'change' : 'input';
+        el.addEventListener(ev, () => {
+          const raw = f.type === 'check' ? el.checked : el.value;
+          if (f.set) f.set(item, raw); else item[f.key] = f.num ? (parseFloat(String(raw).replace(',', '.')) || 0) : raw;
+          if (f.rerender) rowEditor(host, items, fields, onChange, removeLabel);
+          onChange();
+        });
+      }
+      if (f.type === 'check') { lab.append(el, ' ' + f.label); }
+      else { const sp = document.createElement('span'); sp.textContent = f.label; lab.append(sp, el); }
+      row.append(lab);
+    }
+    const del = document.createElement('button');
+    del.type = 'button'; del.className = 'btn btn--danger'; del.textContent = removeLabel;
+    del.onclick = () => { items.splice(i, 1); rowEditor(host, items, fields, onChange, removeLabel); onChange(); };
+    row.append(del);
+    host.append(row);
+  });
+}
+
+const trackFields = [
+  { key: 'name', label: 'Name' },
+  { key: 'language', label: 'Sprache', placeholder: 'deu' },
+  { key: 'layout', label: 'Format', type: 'select', options: [['stereo', 'Stereo'], ['mono', 'Mono']] },
+  { key: 'channels', label: 'Kanäle', get: t => t.channels.join(','), set: (t, v) => { t.channels = String(v).split(/[ ,;]+/).map(Number).filter(n => n > 0); } },
+  { key: 'gain_db', label: 'Pegel (dB)', num: true },
+  { key: 'bitrate_kbps', label: 'kbit/s', num: true },
+  { key: 'mute', label: 'Stumm', type: 'check' },
+];
+const outputFields = [
+  { key: 'enabled', label: 'An', type: 'check' },
+  { key: 'name', label: 'Name' },
+  { key: 'kind', label: 'Art', type: 'select', options: [['srt', 'SRT'], ['udp', 'UDP (TS)'], ['rtp', 'RTP (TS)']], rerender: true },
+  { key: 'mode', label: 'SRT-Modus', type: 'select', options: [['caller', 'An Ziel senden'], ['listener', 'Auf Gegenstelle warten']], show: o => o.kind === 'srt', get: o => o.srt.mode, set: (o, v) => { o.srt.mode = v; } },
+  { key: 'shost', label: 'Ziel', show: o => o.kind === 'srt', get: o => o.srt.host, set: (o, v) => { o.srt.host = v; } },
+  { key: 'sport', label: 'Port', show: o => o.kind === 'srt', get: o => o.srt.port, set: (o, v) => { o.srt.port = parseInt(v, 10) || 0; } },
+  { key: 'host', label: 'Ziel (auch Multicast)', show: o => o.kind !== 'srt' },
+  { key: 'port', label: 'Port', num: true, show: o => o.kind !== 'srt' },
+];
+function renderEditors() {
+  rowEditor($('#tracks'), cfg.encoder.audio.tracks, trackFields, () => changed('encoder.audio.tracks', cfg.encoder.audio.tracks), 'Entfernen');
+  rowEditor($('#outputs'), cfg.encoder.outputs, outputFields, () => changed('encoder.outputs', cfg.encoder.outputs), 'Entfernen');
+}
+$('#add-track').onclick = () => {
+  const n = cfg.encoder.audio.tracks.length;
+  cfg.encoder.audio.tracks.push({ name: `Ton ${n + 1}`, language: 'und', layout: 'stereo', channels: [2 * n + 1, 2 * n + 2], gain_db: 0, mute: false, bitrate_kbps: 192 });
+  renderEditors(); changed('encoder.audio.tracks', cfg.encoder.audio.tracks);
+};
+$('#add-output').onclick = () => {
+  cfg.encoder.outputs.push({ enabled: true, name: `Ausgang ${cfg.encoder.outputs.length + 2}`, kind: 'srt', srt: { mode: 'caller', host: '', port: 9001, latency_ms: 120, passphrase: '', streamid: '' }, host: '239.0.0.1', port: 5000, ttl: 16 });
+  renderEditors(); changed('encoder.outputs', cfg.encoder.outputs);
+};
+const _fillForm = fillForm;
+fillForm = function () { _fillForm(); if (!$('#tracks').contains(document.activeElement) && !$('#outputs').contains(document.activeElement)) renderEditors(); };
+
+// ================================================================ Ansichten
+let view = 'betrieb';
+$$('[data-view]').forEach(b => b.addEventListener('click', () => {
+  view = b.dataset.view;
+  $$('[data-view]').forEach(x => x.setAttribute('aria-pressed', String(x === b)));
+  $('#view-betrieb').hidden = view !== 'betrieb';
+  $('#view-verwaltung').hidden = view !== 'verwaltung';
+  $('#role-seg').hidden = view !== 'betrieb';
+  if (view === 'verwaltung') loadAdmin();
+}));
+
+async function api(method, url, body) {
+  const r = await fetch(url, { method, headers: body !== undefined ? { 'content-type': 'application/json' } : {}, body: body !== undefined ? JSON.stringify(body) : undefined });
+  if (r.status === 401) { showLogin(); throw new Error('login'); }
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) { toast(j.error || 'Fehlgeschlagen'); throw new Error(j.error); }
+  return j;
+}
+
+// ---------------- Anmeldung
+function showLogin() { const d = $('#login'); if (!d.open) d.showModal(); }
+$('#login-form').addEventListener('submit', async e => {
+  e.preventDefault();
+  const r = await fetch('/api/login', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: $('#l-name').value, password: $('#l-pw').value }) });
+  if (r.ok) { $('#login').close(); $('#l-err').textContent = ''; cfg = null; poll(); }
+  else $('#l-err').textContent = 'Name oder Passwort falsch.';
+});
+$('#logout').onclick = async () => { await fetch('/api/logout', { method: 'POST' }); location.reload(); };
+
+// ---------------- Verwaltung laden
+let settings = null;
+async function loadAdmin() {
+  try {
+    const [presets, s, recs, imgs, users, stats, me] = await Promise.all([
+      api('GET', '/api/presets'), api('GET', '/api/settings'), api('GET', '/api/recordings'),
+      api('GET', '/api/standby'), api('GET', '/api/users'), api('GET', '/api/stats?minutes=60'), api('GET', '/api/me')]);
+    settings = s;
+    $('#auto-delete').checked = !!s.delete_oldest_recordings;
+    renderPresets(presets); renderSchedule(presets); renderAlarmFields(); renderRecordings(recs);
+    renderStandby(imgs); renderUsers(users, me); renderChart(stats);
+  } catch {}
+}
+
+function renderPresets(list) {
+  $('#presets').innerHTML = list.map(p => `<li><span>${esc(p.name)} ${p.builtin ? '<small>Vorlage</small>' : ''}</span>
+    <button class="btn btn--soft" data-load="${esc(p.name)}">Laden</button>${p.builtin ? '' : `<button class="btn btn--danger" data-del="${esc(p.name)}">Löschen</button>`}</li>`).join('');
+  $$('#presets [data-load]').forEach(b => b.onclick = async () => {
+    await api('POST', `/api/presets/${encodeURIComponent(b.dataset.load)}/load`); cfg = null; toast(`Profil „${b.dataset.load}“ geladen`); poll();
+  });
+  $$('#presets [data-del]').forEach(b => b.onclick = async () => { await api('DELETE', `/api/presets/${encodeURIComponent(b.dataset.del)}`); loadAdmin(); });
+}
+$('#preset-save').onclick = async () => {
+  const name = $('#preset-name').value.trim(); if (!name) return;
+  await api('POST', '/api/presets', { name }); $('#preset-name').value = ''; toast('Profil gesichert'); loadAdmin();
+};
+
+let settingsTimer = 0;
+function saveSettings() { clearTimeout(settingsTimer); settingsTimer = setTimeout(() => api('PUT', '/api/settings', settings).then(() => toast('Gespeichert')), 500); }
+
+function renderSchedule(presets) {
+  const opts = [['', 'aktuelle Einstellungen'], ...presets.map(p => [p.name, p.name])];
+  rowEditor($('#schedule'), settings.schedule, [
+    { key: 'enabled', label: 'An', type: 'check' },
+    { key: 'name', label: 'Name' },
+    { key: 'days', label: 'Tage', type: 'days' },
+    { key: 'date', label: 'oder einmalig am', placeholder: 'JJJJ-MM-TT' },
+    { key: 'start', label: 'Start', placeholder: '09:00' },
+    { key: 'stop', label: 'Stopp', placeholder: '10:00' },
+    { key: 'preset', label: 'Profil', type: 'select', options: opts },
+  ], saveSettings, 'Entfernen');
+}
+$('#add-schedule').onclick = () => {
+  settings.schedule.push({ enabled: true, name: 'Sendung', date: '', days: [1, 2, 3, 4, 5], start: '09:00', stop: '10:00', preset: '' });
+  renderSchedule([]); saveSettings(); loadAdmin();
+};
+
+const alarmLabels = {
+  signal_loss_s: 'Kein Signal länger als (s)', no_peer_s: 'Keine Gegenstelle länger als (s)', min_bitrate_kbps: 'Bitrate unter (kbit/s)',
+  max_lost_per_min: 'Verluste je Minute über', max_restarts: 'Neustarts in 10 min ab', cpu_percent: 'CPU über (%)',
+  memory_percent: 'Speicher über (%)', disk_free_gb: 'Freier Platz unter (GB)'
+};
+function renderAlarmFields() {
+  const host = $('#alarm-fields'); host.innerHTML = '';
+  for (const [k, label] of Object.entries(alarmLabels)) {
+    const l = document.createElement('label'); l.className = 'field';
+    const i = document.createElement('input'); i.className = 'input'; i.inputMode = 'numeric'; i.value = settings.alarms[k];
+    i.oninput = () => { settings.alarms[k] = parseInt(i.value, 10) || 0; saveSettings(); };
+    const sp = document.createElement('span'); sp.textContent = label + ' (0 = aus)';
+    l.append(sp, i); host.append(l);
+  }
+}
+
+const bytes = n => n > 1e9 ? `${fmt.format(n / 1e9)} GB` : `${fmt.format(n / 1e6)} MB`;
+function renderRecordings(list) {
+  $('#recordings').innerHTML = list.length ? list.map(f => `<li><span>${esc(f.name)} <small>${bytes(f.bytes)} · ${new Date(f.modified_ms).toLocaleString('de-DE')}</small></span>
+    <a class="btn btn--soft" href="/api/recordings/${encodeURIComponent(f.name)}">Herunterladen</a><button class="btn btn--danger" data-del="${esc(f.name)}">Löschen</button></li>`).join('')
+    : '<li class="empty">Noch keine Aufnahmen. Einschalten unter Betrieb → Mehr Einstellungen → Aufnahme parallel.</li>';
+  $$('#recordings [data-del]').forEach(b => b.onclick = async () => { await api('DELETE', `/api/recordings/${encodeURIComponent(b.dataset.del)}`); loadAdmin(); });
+}
+
+function renderStandby(list) {
+  const cur = cfg?.encoder.standby.image_path || '';
+  $('#standby').innerHTML = list.map(f => `<figure><img src="/api/standby/${encodeURIComponent(f.name)}" alt="Standbild ${esc(f.name)}" loading="lazy">
+    <figcaption>${esc(f.name)}${cur.endsWith('/' + f.name) && cfg.encoder.standby.pattern === 'image' ? ' · aktiv' : ''}</figcaption>
+    <div class="actions"><button class="btn btn--soft" data-use="${esc(f.name)}">Verwenden</button><button class="btn btn--danger" data-del="${esc(f.name)}">Löschen</button></div></figure>`).join('')
+    || '<p class="hint">Noch keine eigenen Standbilder – bis dahin kommen Farbbalken.</p>';
+  $$('#standby [data-use]').forEach(b => b.onclick = async () => { await api('POST', `/api/standby/${encodeURIComponent(b.dataset.use)}/use`); cfg = null; toast('Standbild gesetzt'); await poll(); loadAdmin(); });
+  $$('#standby [data-del]').forEach(b => b.onclick = async () => { await api('DELETE', `/api/standby/${encodeURIComponent(b.dataset.del)}`); loadAdmin(); });
+}
+$('#standby-file').onchange = async e => {
+  const f = e.target.files[0]; if (!f) return;
+  const r = await fetch(`/api/standby?name=${encodeURIComponent(f.name)}`, { method: 'POST', body: f });
+  toast(r.ok ? 'Standbild hochgeladen' : 'Nur PNG oder JPEG'); e.target.value = ''; loadAdmin();
+};
+
+function renderUsers(list, me) {
+  $('#me').textContent = me.open ? 'offen, ohne Anmeldung' : me.name ? `angemeldet: ${me.name}` : '';
+  $('#logout').hidden = !me.name;
+  const roles = { admin: 'Verwalten', operator: 'Bedienen', observer: 'Ansehen' };
+  $('#users').innerHTML = list.length ? list.map(u => `<li><span>${esc(u.name)} <small>${roles[u.role]}</small></span><button class="btn btn--danger" data-del="${esc(u.name)}">Entfernen</button></li>`).join('')
+    : '<li class="empty">Keine Benutzer.</li>';
+  $$('#users [data-del]').forEach(b => b.onclick = async () => { await api('DELETE', `/api/users/${encodeURIComponent(b.dataset.del)}`); loadAdmin(); });
+}
+$('#u-add').onclick = async () => {
+  await api('POST', '/api/users', { name: $('#u-name').value, password: $('#u-pw').value, role: $('#u-role').value });
+  $('#u-pw').value = ''; toast('Benutzer angelegt'); loadAdmin();
+};
+
+function renderChart(points) {
+  if (points.length < 2) { $('#chart').innerHTML = '<p class="hint">Sammelt Werte, sobald der Dienst läuft (alle 5 s).</p>'; return; }
+  const W = 600, H = 140, P = 24;
+  const maxB = Math.max(1, ...points.map(p => p.bitrate_kbps));
+  const maxR = Math.max(1, ...points.map(p => p.rtt_ms || 0));
+  const x = i => P + (i / (points.length - 1)) * (W - 2 * P);
+  const path = (f, max) => points.map((p, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)},${(H - P - (f(p) / max) * (H - 2 * P)).toFixed(1)}`).join('');
+  $('#chart').innerHTML = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Bitrate und RTT der letzten Stunde">
+    <path class="line" d="${path(p => p.bitrate_kbps, maxB)}"/><path class="line2" d="${path(p => p.rtt_ms || 0, maxR)}"/>
+    <text class="axis" x="${P}" y="14">Bitrate bis ${fmt.format(maxB / 1000)} Mbit/s</text>
+    <text class="axis" x="${W - P}" y="14" text-anchor="end">RTT bis ${fmt.format(maxR)} ms</text></svg>`;
+}
+
+// ---------------- Laufend: Alarme, System, Tonspuren
+function renderOps(st) {
+  const al = st.alarms || [];
+  $('#alarm-banner').hidden = !al.length;
+  $('#alarm-banner').textContent = al.map(a => a.text).join(' · ');
+  $('#alarms').innerHTML = al.length ? al.map(a => `<li><span class="chip" data-s="${a.level === 'error' ? 'error' : 'warn'}">${esc(a.text)}</span><small>seit ${new Date(a.since_ms).toLocaleTimeString('de-DE')}</small></li>`).join('')
+    : '<li class="empty">Keine Alarme.</li>';
+  const s = st.system || {};
+  $('#system').innerHTML = [
+    tile('CPU', fmt0.format(s.cpu_percent || 0), '%', s.cpu_percent > 90 ? 'warn' : ''),
+    tile('Arbeitsspeicher', fmt0.format(s.memory_percent || 0), '%'),
+    tile('Frei für Aufnahmen', fmt.format(s.disk_free_gb || 0), 'GB'),
+    tile('Rechner', esc(s.hostname || dash)),
+    tile('Läuft seit', dur(s.uptime_s)),
+  ].join('');
+  $('#rec-free').textContent = s.disk_free_gb ? `${fmt.format(s.disk_free_gb)} GB frei` : '';
+  const tr = st.runtime.status?.audio_tracks || [];
+  $('#dec-tracks').textContent = st.config.role === 'decoder' && tr.length
+    ? 'Empfangene Spuren: ' + tr.map(t => `${t.index}: ${t.language || '?'}${t.selected ? ' (spielt)' : ''}`).join(' · ') : '';
+  const u = st.user;
+  if (!u.open && !u.name) showLogin();
+}
+const _render = render;
+render = function (st) { _render(st); renderOps(st); };
+
+$('#auto-delete').onchange = e => { settings.delete_oldest_recordings = e.target.checked; saveSettings(); };

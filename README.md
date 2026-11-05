@@ -9,7 +9,7 @@ Eigener Video-Encoder und -Decoder: **Eingang → Encoder → SRT** (dazu option
 - **Ein Kanal**, Rolle umschaltbar: *Senden* (Encoder) oder *Empfangen* (Decoder).
 - **Eingänge:** DeckLink/UltraStudio (SDI/HDMI, Format wird erkannt, Halbbilder werden aufgelöst) oder Testbild mit 1-kHz-Ton. „Automatisch“ nimmt das erste gefundene DeckLink-Gerät, sonst das Testbild – und sagt das in der Oberfläche.
 - **Encoder:** Hardware zuerst – Mac `vtenc_h264_hw`/`vtenc_h265_hw`, Linux NVENC, VA-API, Quick Sync –, sonst x264/x265. Lässt sich ein Hardware-Encoder laden, aber nicht öffnen, nimmt der Kanal von selbst den nächsten. Voreinstellung latenzarm: keine B-Frames, kein Lookahead, GOP 1 s, CBR, SPS/PPS vor jedem Keyframe.
-- **Formate:** 720p50 bis 2160p50, H.264 oder H.265. Ein HD-Eingang wird für UHD-Ausgänge mehrthreadig mit Lanczos hochskaliert (am M1 Pro 1080p50 → 2160p50 in Echtzeit).
+- **Formate:** 720p50 bis 2160p50, H.264 oder H.265. Ein HD-Eingang wird für UHD-Ausgänge mehrthreadig mit Lanczos (Hüllkurve 3) hochskaliert (am M1 Pro 1080p50 → 2160p50 in Echtzeit).
 - **SRT** als Caller („An Ziel senden“) oder Listener („Auf Gegenstelle warten“), Latenz, Passwort (AES), Stream-ID. Eine eingefügte Adresse `srt://host:port?mode=…` wird zerlegt.
 - **RTMP** zusätzlich (H.264 + AAC) in einer eigenen Teil-Pipeline: Bricht RTMP ab, versucht es nach 5 s erneut, SRT läuft unberührt weiter.
 - **Robust wie das Vorbild:**
@@ -17,6 +17,18 @@ Eigener Video-Encoder und -Decoder: **Eingang → Encoder → SRT** (dazu option
   - Der Kanal läuft als eigener Prozess. Ein Aufpasser startet ihn neu, wenn er abstürzt, sich 6 s nicht meldet oder 8 s keine Daten mehr ausgibt. Die Pause zwischen den Versuchen wächst von 1 s bis höchstens 10 s.
   - Endet der Aufpasser, beendet sich auch der Kanal. Es bleiben keine verwaisten Prozesse zurück.
 - **Live-Status:** Vorschaubild, Signal und Eingangsformat, Bitrate, SRT-RTT, Verluste und Wiederholungen, Encoder (Hardware/Software), Bilder/s, Laufzeit, Neustarts, Ereignisliste. Mit „Signalverlust testen“ lässt sich das Standbild ohne Kabelziehen ausprobieren.
+- **Ton wie im Broadcast:** Matrix vom Eingang (2/8/16 eingebettete SDI-Kanäle) auf bis zu 8 Tonspuren je Ausgang, Mono/Stereo/Downmix, Pegel, Stumm, Sprachkennung (ISO 639) im TS. Der Decoder wählt die Spur nach Sprache oder Nummer.
+- **Mehrere Ausgänge** aus demselben Strom: weitere SRT-Ziele (auch Rendezvous), TS über UDP/RTP (auch Multicast), dazu RTMP.
+- **Aufnahme parallel** zum Stream: TS oder fragmentiertes MP4, Segmente, alle Tonspuren. Aufnahmen-Liste mit Download; älteste löschen, wenn die Platte voll wird.
+- **Verwaltung:**
+  - Profile (mitgelieferte und eigene)
+  - Zeitplan: wöchentlich oder einmalig, mit Profilwahl
+  - Alarme mit Schwellen
+  - Standbilder hochladen
+  - Statistik über 24 h, Bericht als CSV
+  - Systemlast
+  - Benutzer mit Rollen (Verwalten/Bedienen/Ansehen)
+  - Beschnitt
 - **Keine Pflichtfelder:** Ein leerer Start ergibt einen SRT-Listener auf Port 9000 mit Testbild. Fehlt etwas, erscheint ein Hinweis, gesperrt wird nichts.
 
 ## Gemessen (MacBook Pro M1 Pro, 05.11.2026)
@@ -30,7 +42,14 @@ Eigener Video-Encoder und -Decoder: **Eingang → Encoder → SRT** (dazu option
 | H.265 VideoToolbox → avdec_h265 | 120 ms | 220 ms |
 | H.265 VideoToolbox → vtdec_hw (Voreinstellung für H.265) | 120 ms | 549 ms |
 
-`latenz` schlüsselt zusätzlich nach Stationen auf (Quelle, Encode, Parser+Mux, SRT+Demux+Decode, Ausgabe). Mit SRT 40 ms, Demux 0 und Reserve 20 sind es 134–155 ms; der größte vermeidbare Posten ist mit 37–51 ms die Wartezeit im `mpegtsmux`. Vergleich mit Lynx, AJA, Haivision und Matrox, Hardware-Empfehlung und Latenz-Rechenmodell: **[docs/vergleich-hardware-latenz.md](docs/vergleich-hardware-latenz.md)**.
+`latenz` schlüsselt zusätzlich nach Stationen auf (Quelle, Encode, Parser+Mux, SRT+Demux+Decode, Ausgabe). Mit SRT 40 ms, Demux 0 und Reserve 20 sind es 134–155 ms; der größte vermeidbare Posten ist mit 37–51 ms die Wartezeit im `mpegtsmux`. Weitere Dokumente:
+
+| Thema | Dokument |
+|---|---|
+| Vergleich mit Lynx, AJA, Haivision und Matrox, Hardware-Empfehlung, Latenz-Rechenmodell | [docs/vergleich-hardware-latenz.md](docs/vergleich-hardware-latenz.md) |
+| Funktionsparität mit dem Vorbild | [docs/funktionsparitaet-kb.md](docs/funktionsparitaet-kb.md) |
+| Messung des Hochskalierens (Zeit, Last, VMAF/PSNR) | [docs/skalierung.md](docs/skalierung.md) |
+| Hardware-Skalierer und Plattformen | [docs/recherche-hardware-scaler.md](docs/recherche-hardware-scaler.md) |
 
 Unterwegs gefunden und behoben:
 
@@ -67,8 +86,9 @@ cargo build --release
 cargo test
 ```
 
-- **30 Unit-Tests** prüfen Konfiguration, Zielzerlegung, Encoder-Auswahl und Voreinstellungen, Pipeline-Bau, SRT-Statistik und das Kindprozess-Protokoll.
-- **9 Integrationstests** laufen über echte SRT-Verbindungen auf 127.0.0.1:
+- **51 Unit-Tests** prüfen Konfiguration, Zielzerlegung, Encoder-Auswahl und Voreinstellungen, Pipeline-Bau, SRT-Statistik und das Kindprozess-Protokoll.
+- **4 API-Tests** (`tests/api.rs`): Anmeldung und Rollen, Profile, Standbilder, Zeitplan, Alarme, Aufnahmen, Bericht.
+- **13 Integrationstests** laufen über echte SRT-Verbindungen auf 127.0.0.1:
   - Listener → Caller, Caller → Listener
   - H.265 sowie x264 in Software
   - HD-Testbild auf UHD hochskaliert, als H.265 übertragen
@@ -76,6 +96,9 @@ cargo test
   - Latenzmessung
   - RTMP-Abbruch reißt SRT nicht mit (braucht `ffmpeg` als RTMP-Gegenstelle)
   - Kindprozess meldet Status und beendet sich ohne Elternprozess
+  - drei Tonspuren mit Sprache (de/en/fr) kommen am Decoder an, Sprachwahl greift
+  - Aufnahme als TS und MP4 mit allen Spuren (Prüfung mit ffprobe)
+  - zweiter SRT-Ausgang und UDP-Ausgang
 
 ## Aufbau
 
@@ -103,6 +126,12 @@ lz-streamer serve ── axum (REST + Weboberfläche, eingebettet) ── Aufpas
 | `POST /api/keyframe` | Keyframe erzwingen |
 | `POST /api/devices/refresh` | DeckLink-Geräte neu suchen |
 | `GET /api/preview.jpg` | Vorschaubild (2 fps) |
+| `GET/POST /api/presets`, `POST /api/presets/{name}/load`, `DELETE …` | Profile |
+| `GET/PUT /api/settings` | Zeitplan, Alarmschwellen, Aufnahmen automatisch löschen |
+| `GET /api/alarms` · `/api/stats?minutes=` · `/api/system` · `/api/report.csv` | Alarme, Verlauf, Systemlast, Bericht |
+| `GET/POST /api/standby`, `GET/DELETE /api/standby/{name}`, `POST …/use` | Standbilder |
+| `GET /api/recordings`, `GET/DELETE /api/recordings/{name}` | Aufnahmen |
+| `POST /api/login` · `/api/logout`, `GET /api/me`, `GET/POST /api/users`, `DELETE /api/users/{name}` | Anmeldung und Benutzer; ohne Benutzer bleibt die Oberfläche offen, der erste wird Administrator |
 
 ## Bezug zum Vorbild
 
@@ -140,4 +169,6 @@ Reihenfolge nach `haivision-kb-analyse/docs/nachbau-konzept.md` §5–§7:
 
 - **Echte Hardware ungeprüft:** Am UltraStudio Recorder 3G lief noch kein Test, das Gerät war beim Bau nicht angesteckt. Das betrifft den DeckLink-Ausgang des Decoders, NVENC und VA-API unter Linux.
 - **Umschaltlücke:** Zwischen Signalverlust und Standbild liegen `standby.timeout_ms` ohne neue Bilder (Voreinstellung 500 ms).
+- **H.265 mit `vtdec_hw`** hält rund 20 Bilder zurück (450 ms bei 50p, 826 ms bei 25p). Für H.265 bis 1080p ist `--decoder avdec_h265` die latenzarme Wahl (220 ms).
+- Offene Paritätspunkte mit Begründung: [docs/funktionsparitaet-kb.md](docs/funktionsparitaet-kb.md).
 - **UHD50 H.265** ist am M1 Pro Grenzlast: 4K-HEVC-Encode schafft dort ≈ 52 fps.

@@ -304,3 +304,31 @@ details.more > .form{padding-block-start:var(--space-2)}
   @keyframes appear{from{opacity:0;translate:0 6px}}
 }
 @media (forced-colors:active){.btn--primary,.chip,.tile{border:1px solid CanvasText}}
+
+/* Listen-Editoren, Verwaltung */
+.banner--warn{background:var(--warn-soft);color:var(--warn-text)}
+.list-edit{display:grid;gap:var(--space-2)}
+.edit-row{display:grid;gap:var(--space-2);grid-template-columns:repeat(auto-fit,minmax(min(100%,110px),1fr));align-items:end;
+  padding:var(--space-3);border-radius:var(--radius-m);background:var(--surface-2)}
+.edit-row .input{background:var(--surface-1)}
+.edit-row .btn{justify-self:start}
+.rows{list-style:none;margin:0 0 var(--space-3);padding:0;display:grid;gap:2px}
+.rows li{display:flex;align-items:center;gap:var(--space-3);min-block-size:var(--row-h);padding-inline:var(--space-2);border-radius:var(--radius-m);font:500 var(--fs-ui)/1.3 var(--font);flex-wrap:wrap}
+.rows li:hover{background:color-mix(in oklab,var(--state) var(--state-hover),transparent)}
+.rows li > span{margin-inline-end:auto;overflow-wrap:anywhere}
+.rows li small{color:var(--text-muted);font-weight:400}
+.rows li.empty{color:var(--text-muted)}
+.days{display:flex;gap:4px;flex-wrap:wrap}
+.days button{min-inline-size:36px;min-block-size:32px;border:0;border-radius:var(--radius-full);background:var(--surface-1);color:var(--text-muted);font:600 var(--fs-meta)/1 var(--font);cursor:pointer}
+.days button[aria-pressed="true"]{background:var(--accent);color:var(--accent-text)}
+.gallery{display:grid;gap:var(--space-3);grid-template-columns:repeat(auto-fill,minmax(140px,1fr));margin-block-end:var(--space-3)}
+.gallery figure{margin:0;display:grid;gap:var(--space-1)}
+.gallery img{inline-size:100%;aspect-ratio:16/9;object-fit:cover;border-radius:var(--radius-m);background:var(--night-0)}
+.gallery figcaption{font:500 var(--fs-meta)/1.3 var(--font);overflow-wrap:anywhere}
+.gallery .actions .btn{min-block-size:32px;padding-inline:var(--space-3)}
+.chart svg{inline-size:100%;block-size:140px;display:block}
+.chart .line{fill:none;stroke:var(--accent);stroke-width:2}
+.chart .line2{fill:none;stroke:var(--warn);stroke-width:1.5}
+.chart .axis{fill:var(--text-muted);font:500 11px var(--font)}
+.inline{align-items:end}
+dialog#login h2{margin-block-end:var(--space-2)}

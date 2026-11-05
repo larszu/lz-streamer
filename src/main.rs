@@ -1,5 +1,4 @@
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -63,6 +62,11 @@ enum Cmd {
         /// Reserve am Decoder-Ausgang in ms
         #[arg(long, default_value_t = 60)]
         reserve: u32,
+        /// Ausgabeformat, z. B. 3840x2160 (größer als HD: Testbild wird hochskaliert)
+        #[arg(long, default_value = "1280x720")]
+        format: String,
+        #[arg(long, default_value_t = 50)]
+        fps: u32,
     },
     /// Gefundene Encoder, Geräte und fehlende Bausteine anzeigen
     Info,
@@ -102,7 +106,7 @@ fn main() -> Result<()> {
             };
             std::process::exit(code);
         }
-        Cmd::Latenz { encoder, h265, srt_latency, runden, ohne_ton, decoder, demux, reserve } => {
+        Cmd::Latenz { encoder, h265, srt_latency, runden, ohne_ton, decoder, demux, reserve, format, fps } => {
             let opts = latency::MeasureOptions {
                 codec: if h265 { Codec::H265 } else { Codec::H264 },
                 encoder,
@@ -112,6 +116,9 @@ fn main() -> Result<()> {
                 decoder,
                 demux_latency_ms: demux,
                 output_buffer_ms: reserve,
+                width: format.split('x').next().and_then(|w| w.parse().ok()).unwrap_or(1280),
+                height: format.split('x').nth(1).and_then(|h| h.parse().ok()).unwrap_or(720),
+                fps,
                 ..Default::default()
             };
             let r = latency::measure(&opts)?;
@@ -143,7 +150,9 @@ fn main() -> Result<()> {
 async fn serve(port: u16, bind: String, cfg_path: PathBuf, autostart: bool) -> Result<()> {
     let cfg = load_config(&cfg_path);
     let run_dir = std::env::temp_dir().join(format!("lz-streamer-{port}"));
-    let sup = Supervisor::new(cfg, cfg_path.clone(), run_dir);
+    let data = lz_streamer::admin::DataDir::new(cfg_path.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| PathBuf::from(".")));
+    let sup = Supervisor::new(cfg, cfg_path.clone(), run_dir, data.recordings());
+    let ops = lz_streamer::ops::Ops::new(data);
     let caps = Capabilities::probe();
     for m in caps.missing() {
         tracing::warn!("{m}");
@@ -156,8 +165,10 @@ async fn serve(port: u16, bind: String, cfg_path: PathBuf, autostart: bool) -> R
             sup.log("ok", format!("Gefunden: {} ({}, Nr. {})", d.name, d.direction, d.device)).await;
         }
     }
-    let app = Arc::new(App { sup: sup.clone(), caps, devices: tokio::sync::RwLock::new(devices) });
+    let app = App::new(sup.clone(), ops.clone(), caps, devices);
     tokio::spawn(sup.clone().run());
+    tokio::spawn(ops.clone().monitor(sup.clone()));
+    tokio::spawn(ops.clone().scheduler(sup.clone()));
     if autostart {
         sup.start().await;
     }

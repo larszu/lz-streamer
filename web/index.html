@@ -12,7 +12,11 @@
 <body>
 <header class="top">
   <div class="brand" aria-label="lz streamer"><span>lz<span class="tally-dot logo" aria-hidden="true"></span></span><span class="word">streamer</span></div>
-  <div class="seg" role="group" aria-label="Rolle">
+  <div class="seg" role="group" aria-label="Ansicht" id="view-seg">
+    <button type="button" data-view="betrieb" aria-pressed="true">Betrieb</button>
+    <button type="button" data-view="verwaltung" aria-pressed="false">Verwaltung</button>
+  </div>
+  <div class="seg" role="group" aria-label="Rolle" id="role-seg">
     <button type="button" data-role="encoder" aria-pressed="true">Senden</button>
     <button type="button" data-role="decoder" aria-pressed="false">Empfangen</button>
   </div>
@@ -23,8 +27,9 @@
   </div>
 </header>
 
-<main>
+<main id="view-betrieb">
   <div class="banner" id="missing" hidden></div>
+  <div class="banner banner--warn" id="alarm-banner" hidden></div>
 
   <div class="col-a">
     <section class="card stage appear" style="--i:0" aria-labelledby="stage-title">
@@ -78,9 +83,10 @@
         <div class="seg" role="group" aria-label="SRT-Modus" data-seg="encoder.srt.mode">
           <button type="button" data-v="caller">An Ziel senden</button>
           <button type="button" data-v="listener">Auf Gegenstelle warten</button>
+          <button type="button" data-v="rendezvous" title="Beide Seiten rufen gleichzeitig an">Rendezvous</button>
         </div>
         <div class="row2">
-          <label class="field" data-show-mode="encoder.srt.mode=caller"><span>Zieladresse</span>
+          <label class="field" data-show-mode="encoder.srt.mode=caller|rendezvous"><span>Zieladresse</span>
             <input class="input" data-path="encoder.srt.host" placeholder="z. B. 192.0.2.20 oder srt://…" autocomplete="off" spellcheck="false"></label>
           <label class="field"><span>Port</span><input class="input" data-path="encoder.srt.port" data-num inputmode="numeric"></label>
         </div>
@@ -119,7 +125,30 @@
               <label class="field"><span>SRT-Passwort</span><input class="input" type="password" data-path="encoder.srt.passphrase" autocomplete="new-password" placeholder="leer = unverschlüsselt"></label>
               <label class="field"><span>Stream-ID</span><input class="input" data-path="encoder.srt.streamid" autocomplete="off"></label>
             </div>
-            <label class="switch"><input type="checkbox" data-path="encoder.audio.enabled"> Ton (AAC Stereo)</label>
+            <label class="switch"><input type="checkbox" data-path="encoder.audio.enabled"> Ton (AAC)</label>
+            <p class="group-title">Tonspuren</p>
+            <label class="field"><span>Kanäle am Eingang</span>
+              <select class="input" data-path="encoder.audio.input_channels" data-num><option value="2">2</option><option value="8">8</option><option value="16">16 (SDI eingebettet)</option></select></label>
+            <div class="list-edit" id="tracks"></div>
+            <button type="button" class="btn btn--soft" id="add-track">Tonspur hinzufügen</button>
+            <p class="hint">Kanäle 1-basiert. Mono mischt alle genannten Kanäle, Stereo nimmt sie paarweise (L,R,L,R). Sprache als ISO-Code (deu, eng, fra …).</p>
+            <p class="group-title">Weitere Ausgänge</p>
+            <div class="list-edit" id="outputs"></div>
+            <button type="button" class="btn btn--soft" id="add-output">Ausgang hinzufügen</button>
+            <p class="group-title">Aufnahme parallel</p>
+            <label class="switch"><input type="checkbox" data-path="encoder.record.enabled"> Mitschneiden, solange gesendet wird</label>
+            <div class="row2">
+              <label class="field"><span>Format</span><select class="input" data-path="encoder.record.container"><option value="ts">MPEG-TS</option><option value="mp4">MP4 (fragmentiert)</option></select></label>
+              <label class="field"><span>Neue Datei alle (min)</span><input class="input" data-path="encoder.record.segment_minutes" data-num inputmode="numeric"></label>
+            </div>
+            <label class="field"><span>Ordner (leer = Aufnahmeordner)</span><input class="input" data-path="encoder.record.dir" spellcheck="false"></label>
+            <p class="group-title">Beschnitt (Pixel am Eingang)</p>
+            <div class="row2">
+              <label class="field"><span>Oben</span><input class="input" data-path="encoder.input.crop.0" data-num inputmode="numeric"></label>
+              <label class="field"><span>Unten</span><input class="input" data-path="encoder.input.crop.1" data-num inputmode="numeric"></label>
+              <label class="field"><span>Links</span><input class="input" data-path="encoder.input.crop.2" data-num inputmode="numeric"></label>
+              <label class="field"><span>Rechts</span><input class="input" data-path="encoder.input.crop.3" data-num inputmode="numeric"></label>
+            </div>
             <p class="group-title">Bei Signalverlust</p>
             <div class="row2">
               <label class="field"><span>Standbild</span>
@@ -145,9 +174,10 @@
         <div class="seg" role="group" aria-label="SRT-Modus" data-seg="decoder.srt.mode">
           <button type="button" data-v="caller">Mit Encoder verbinden</button>
           <button type="button" data-v="listener">Auf Encoder warten</button>
+          <button type="button" data-v="rendezvous">Rendezvous</button>
         </div>
         <div class="row2">
-          <label class="field" data-show-mode="decoder.srt.mode=caller"><span>Encoder-Adresse</span>
+          <label class="field" data-show-mode="decoder.srt.mode=caller|rendezvous"><span>Encoder-Adresse</span>
             <input class="input" data-path="decoder.srt.host" placeholder="z. B. 192.0.2.10 oder srt://…" autocomplete="off" spellcheck="false"></label>
           <label class="field"><span>Port</span><input class="input" data-path="decoder.srt.port" data-num inputmode="numeric"></label>
         </div>
@@ -158,6 +188,11 @@
           <label class="field" data-show-mode="decoder.output=decklink"><span>Gerät</span><select class="input" data-path="decoder.device" data-num id="dec-device"></select></label>
         </div>
         <label class="switch"><input type="checkbox" data-path="decoder.audio"> Ton ausgeben</label>
+        <div class="row2">
+          <label class="field"><span>Sprache bevorzugen</span><input class="input" data-path="decoder.audio_language" placeholder="z. B. deu, eng"></label>
+          <label class="field"><span>sonst Spur Nr. (0 = erste)</span><input class="input" data-path="decoder.audio_track" data-num inputmode="numeric"></label>
+        </div>
+        <p class="hint" id="dec-tracks"></p>
         <details class="more">
           <summary>Mehr Einstellungen</summary>
           <div class="form">
@@ -182,6 +217,74 @@
     </section>
   </div>
 </main>
+
+<main id="view-verwaltung" hidden>
+  <div class="col-a">
+    <section class="card" aria-labelledby="pr-title">
+      <h2 id="pr-title">Profile</h2>
+      <ol class="rows" id="presets"></ol>
+      <div class="row2 inline">
+        <label class="field"><span>Aktuelle Einstellungen sichern als</span><input class="input" id="preset-name" placeholder="z. B. Gottesdienst"></label>
+        <button type="button" class="btn btn--soft" id="preset-save">Sichern</button>
+      </div>
+    </section>
+    <section class="card" aria-labelledby="sch-title">
+      <h2 id="sch-title">Zeitplan</h2>
+      <div class="list-edit" id="schedule"></div>
+      <button type="button" class="btn btn--soft" id="add-schedule">Termin hinzufügen</button>
+      <p class="hint">Startet und stoppt nur zu Beginn und Ende eines Termins; dazwischen bleibt Handbedienung möglich.</p>
+    </section>
+    <section class="card" aria-labelledby="st-title">
+      <h2 id="st-title">Statistik <small>letzte Stunde</small></h2>
+      <div id="chart" class="chart"></div>
+      <a class="btn btn--soft" href="/api/report.csv">Bericht herunterladen (CSV)</a>
+    </section>
+    <section class="card" aria-labelledby="rec-title">
+      <h2 id="rec-title">Aufnahmen <small id="rec-free"></small></h2>
+      <ol class="rows" id="recordings"></ol>
+      <label class="switch"><input type="checkbox" id="auto-delete"> Älteste Aufnahmen löschen, wenn der Platz unter die Alarmschwelle fällt</label>
+    </section>
+  </div>
+  <div class="col-b">
+    <section class="card" aria-labelledby="al-title">
+      <h2 id="al-title">Alarme</h2>
+      <ol class="rows" id="alarms"></ol>
+      <details class="more"><summary>Schwellen</summary>
+        <div class="form row2" id="alarm-fields"></div>
+      </details>
+    </section>
+    <section class="card" aria-labelledby="sb-title">
+      <h2 id="sb-title">Standbilder</h2>
+      <div class="gallery" id="standby"></div>
+      <label class="btn btn--soft">Bild hochladen (PNG/JPEG)<input type="file" accept="image/png,image/jpeg" id="standby-file" hidden></label>
+    </section>
+    <section class="card" aria-labelledby="sy-title">
+      <h2 id="sy-title">System</h2>
+      <div class="tiles" id="system"></div>
+    </section>
+    <section class="card" aria-labelledby="us-title">
+      <h2 id="us-title">Benutzer <small id="me"></small></h2>
+      <ol class="rows" id="users"></ol>
+      <div class="row2">
+        <label class="field"><span>Name</span><input class="input" id="u-name" autocomplete="off"></label>
+        <label class="field"><span>Passwort (ab 8 Zeichen)</span><input class="input" id="u-pw" type="password" autocomplete="new-password"></label>
+        <label class="field"><span>Rolle</span><select class="input" id="u-role"><option value="admin">Verwalten</option><option value="operator">Bedienen</option><option value="observer">Ansehen</option></select></label>
+      </div>
+      <div class="actions"><button type="button" class="btn btn--soft" id="u-add">Benutzer anlegen</button><button type="button" class="btn" id="logout" hidden>Abmelden</button></div>
+      <p class="hint">Solange kein Benutzer angelegt ist, ist die Oberfläche ohne Anmeldung offen. Der erste Benutzer wird Administrator.</p>
+    </section>
+  </div>
+</main>
+
+<dialog id="login" class="sheet">
+  <form method="dialog" class="form" id="login-form">
+    <h2>Anmelden</h2>
+    <label class="field"><span>Name</span><input class="input" id="l-name" autocomplete="username" required></label>
+    <label class="field"><span>Passwort</span><input class="input" id="l-pw" type="password" autocomplete="current-password" required></label>
+    <p class="hint" id="l-err"></p>
+    <button class="btn btn--primary" type="submit">Anmelden</button>
+  </form>
+</dialog>
 
 <output class="toast" id="toast" role="status" aria-live="polite"></output>
 <script src="/app.js"></script>

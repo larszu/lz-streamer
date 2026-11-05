@@ -39,8 +39,76 @@ pub struct ChannelStatus {
     pub input_format: Option<String>,
     pub srt: SrtSummary,
     pub rtmp: Option<String>,
+    /// weitere Ausgänge
+    pub outputs: Vec<OutputStatus>,
+    /// laufende Aufnahmedatei
+    pub recording: Option<String>,
+    pub audio_tracks: Vec<TrackInfo>,
     pub luma: Option<f64>,
     pub uptime_s: f64,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct OutputStatus {
+    pub name: String,
+    pub target: String,
+    pub connected: Option<bool>,
+    pub rtt_ms: Option<f64>,
+    pub lost: u64,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct TrackInfo {
+    pub index: u32,
+    pub language: Option<String>,
+    pub name: Option<String>,
+    pub selected: bool,
+    #[serde(skip)]
+    pub demux_pad: String,
+    #[serde(skip)]
+    pub sel_pad: String,
+}
+
+/// Tonspur wählen: gewünschte Sprache, sonst die n-te Spur mit Sprachkennung,
+/// sonst die n-te überhaupt.
+fn select_audio(asel: &gst::Element, list: &mut [TrackInfo], language: &str, index: u32) {
+    if list.is_empty() {
+        return;
+    }
+    let want = crate::audio::language_key(language);
+    let by_lang = (!language.trim().is_empty())
+        .then(|| list.iter().position(|t| t.language.as_deref().map(crate::audio::language_key).as_deref() == Some(want.as_str())))
+        .flatten();
+    let tagged: Vec<usize> = (0..list.len()).filter(|&i| list[i].language.is_some()).collect();
+    let pick = by_lang
+        .or_else(|| tagged.get(index as usize).copied())
+        .unwrap_or_else(|| (index as usize).min(list.len() - 1));
+    for (i, t) in list.iter_mut().enumerate() {
+        t.selected = i == pick;
+    }
+    if let Some(p) = asel.static_pad(&list[pick].sel_pad) {
+        if asel.property::<Option<gst::Pad>>("active-pad").as_ref() != Some(&p) {
+            asel.set_property("active-pad", &p);
+        }
+    }
+}
+
+fn output_target(o: &crate::config::ExtraOutput) -> String {
+    match o.kind {
+        crate::config::OutputType::Srt => o.srt.uri(),
+        crate::config::OutputType::Udp => format!("udp://{}:{}", o.host, o.port),
+        crate::config::OutputType::Rtp => format!("rtp://{}:{}", o.host, o.port),
+    }
+}
+
+/// Sprachkennung und Titel je Tonspur setzen (vor PLAYING).
+fn configure_audio(pipeline: &gst::Pipeline, cfg: &EncoderConfig) {
+    for (i, track) in crate::audio::effective_tracks(&cfg.audio.tracks).iter().enumerate() {
+        if let Some(t) = pipeline.by_name(&format!("atag{i}")) {
+            let title = track.name.replace('"', "'");
+            t.set_property("tags", format!("language-code={},title=\"{title}\"", track.language));
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -109,6 +177,9 @@ pub struct Channel {
     prev_connected: bool,
     rtmp: Option<RtmpSender>,
     stopped: bool,
+    recording: Option<String>,
+    outputs: Vec<(String, String, String)>,
+    tracks: Arc<Mutex<Vec<TrackInfo>>>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -268,13 +339,29 @@ impl Channel {
             event(&events, "warn", format!("Standbild {} nicht lesbar – nehme Farbbalken.", cfg.standby.image_path));
         }
         let rtmp = pipeline::rtmp_active(cfg) && caps::element_available("rtmp2sink");
+        let record_location = if cfg.record.enabled {
+            let dir = if cfg.record.dir.trim().is_empty() {
+                std::env::temp_dir().join("lz-streamer-aufnahmen")
+            } else {
+                PathBuf::from(cfg.record.dir.trim())
+            };
+            std::fs::create_dir_all(&dir).with_context(|| format!("Aufnahmeordner {} nicht anlegbar", dir.display()))?;
+            let ext = match cfg.record.container {
+                crate::config::RecordContainer::Ts => "ts",
+                crate::config::RecordContainer::Mp4 => "mp4",
+            };
+            let stamp = chrono::Local::now().format("%Y-%m-%d_%H-%M-%S");
+            Some(dir.join(format!("lz-{stamp}_%03d.{ext}")).to_string_lossy().to_string())
+        } else {
+            None
+        };
         if matches!(input, ResolvedInput::Test) && cfg.input.kind != crate::config::InputKind::Test {
             event(&events, "info", "Keine DeckLink/UltraStudio gefunden – sende Testbild.");
         }
 
         let mut last_err = anyhow!("kein Encoder versucht");
         for (i, enc) in candidates.iter().enumerate() {
-            let parts = EncoderParts { input: &input, encoder: enc.factory, aac, image_ok, rtmp };
+            let parts = EncoderParts { input: &input, encoder: enc.factory, aac, image_ok, rtmp, record: record_location.as_deref() };
             let desc = pipeline::encoder_description(cfg, &parts);
             tracing::debug!("Encoder-Pipeline: {desc}");
             let pipeline = gst::parse::launch(&desc)
@@ -311,6 +398,13 @@ impl Channel {
                 }
             }
             hook_preview(&pipeline, opts.preview_path.clone());
+            configure_audio(&pipeline, cfg);
+            if let Some(rec) = pipeline.by_name("rec") {
+                if cfg.record.container == crate::config::RecordContainer::Mp4 {
+                    // fragmentiert: Datei bleibt lesbar, auch wenn der Prozess hart endet
+                    rec.set_property("muxer-properties", gst::Structure::builder("p").field("fragment-duration", 1000u32).build());
+                }
+            }
             let rtmp_sender = rtmp.then(|| RtmpSender::new(&pipeline, &cfg.rtmp.url, cfg.audio.enabled && aac.is_some()));
 
             let e2 = encoded.clone();
@@ -339,6 +433,27 @@ impl Channel {
                         prev_connected: false,
                         rtmp: rtmp_sender,
                         stopped: false,
+                        recording: None,
+                        outputs: cfg
+                            .outputs
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, o)| o.enabled)
+                            .map(|(j, o)| (format!("out{j}"), o.name.clone(), output_target(o)))
+                            .collect(),
+                        tracks: Arc::new(Mutex::new(
+                            crate::audio::effective_tracks(&cfg.audio.tracks)
+                                .iter()
+                                .enumerate()
+                                .map(|(i, t)| TrackInfo {
+                                    index: i as u32,
+                                    language: Some(t.language.clone()),
+                                    name: Some(t.name.clone()),
+                                    selected: i == 0,
+                                    ..Default::default()
+                                })
+                                .collect(),
+                        )),
                     };
                     if let Some(r) = ch.rtmp.as_mut() {
                         r.start(&ch.events);
@@ -368,6 +483,7 @@ impl Channel {
         let events: Events = Arc::default();
         let counters: Arc<Counters> = Arc::default();
         let codec: Arc<Mutex<Option<Codec>>> = Arc::default();
+        let tracks: Arc<Mutex<Vec<TrackInfo>>> = Arc::default();
         let desc = format!(
             "srtsrc name=srtin uri={} latency={} ! queue max-size-buffers=0 max-size-bytes=0 max-size-time=2000000000 \
              ! tsdemux name=demux latency={}",
@@ -388,6 +504,7 @@ impl Channel {
         let demux = pipeline.by_name("demux").unwrap();
         let weak = pipeline.downgrade();
         let (c2, e2, k2, cfg2, prev) = (counters.clone(), events.clone(), codec.clone(), cfg.clone(), opts.preview_path.clone());
+        let t2 = tracks.clone();
         let ts_off = -(cfg.srt.latency_ms as i64) * 1_000_000;
         demux.connect_pad_added(move |_, pad| {
             let Some(pipeline) = weak.upgrade() else { return };
@@ -411,7 +528,66 @@ impl Channel {
                     event(&e2, "info", format!("Videostrom {name}, Decoder {dec}"));
                     pipeline::decoder_video_branch(codec, dec, cfg2.output, cfg2.device, &cfg2.deck_mode, ts_off)
                 }
-                "audio/mpeg" => pipeline::decoder_audio_branch(cfg2.output, cfg2.audio, cfg2.device, ts_off),
+                "audio/mpeg" => {
+                    // Alle Tonspuren auf einen Umschalter, ausgegeben wird eine.
+                    // So bleibt die Wahl live änderbar, und ein vom Demuxer
+                    // verworfenes Pad (Programmwechsel beim Einstieg) stört nicht.
+                    let asel = match pipeline.by_name("asel") {
+                        Some(a) => a,
+                        None => {
+                            let Ok(asel) = gst::ElementFactory::make("input-selector").name("asel").property("sync-streams", false).build() else { return };
+                            let branch = pipeline::decoder_audio_branch(cfg2.output, cfg2.audio, cfg2.device, ts_off);
+                            let Ok(bin) = gst::parse::bin_from_description(&branch, true) else { return };
+                            if pipeline.add_many([&asel, bin.upcast_ref()]).is_err() || asel.link(&bin).is_err() {
+                                event(&e2, "error", "Tonausgabe nicht baubar");
+                                return;
+                            }
+                            let _ = bin.sync_state_with_parent();
+                            let _ = asel.sync_state_with_parent();
+                            asel
+                        }
+                    };
+                    let Some(sel_pad) = asel.request_pad_simple("sink_%u") else { return };
+                    {
+                        let mut list = t2.lock().unwrap();
+                        let index = list.len() as u32;
+                        list.push(TrackInfo {
+                            index,
+                            demux_pad: pad.name().to_string(),
+                            sel_pad: sel_pad.name().to_string(),
+                            ..Default::default()
+                        });
+                    }
+                    // Sprachkennung kommt als Tag-Ereignis aus dem PMT-Deskriptor
+                    let (t3, a3, c3, dp) = (t2.clone(), asel.clone(), cfg2.clone(), pad.name().to_string());
+                    pad.add_probe(gst::PadProbeType::EVENT_DOWNSTREAM, move |_, info| {
+                        if let Some(gst::PadProbeData::Event(ev)) = &info.data {
+                            if let gst::EventView::Tag(tag) = ev.view() {
+                                let tags = tag.tag();
+                                let mut list = t3.lock().unwrap();
+                                if let Some(t) = list.iter_mut().find(|t| t.demux_pad == dp) {
+                                    if let Some(l) = tags.get::<gst::tags::LanguageCode>() {
+                                        t.language = Some(l.get().to_string());
+                                    }
+                                    if let Some(n) = tags.get::<gst::tags::Title>() {
+                                        t.name = Some(n.get().to_string());
+                                    }
+                                }
+                                select_audio(&a3, &mut list, &c3.audio_language, c3.audio_track);
+                            }
+                        }
+                        gst::PadProbeReturn::Ok
+                    });
+                    pad.add_probe(gst::PadProbeType::EVENT_DOWNSTREAM, |_, info| match &info.data {
+                        Some(gst::PadProbeData::Event(ev)) if ev.type_() == gst::EventType::Eos => gst::PadProbeReturn::Drop,
+                        _ => gst::PadProbeReturn::Ok,
+                    });
+                    if let Err(e) = pad.link(&sel_pad) {
+                        event(&e2, "error", format!("Tonspur nicht verknüpfbar: {e:?}"));
+                    }
+                    select_audio(&asel, &mut t2.lock().unwrap(), &cfg2.audio_language, cfg2.audio_track);
+                    return;
+                }
                 _ => "fakesink sync=false".to_string(),
             };
             let bin = match gst::parse::bin_from_description(&branch, true) {
@@ -449,6 +625,23 @@ impl Channel {
             }
         });
 
+        let (t4, c4, w4) = (tracks.clone(), cfg.clone(), pipeline.downgrade());
+        demux.connect_pad_removed(move |_, pad| {
+            let Some(pipeline) = w4.upgrade() else { return };
+            let Some(asel) = pipeline.by_name("asel") else { return };
+            let mut list = t4.lock().unwrap();
+            if let Some(pos) = list.iter().position(|t| t.demux_pad == pad.name().as_str()) {
+                let t = list.remove(pos);
+                if let Some(p) = asel.static_pad(&t.sel_pad) {
+                    asel.release_request_pad(&p);
+                }
+                for (i, t) in list.iter_mut().enumerate() {
+                    t.index = i as u32;
+                }
+                select_audio(&asel, &mut list, &c4.audio_language, c4.audio_track);
+            }
+        });
+
         // Ausgabepuffer: Demux-Puffer plus Reserve. Die SRT-Latenz ist hier
         // bewusst nicht enthalten (siehe ts-offset oben).
         pipeline.set_latency(gst::ClockTime::from_mseconds((cfg.demux_latency_ms + cfg.output_buffer_ms) as u64));
@@ -469,7 +662,25 @@ impl Channel {
             prev_connected: false,
             rtmp: None,
             stopped: false,
+            recording: None,
+            outputs: Vec::new(),
+            tracks,
         })
+    }
+
+    /// Neueste Datei zum Aufnahme-Muster (falls die Startmeldung beim
+    /// Hochfahren schon verbraucht wurde).
+    fn newest_recording(&self) -> Option<String> {
+        let pattern = self.pipeline.by_name("rec")?.property::<Option<String>>("location")?;
+        let path = PathBuf::from(&pattern);
+        let dir = path.parent()?;
+        let prefix = path.file_name()?.to_string_lossy().split('%').next()?.to_string();
+        std::fs::read_dir(dir)
+            .ok()?
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().starts_with(&prefix))
+            .max_by_key(|e| e.metadata().and_then(|m| m.modified()).ok())
+            .map(|e| e.path().to_string_lossy().to_string())
     }
 
     pub fn counters(&self) -> &Arc<Counters> {
@@ -507,6 +718,13 @@ impl Channel {
         if let Some(r) = self.rtmp.as_mut() {
             r.stop();
         }
+        if self.pipeline.by_name("rec").is_some() {
+            // Aufnahme sauber abschließen: EOS durch die Pipeline, dann erst stoppen
+            self.pipeline.send_event(gst::event::Eos::new());
+            if let Some(bus) = self.pipeline.bus() {
+                let _ = bus.timed_pop_filtered(gst::ClockTime::from_seconds(3), &[gst::MessageType::Eos, gst::MessageType::Error]);
+            }
+        }
         let _ = self.pipeline.set_state(gst::State::Null);
     }
 
@@ -527,6 +745,16 @@ impl Channel {
                     event(&self.events, "warn", format!("{src}: {}", w.error()));
                 }
                 gst::MessageView::Eos(_) => out.push(ChildMsg::Fatal { text: "Strom zu Ende (EOS)".into() }),
+                gst::MessageView::Element(e) => {
+                    if let Some(st) = e.structure() {
+                        if st.name() == "splitmuxsink-fragment-opened" {
+                            if let Ok(loc) = st.get::<String>("location") {
+                                event(&self.events, "info", format!("Aufnahme: {loc}"));
+                                self.recording = Some(loc);
+                            }
+                        }
+                    }
+                }
                 _ => {}
             }
         }
@@ -608,6 +836,26 @@ impl Channel {
             input_format,
             srt,
             rtmp: self.rtmp.as_ref().map(|r| r.state.clone()),
+            outputs: self
+                .outputs
+                .iter()
+                .map(|(el, name, target)| {
+                    let st = target
+                        .starts_with("srt://")
+                        .then(|| self.pipeline.by_name(el))
+                        .flatten()
+                        .map(|e| stats::read(&e));
+                    OutputStatus {
+                        name: name.clone(),
+                        target: target.clone(),
+                        connected: st.as_ref().map(|s| s.connected),
+                        rtt_ms: st.as_ref().and_then(|s| s.rtt_ms),
+                        lost: st.as_ref().map(|s| s.lost).unwrap_or(0),
+                    }
+                })
+                .collect(),
+            recording: self.recording.clone().or_else(|| self.newest_recording()),
+            audio_tracks: self.tracks.lock().unwrap().clone(),
             luma: self.counters.luma(),
             uptime_s: self.started.elapsed().as_secs_f64().round(),
         };

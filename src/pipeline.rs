@@ -7,7 +7,7 @@
 //! Standby ───────────────►        ▲ sink_1                 └► Vorschau (JPEG)        └► RTMP-Abgriff
 //! ```
 
-use crate::config::{Codec, EncoderConfig, OutputKind, ScaleQuality, StandbyPattern};
+use crate::config::{Codec, EncoderConfig, OutputKind, OutputType, RecordContainer, ScaleQuality, StandbyPattern};
 
 /// Eingang nach Auflösung von „Automatisch“.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -40,7 +40,6 @@ fn raw_caps(cfg: &EncoderConfig) -> String {
     )
 }
 
-const AUDIO_CAPS: &str = "audio/x-raw,format=S16LE,layout=interleaved,rate=48000,channels=2";
 
 fn threads() -> usize {
     std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).clamp(1, 8)
@@ -50,12 +49,14 @@ fn threads() -> usize {
 /// Mehrere Threads sind Pflicht: einthreadig schafft videoscale HD→UHD am
 /// M-Mac nur ≈ 25 fps, mit 8 Threads 50 fps auch mit Lanczos.
 pub fn scaler(cfg: &EncoderConfig) -> String {
+    // Lanczos mit Hüllkurve 3 statt 2: gemessen +0,3 dB PSNR-Y und +0,8 VMAF-NEG
+    // bei +1,8 ms je UHD-Bild (docs/skalierung.md)
     let method = match cfg.video.scale_quality {
-        ScaleQuality::Fast => "bilinear",
-        ScaleQuality::High => "lanczos",
+        ScaleQuality::Fast => "method=bilinear",
+        ScaleQuality::High => "method=lanczos envelope=3",
     };
     let n = threads();
-    format!("videoconvert n-threads={n} ! videoscale n-threads={n} method={method} add-borders=true")
+    format!("videoconvert n-threads={n} ! videoscale n-threads={n} {method} add-borders=true")
 }
 
 /// Das Testbild entsteht wie eine HD-Kamera höchstens in 1920×1080 und wird
@@ -66,13 +67,24 @@ pub fn test_source_size(cfg: &EncoderConfig) -> (u32, u32) {
     if v.width > 1920 || v.height > 1080 { (1920, 1080) } else { (v.width, v.height) }
 }
 
+/// `videocrop` für den Beschnitt, leer ohne Beschnitt.
+pub fn crop(cfg: &EncoderConfig) -> String {
+    let [t, b, l, r] = cfg.input.crop;
+    if t + b + l + r == 0 { String::new() } else { format!(" ! videocrop top={t} bottom={b} left={l} right={r}") }
+}
+
 pub fn primary_video(cfg: &EncoderConfig, input: &ResolvedInput) -> String {
     let caps = raw_caps(cfg);
+    let crop = crop(cfg);
     match input {
         ResolvedInput::Test => {
             let (w, h) = test_source_size(cfg);
             let src_caps = format!("video/x-raw,format=NV12,width={w},height={h},framerate={}/1,pixel-aspect-ratio=1/1", cfg.video.fps);
-            let scale = if (w, h) == (cfg.video.width, cfg.video.height) { String::new() } else { format!(" ! {}", scaler(cfg)) };
+            let scale = if (w, h) == (cfg.video.width, cfg.video.height) && crop.is_empty() {
+                String::new()
+            } else {
+                format!("{crop} ! {}", scaler(cfg))
+            };
             format!(
                 "videotestsrc name=testsrc is-live=true pattern=smpte ! {src_caps} \
                  ! timeoverlay halignment=right valignment=bottom font-desc={}{scale} ! {caps}",
@@ -81,7 +93,7 @@ pub fn primary_video(cfg: &EncoderConfig, input: &ResolvedInput) -> String {
         }
         ResolvedInput::Decklink { device, connection } => format!(
             "decklinkvideosrc name=capsrc device-number={device} connection={connection} mode=auto \
-             drop-no-signal-frames=true ! deinterlace ! {} \
+             drop-no-signal-frames=true ! deinterlace{crop} ! {} \
              ! videorate max-duplication-time=100000000 ! {caps}",
             scaler(cfg)
         ),
@@ -115,14 +127,23 @@ pub fn standby_video(cfg: &EncoderConfig, image_ok: bool) -> String {
     }
 }
 
-pub fn primary_audio(input: &ResolvedInput) -> String {
+/// Roh-Ton am Umschalter: N Kanäle ohne Positionen (wie eingebettetes SDI-Audio).
+pub fn audio_caps(n: u32) -> String {
+    format!("audio/x-raw,format=F32LE,layout=interleaved,rate=48000,channels={n},channel-mask=(bitmask)0x0")
+}
+
+pub fn primary_audio(input: &ResolvedInput, n: u32) -> String {
+    let caps = audio_caps(n);
     match input {
-        // 1 kHz bei -20 dBFS, der übliche Messton
+        // 1 kHz bei -20 dBFS, der übliche Messton, auf allen Kanälen
         ResolvedInput::Test => format!(
-            "audiotestsrc name=testasrc is-live=true wave=sine freq=1000 volume=0.1 ! audioconvert ! audioresample ! {AUDIO_CAPS}"
+            "audiotestsrc name=testasrc is-live=true wave=sine freq=1000 volume=0.1 \
+             ! audio/x-raw,format=F32LE,layout=interleaved,rate=48000,channels=1 \
+             ! audioconvert mix-matrix={} ! {caps}",
+            crate::audio::matrix_string(&vec![vec![1.0f32]; n as usize])
         ),
         ResolvedInput::Decklink { device, .. } => format!(
-            "decklinkaudiosrc name=capasrc device-number={device} ! audioconvert ! audioresample ! {AUDIO_CAPS}"
+            "decklinkaudiosrc name=capasrc device-number={device} channels={n} ! audioconvert ! audioresample ! {caps}"
         ),
     }
 }
@@ -133,6 +154,8 @@ pub struct EncoderParts<'a> {
     pub aac: Option<&'a str>,
     pub image_ok: bool,
     pub rtmp: bool,
+    /// Aufnahme-Dateimuster (splitmuxsink-`location`), wenn aufgenommen wird
+    pub record: Option<&'a str>,
 }
 
 pub fn rtmp_active(cfg: &EncoderConfig) -> bool {
@@ -173,30 +196,77 @@ pub fn encoder_description(cfg: &EncoderConfig, parts: &EncoderParts) -> String 
     d.push(format!("{} ! valve name=sigv drop=false ! vsw.sink_0", primary_video(cfg, parts.input)));
     d.push(format!("{} ! vsw.sink_1", standby_video(cfg, parts.image_ok)));
 
+    let tracks = crate::audio::effective_tracks(&cfg.audio.tracks);
     if let (true, Some(aac)) = (cfg.audio.enabled, parts.aac) {
-        d.push(format!(
-            "fallbackswitch name=asw timeout={timeout_ns} immediate-fallback=true ! audioconvert ! {aac} name=aenc \
-             bitrate={} ! aacparse ! tee name=ae",
-            cfg.audio.bitrate_kbps * 1000
-        ));
-        d.push("ae. ! queue max-size-buffers=0 max-size-bytes=0 max-size-time=2000000000 ! mux.".into());
-        if parts.rtmp {
-            d.push(
-                "ae. ! queue leaky=downstream max-size-buffers=200 max-size-bytes=0 max-size-time=0 \
-                 ! appsink name=rtmp_a sync=false async=false max-buffers=200 drop=true"
-                    .into(),
-            );
+        let n = cfg.audio.input_channels;
+        d.push(format!("fallbackswitch name=asw timeout={timeout_ns} immediate-fallback=true ! tee name=ain allow-not-linked=true"));
+        for (i, t) in tracks.iter().enumerate() {
+            let k = t.layout.channels();
+            let out_caps = if k == 2 { "audio/x-raw,channels=2,channel-mask=(bitmask)0x3" } else { "audio/x-raw,channels=1" };
+            let mix = crate::audio::matrix_string(&crate::audio::matrix(t, n as usize));
+            d.push(format!(
+                "ain. ! queue max-size-buffers=0 max-size-bytes=0 max-size-time=1000000000 \
+                 ! audioconvert name=amx{i} mix-matrix={mix} ! {out_caps} \
+                 ! volume name=avol{i} volume={:.4} mute={} ! audioconvert ! {aac} name=aenc{i} bitrate={} \
+                 ! aacparse ! taginject name=atag{i} ! tee name=ae{i}",
+                crate::audio::db_to_linear(t.gain_db),
+                t.mute,
+                t.bitrate_kbps.clamp(32, 512) * 1000
+            ));
+            d.push(format!("ae{i}. ! queue max-size-buffers=0 max-size-bytes=0 max-size-time=2000000000 ! mux."));
+            if parts.rtmp && i == 0 {
+                d.push(
+                    "ae0. ! queue leaky=downstream max-size-buffers=200 max-size-bytes=0 max-size-time=0 \
+                     ! appsink name=rtmp_a sync=false async=false max-buffers=200 drop=true"
+                        .into(),
+                );
+            }
+            if parts.record.is_some() {
+                d.push(format!("ae{i}. ! queue max-size-buffers=0 max-size-bytes=0 max-size-time=2000000000 ! rec.audio_{i}"));
+            }
         }
-        d.push(format!("{} ! valve name=siga drop=false ! asw.sink_0", primary_audio(parts.input)));
-        d.push(format!("audiotestsrc is-live=true wave=silence ! {AUDIO_CAPS} ! asw.sink_1"));
+        d.push(format!("{} ! valve name=siga drop=false ! asw.sink_0", primary_audio(parts.input, n)));
+        d.push(format!("audiotestsrc is-live=true wave=silence ! {} ! asw.sink_1", audio_caps(n)));
+    }
+
+    if let Some(location) = parts.record {
+        // eigener Parser: MP4 braucht avc-Format, der TS-Weg liefert byte-stream
+        d.push(format!("ve. ! queue max-size-buffers=0 max-size-bytes=0 max-size-time=2000000000 ! {parser} ! rec.video"));
+        let muxer = match cfg.record.container {
+            RecordContainer::Ts => "mpegtsmux",
+            RecordContainer::Mp4 => "mp4mux",
+        };
+        let seg = cfg.record.segment_minutes as u64 * 60_000_000_000;
+        d.push(format!(
+            "splitmuxsink name=rec location={} muxer-factory={muxer} max-size-time={seg} async-handling=true",
+            quote(location)
+        ));
     }
 
     d.push(format!(
-        "mpegtsmux name=mux alignment=7 pcr-interval=3600 ! srtsink name=srtout uri={} latency={} \
+        "mpegtsmux name=mux alignment=7 pcr-interval=3600 ! tee name=tsout allow-not-linked=true \
+         tsout. ! queue max-size-buffers=0 max-size-bytes=0 max-size-time=1000000000 ! srtsink name=srtout uri={} latency={} \
          wait-for-connection=false async=false sync=false",
         quote(&cfg.srt.uri()),
         cfg.srt.latency_ms
     ));
+    for (j, o) in cfg.outputs.iter().enumerate().filter(|(_, o)| o.enabled) {
+        let q = "tsout. ! queue leaky=downstream max-size-buffers=0 max-size-bytes=0 max-size-time=1000000000";
+        d.push(match o.kind {
+            OutputType::Srt => format!(
+                "{q} ! srtsink name=out{j} uri={} latency={} wait-for-connection=false async=false sync=false",
+                quote(&o.srt.uri()),
+                o.srt.latency_ms
+            ),
+            OutputType::Udp => format!("{q} ! udpsink name=out{j} host={} port={} ttl-mc={} sync=false async=false", quote(&o.host), o.port, o.ttl),
+            OutputType::Rtp => format!(
+                "{q} ! rtpmp2tpay ! udpsink name=out{j} host={} port={} ttl-mc={} sync=false async=false",
+                quote(&o.host),
+                o.port,
+                o.ttl
+            ),
+        });
+    }
     d.join("  ")
 }
 
@@ -270,7 +340,7 @@ mod tests {
     use crate::config::*;
 
     fn parts<'a>(input: &'a ResolvedInput) -> EncoderParts<'a> {
-        EncoderParts { input, encoder: "x264enc", aac: Some("avenc_aac"), image_ok: false, rtmp: false }
+        EncoderParts { input, encoder: "x264enc", aac: Some("avenc_aac"), image_ok: false, rtmp: false, record: None }
     }
 
     #[test]
@@ -287,7 +357,7 @@ mod tests {
             "mpegtsmux name=mux alignment=7",
             "srtsink name=srtout uri=\"srt://:9000?mode=listener\" latency=120",
             "fallbackswitch name=asw",
-            "avenc_aac name=aenc bitrate=192000",
+            "avenc_aac name=aenc0 bitrate=192000",
             "appsink name=preview",
             "framerate=50/1",
             "width=1920,height=1080",
@@ -318,13 +388,34 @@ mod tests {
         assert_eq!(test_source_size(&cfg), (1920, 1080));
         let d = primary_video(&cfg, &ResolvedInput::Test);
         assert!(d.contains("width=1920,height=1080"));
-        assert!(d.contains("method=lanczos"));
+        assert!(d.contains("method=lanczos envelope=3"));
         assert!(d.contains("width=3840,height=2160"));
         cfg.video.scale_quality = ScaleQuality::Fast;
         assert!(primary_video(&cfg, &ResolvedInput::Test).contains("method=bilinear"));
         // gleiche Größe: kein Skalierer im Testbildweg
         let cfg = EncoderConfig::default();
         assert!(!primary_video(&cfg, &ResolvedInput::Test).contains("videoscale"));
+    }
+
+    #[test]
+    fn print_default_description() {
+        let cfg = EncoderConfig::default();
+        let d = encoder_description(&cfg, &parts(&ResolvedInput::Test));
+        if std::env::var("LZS_PRINT").is_ok() {
+            println!("{d}");
+        }
+        crate::latency::ensure_init();
+        gstreamer::parse::launch(&d).map(|_| ()).unwrap_or_else(|e| panic!("{e}\n{d}"));
+    }
+
+    #[test]
+    fn crop_only_when_set() {
+        let mut cfg = EncoderConfig::default();
+        assert_eq!(crop(&cfg), "");
+        cfg.input.crop = [0, 0, 240, 240];
+        assert_eq!(crop(&cfg), " ! videocrop top=0 bottom=0 left=240 right=240");
+        let d = primary_video(&cfg, &ResolvedInput::Test);
+        assert!(d.contains("videocrop") && d.contains("videoscale"));
     }
 
     #[test]
