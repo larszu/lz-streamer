@@ -36,7 +36,8 @@ Eigener Video-Encoder und -Decoder: **Eingang → Encoder → SRT** (dazu option
   - Alarme mit Schwellen
   - Standbilder hochladen
   - Statistik über 24 h, Bericht als CSV
-  - Systemlast
+  - Systemlast mit GPU (Mac über ioreg, NVIDIA über nvidia-smi), Alarme für Bildrate und Formatwechsel am Eingang
+  - Diagnose-Paket und Kanal-Export/-Import als Datei
   - Benutzer mit Rollen (Verwalten/Bedienen/Ansehen)
   - Beschnitt
 - **Schalter live:** Untertitel, Klare Sprache, Lautheitsregelung samt Profil, Plugin-Umgehung und Grafik lassen sich während der Sendung umschalten, ohne dass der Kanal neu startet. Das geht in der Karte „Schalter“, über `/api/control` oder per OSC, etwa aus Companion.
@@ -150,6 +151,7 @@ lz-streamer serve ── axum (REST + Weboberfläche, eingebettet) ── Aufpas
 | `GET/POST /api/presets`, `POST /api/presets/{name}/load`, `DELETE …` | Profile |
 | `GET/PUT /api/settings` | Zeitplan, Alarmschwellen, Aufnahmen automatisch löschen |
 | `GET /api/alarms` · `/api/stats?minutes=` · `/api/system` · `/api/report.csv` | Alarme, Verlauf, Systemlast, Bericht |
+| `GET /api/diagnose.json` · `GET /api/config/export` | Diagnose-Paket (Passwörter geschwärzt) · Kanal als Datei (vollständig; einspielen mit `PUT /api/config`) |
 | `GET/POST /api/standby`, `GET/DELETE /api/standby/{name}`, `POST …/use` | Standbilder |
 | `GET /api/recordings`, `GET/DELETE /api/recordings/{name}` | Aufnahmen |
 | `GET /api/plugins` · `POST /api/plugins/scan` | geprüfte Plugins und Sperrliste · neu prüfen |

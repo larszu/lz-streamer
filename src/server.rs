@@ -97,6 +97,8 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/api/alarms", get(alarms))
         .route("/api/stats", get(stats))
         .route("/api/system", get(system))
+        .route("/api/diagnose.json", get(diagnose))
+        .route("/api/config/export", get(config_export))
         .route("/api/report.csv", get(report))
         .route("/api/report.pdf", get(report_pdf))
         .route("/api/report.html", get(report_html))
@@ -444,6 +446,62 @@ async fn stats(State(app): S, Query(q): Query<StatsQ>) -> impl IntoResponse {
     let all = app.ops.stats.lock().await;
     let skip = all.len().saturating_sub(n);
     Json(all.iter().skip(skip).cloned().collect::<Vec<_>>())
+}
+
+/// Passwörter und Stream-Schlüssel unkenntlich machen (Diagnose geht an Dritte)
+fn mask_secrets(v: &mut serde_json::Value) {
+    match v {
+        serde_json::Value::Object(m) => {
+            for (k, x) in m.iter_mut() {
+                let secret = ["passphrase", "password", "stream_key", "key", "token"].iter().any(|s| k == s) || (k == "url" && x.as_str().is_some_and(|u| u.starts_with("rtmp")));
+                if secret && x.as_str().is_some_and(|s| !s.is_empty()) {
+                    *x = json!("•••");
+                } else {
+                    mask_secrets(x);
+                }
+            }
+        }
+        serde_json::Value::Array(a) => a.iter_mut().for_each(mask_secrets),
+        _ => {}
+    }
+}
+
+/// Diagnose-Paket: alles für eine Fehlersuche in einer Datei, Geheimnisse geschwärzt
+async fn diagnose(State(app): S) -> Response {
+    let snap = app.sup.snapshot().await;
+    let mut cfg = serde_json::to_value(app.sup.config().await).unwrap_or_default();
+    mask_secrets(&mut cfg);
+    let stats: Vec<_> = app.ops.stats.lock().await.iter().rev().take(720).cloned().collect();
+    let body = json!({
+        "erstellt": chrono::Local::now().to_rfc3339(),
+        "version": env!("CARGO_PKG_VERSION"),
+        "gstreamer": gstreamer::version_string().to_string(),
+        "system": app.ops.system.lock().await.clone(),
+        "faehigkeiten": app.caps,
+        "konfiguration": cfg,
+        "einstellungen": app.ops.settings.lock().await.clone(),
+        "alarme": app.ops.alarms.lock().await.clone(),
+        "laufzeit": snap,
+        "statistik_letzte_stunde": stats,
+        "plugins": std::fs::read(app.ops.data.plugin_scan()).ok().and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok()),
+    });
+    let name = format!("lz-streamer-diagnose-{}.json", chrono::Local::now().format("%Y-%m-%d_%H-%M"));
+    (
+        [(header::CONTENT_TYPE, "application/json".to_string()), (header::CONTENT_DISPOSITION, format!("attachment; filename=\"{name}\""))],
+        serde_json::to_vec_pretty(&body).unwrap_or_default(),
+    )
+        .into_response()
+}
+
+/// Kanal als Datei: vollständige Konfiguration (mit Passwörtern, für ein zweites Gerät).
+/// Einspielen geht über `PUT /api/config`.
+async fn config_export(State(app): S) -> Response {
+    let name = format!("lz-streamer-kanal-{}.json", chrono::Local::now().format("%Y-%m-%d"));
+    (
+        [(header::CONTENT_TYPE, "application/json".to_string()), (header::CONTENT_DISPOSITION, format!("attachment; filename=\"{name}\""))],
+        serde_json::to_vec_pretty(&app.sup.config().await).unwrap_or_default(),
+    )
+        .into_response()
 }
 
 async fn system(State(app): S) -> impl IntoResponse {
