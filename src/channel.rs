@@ -91,6 +91,8 @@ struct CaptionCounter {
     text: Mutex<Option<String>>,
     /// Untertitelzeilen mit Laufzeit, für die Dateien neben der Aufnahme
     cues: Mutex<Vec<crate::subtitles::Cue>>,
+    /// Untertitel stumm: nichts einspeisen
+    muted: AtomicBool,
     /// Anzeigedauer je eingespeistem Text (tttocea608 löscht danach)
     durations: Mutex<std::collections::HashMap<String, u64>>,
 }
@@ -172,6 +174,7 @@ fn configure_audio(pipeline: &gst::Pipeline, cfg: &EncoderConfig) {
         for (j, p) in track.plugins.iter().enumerate() {
             if let Some(e) = pipeline.by_name(&format!("plug{i}_{j}")).and_then(|e| e.downcast::<crate::plugin::LzPlugin>().ok()) {
                 e.set_path(&p.path);
+                e.set_bypass(p.bypass);
             }
         }
         if let Some(t) = pipeline.by_name(&format!("atag{i}")) {
@@ -201,6 +204,8 @@ pub enum ChildCmd {
     Caption { text: String },
     /// Text der zweiten Sprache (CC3) live einspeisen, z. B. von einer Dolmetscherin
     Caption2 { text: String },
+    /// schaltbare Eigenschaft live umstellen (siehe `control.rs`); `cfg` ist die neue Konfiguration
+    Control { path: String, cfg: Box<Config> },
     Stop,
 }
 
@@ -282,7 +287,7 @@ fn push_caption_at(pipeline: &gst::Pipeline, cc: &CaptionCounter, text: &str, at
 
 fn push_caption_to(pipeline: &gst::Pipeline, appsrc: &str, cc: &CaptionCounter, text: &str, at_ns: Option<u64>) -> bool {
     let text = text.trim();
-    if text.is_empty() {
+    if text.is_empty() || cc.muted.load(Ordering::Relaxed) {
         return true;
     }
     let Some(src) = pipeline.by_name(appsrc).and_then(|s| s.downcast::<gst_app::AppSrc>().ok()) else { return false };
@@ -1121,6 +1126,7 @@ impl Channel {
             ChildCmd::Keyframe => self.force_keyframe(),
             ChildCmd::Caption { text } => self.push_caption(text),
             ChildCmd::Caption2 { text } => self.push_caption2(text),
+            ChildCmd::Control { path, cfg } => self.apply_control(path, cfg),
             ChildCmd::Stop => self.stop(),
         }
     }
@@ -1131,6 +1137,16 @@ impl Channel {
         if !push_caption_text(&self.pipeline, &self.cc, text) {
             event(&self.events, "warn", "Untertitelquelle steht nicht auf „live“");
         }
+    }
+
+    /// Eigenschaft live umstellen: Stummschalten der Untertitel oder die Ton-Elemente neu einstellen
+    pub fn apply_control(&mut self, path: &str, cfg: &Config) {
+        self.cc.muted.store(cfg.encoder.captions.muted, Ordering::Relaxed);
+        if let Some(s) = &self.second {
+            s.cc.muted.store(cfg.encoder.captions.muted, Ordering::Relaxed);
+        }
+        configure_audio(&self.pipeline, &cfg.encoder);
+        event(&self.events, "info", format!("Umgestellt: {path}"));
     }
 
     pub fn push_caption2(&self, text: &str) {

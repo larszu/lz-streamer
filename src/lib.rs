@@ -10,6 +10,7 @@ pub mod caption_measure;
 pub mod channel;
 pub mod clearspeech;
 pub mod config;
+pub mod control;
 pub mod devices;
 pub mod gfx;
 pub mod latency;

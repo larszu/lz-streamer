@@ -138,6 +138,14 @@ impl Supervisor {
         Ok(())
     }
 
+    /// Konfiguration speichern, ohne den Kanal neu zu starten (Live-Umstellung).
+    pub async fn set_config_live(&self, mut cfg: Config) -> anyhow::Result<()> {
+        cfg.normalize();
+        std::fs::write(&self.config_path, serde_json::to_vec_pretty(&cfg)?)?;
+        self.state.lock().await.config = cfg;
+        Ok(())
+    }
+
     pub async fn start(&self) {
         let mut st = self.state.lock().await;
         if !st.desired {

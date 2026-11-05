@@ -132,6 +132,10 @@ pub struct Leveler {
 }
 
 impl Leveler {
+    pub fn channels(&self) -> usize {
+        self.channels
+    }
+
     pub fn new(cfg: LevelerConfig, channels: usize) -> Self {
         let lookahead = (0.0015 * RATE) as usize;
         Self {
@@ -180,7 +184,8 @@ impl Leveler {
             self.agc_db = (self.agc_db + step).clamp(-self.cfg.range_db, self.cfg.range_db);
         }
         // Transienten: Momentary über Ziel + 3 LU → sofort absenken, Freigabe 3 dB/s
-        let over = m - (self.cfg.target + 3.0);
+        // (bei ausgeschalteter Regelung nur noch freigeben)
+        let over = if self.cfg.enabled { m - (self.cfg.target + 3.0) } else { 0.0 };
         if over > 0.0 {
             self.fast_db = (-over).min(self.fast_db.min(0.0));
         } else {

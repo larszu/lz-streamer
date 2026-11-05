@@ -931,3 +931,53 @@ fn second_caption_language_on_cc3() {
     eprintln!("CC1:\n{de}CC3:\n{en}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// I1: Eigenschaften live umstellen, ohne den Kanal neu zu starten.
+#[test]
+fn live_controls_without_restart() {
+    use lz_streamer::audio::AudioTrack;
+    use lz_streamer::config::{CaptionSource, Config};
+    init();
+    // SAFETY: Test setzt die Variable vor jedem Hilfsprozess
+    unsafe { std::env::set_var("LZS_PLUGIN_HOST_EXE", env!("CARGO_BIN_EXE_lz-streamer")) };
+    let port = free_port();
+    let mut cfg = Config::default();
+    cfg.encoder = encoder_cfg(port, SrtMode::Listener);
+    cfg.encoder.captions.source = CaptionSource::Live;
+    let mut t = AudioTrack::default();
+    t.clear_speech.enabled = true;
+    t.clear_speech.keep_singing = false;
+    t.leveler.enabled = true;
+    #[cfg(target_os = "macos")]
+    t.plugins.push(lz_streamer::plugin::PluginConfig { enabled: true, path: "au:aufx:hpas:appl".into(), bypass: false });
+    cfg.encoder.audio.tracks = vec![t];
+    let mut enc = Channel::start_encoder(&cfg.encoder, &[], &ChannelOptions::default()).unwrap();
+    let mut dec = Channel::start_decoder(&decoder_cfg(port, SrtMode::Caller), &ChannelOptions::default()).unwrap();
+    let (e, _) = run_until(&mut enc, &mut dec, Duration::from_secs(10), |e, _| e.audio_tracks[0].clear_speech.is_some_and(|c| c.residual_db < -6.0));
+    let frames_before = e.frames;
+    let set = |cfg: &mut Config, enc: &mut Channel, path: &str, v: serde_json::Value| {
+        lz_streamer::control::apply(cfg, path, &v).unwrap();
+        enc.command(&ChildCmd::Control { path: path.into(), cfg: Box::new(cfg.clone()) });
+    };
+    // Klare Sprache aus: Rest geht auf 0 dB
+    set(&mut cfg, &mut enc, "audio.tracks.0.clearSpeech.enabled", serde_json::json!(false));
+    run_until(&mut enc, &mut dec, Duration::from_secs(5), |e, _| e.audio_tracks[0].clear_speech.is_some_and(|c| c.residual_db > -0.5));
+    // Untertitel stumm: nichts kommt an
+    set(&mut cfg, &mut enc, "captions.enabled", serde_json::json!(false));
+    enc.command(&ChildCmd::Caption { text: "darf nicht erscheinen".into() });
+    let (e, _) = run_until(&mut enc, &mut dec, Duration::from_secs(2), |_, _| true);
+    assert_ne!(e.captions.text.as_deref(), Some("darf nicht erscheinen"));
+    set(&mut cfg, &mut enc, "captions.enabled", serde_json::json!(true));
+    enc.command(&ChildCmd::Caption { text: "wieder da".into() });
+    run_until(&mut enc, &mut dec, Duration::from_secs(3), |e, _| e.captions.text.as_deref() == Some("wieder da"));
+    // Plugin-Bypass
+    #[cfg(target_os = "macos")]
+    {
+        set(&mut cfg, &mut enc, "audio.tracks.0.plugins.0.bypass", serde_json::json!(true));
+        run_until(&mut enc, &mut dec, Duration::from_secs(5), |e, _| e.audio_tracks[0].plugins.first().is_some_and(|p| p.bypass));
+    }
+    // Lautheitsprofil
+    set(&mut cfg, &mut enc, "audio.tracks.0.leveler.preset", serde_json::json!("hard"));
+    let (e, _) = run_until(&mut enc, &mut dec, Duration::from_secs(2), |_, _| true);
+    assert!(e.frames > frames_before + 25, "Kanal lief nicht durch");
+}

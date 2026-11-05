@@ -39,6 +39,7 @@ Eigener Video-Encoder und -Decoder: **Eingang → Encoder → SRT** (dazu option
   - Systemlast
   - Benutzer mit Rollen (Verwalten/Bedienen/Ansehen)
   - Beschnitt
+- **Schalter live:** Untertitel, Klare Sprache, Lautheitsregelung samt Profil, Plugin-Umgehung und Grafik lassen sich während der Sendung umschalten, ohne dass der Kanal neu startet. Das geht in der Karte „Schalter“, über `/api/control` oder per OSC, etwa aus Companion.
 - **Keine Pflichtfelder:** Ein leerer Start ergibt einen SRT-Listener auf Port 9000 mit Testbild. Fehlt etwas, erscheint ein Hinweis, gesperrt wird nichts.
 
 ## Gemessen (MacBook Pro M1 Pro, 05.11.2026)
@@ -152,6 +153,7 @@ lz-streamer serve ── axum (REST + Weboberfläche, eingebettet) ── Aufpas
 | `GET/POST /api/standby`, `GET/DELETE /api/standby/{name}`, `POST …/use` | Standbilder |
 | `GET /api/recordings`, `GET/DELETE /api/recordings/{name}` | Aufnahmen |
 | `GET /api/plugins` · `POST /api/plugins/scan` | geprüfte Plugins und Sperrliste · neu prüfen |
+| `GET/POST /api/control` | schaltbare Eigenschaften lesen bzw. live umstellen, ohne Neustart: `{"path":"captions.enabled","value":false}`; Pfade siehe `src/control.rs`, benannt für NMOS IS-12. Per OSC: `/lzs/set/<pfad mit />` mit Wert, z. B. `/lzs/set/audio/tracks/0/plugins/0/bypass T` |
 | `GET/POST /api/graphics` | Zustand der Grafik-Ebenen; Befehl `{"action":"show","graphicId":"lz-lower-third","data":{…}}` (`load`, `show`, `play`, `next`, `prev`, `update`, `stop`, `clear`, `custom`) |
 | `POST /api/login` · `/api/logout`, `GET /api/me`, `GET/POST /api/users`, `DELETE /api/users/{name}` | Anmeldung und Benutzer; ohne Benutzer bleibt die Oberfläche offen, der erste wird Administrator |
 

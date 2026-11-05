@@ -585,7 +585,7 @@ function renderMeters(st) {
     const state = m == null ? '' : (l.true_peak > -1 ? 'error' : Math.abs((l.short_term ?? m) - tg) > 5 ? 'warn' : '');
     return `<div class="meter"><header>${esc(t.name || 'Spur ' + (t.index + 1))} <small>${esc(t.language || '')}${l.silent_s >= 2 ? ' · still' : ''}</small></header>
       <div class="bar" role="meter" aria-label="Momentary-Lautheit" aria-valuemin="-60" aria-valuemax="0" aria-valuenow="${m ?? -60}"><span data-s="${state}" style="inline-size:${m == null ? 0 : pos(m)}%"></span><i style="inset-inline-start:${pos(tg)}%"></i></div>
-      <div class="vals"><span>M <b>${f(m)}</b></span><span>S <b>${f(l.short_term)}</b></span><span>I <b>${f(l.integrated)}</b> LUFS</span><span>LRA <b>${f(l.lra)}</b> LU</span><span>TP <b>${f(l.true_peak)}</b> dBTP</span>${t.leveler_gain ? `<span>Regelung <b>${fmt.format(t.leveler_gain[0] + t.leveler_gain[1])}</b> dB</span>` : ''}${t.clear_speech ? `<span>Rest <b>${fmt.format(t.clear_speech.residual_db)}</b> dB${t.clear_speech.singing ? ' · Gesang' : ''}</span>` : ''}${(t.plugins || []).map(p => `<span>${esc(installedPlugins.find(x => x.id === p.name)?.name || p.name)} <b data-s="${p.running ? '' : 'warn'}">${p.running ? 'aktiv' : 'Bypass'}</b></span>`).join('')}</div></div>`;
+      <div class="vals"><span>M <b>${f(m)}</b></span><span>S <b>${f(l.short_term)}</b></span><span>I <b>${f(l.integrated)}</b> LUFS</span><span>LRA <b>${f(l.lra)}</b> LU</span><span>TP <b>${f(l.true_peak)}</b> dBTP</span>${t.leveler_gain ? `<span>Regelung <b>${fmt.format(t.leveler_gain[0] + t.leveler_gain[1])}</b> dB</span>` : ''}${t.clear_speech ? `<span>Rest <b>${fmt.format(t.clear_speech.residual_db)}</b> dB${t.clear_speech.singing ? ' · Gesang' : ''}</span>` : ''}${(t.plugins || []).map(p => `<span>${esc(installedPlugins.find(x => x.id === p.name)?.name || p.name)} <b data-s="${p.running && !p.bypass ? '' : 'warn'}">${p.bypass ? 'umgangen' : p.running ? 'aktiv' : 'Bypass'}</b></span>`).join('')}</div></div>`;
   }).join('');
 }
 const _render2 = render;
@@ -641,6 +641,48 @@ function renderGfx(st) {
 }
 const _render5 = render;
 render = function (st) { _render5(st); renderGfx(st); };
+
+// ---------------- Schalter (live, /api/control)
+function ctlLabel(st, path) {
+  const tr = st.config.encoder.audio.tracks;
+  const m = path.match(/^audio\.tracks\.(\d+)\.(.+)$/);
+  const tname = m ? (tr[+m[1]]?.name || `Spur ${+m[1] + 1}`) : '';
+  const rest = m ? m[2] : path;
+  const pm = rest.match(/^plugins\.(\d+)\.bypass$/);
+  if (pm) {
+    const p = tr[+m[1]]?.plugins?.[+pm[1]];
+    const pn = installedPlugins.find(x => x.id === p?.path)?.name || (p?.path || '').split('/').pop();
+    return `${tname}: ${pn} umgehen`;
+  }
+  const names = { 'captions.enabled': 'Untertitel', 'graphics.layer2.visible': 'Grafik im Bild', 'clearSpeech.enabled': 'Klare Sprache', 'leveler.enabled': 'Lautheit regeln', 'leveler.preset': 'Regelung' };
+  return (tname ? tname + ': ' : '') + (names[rest] || rest);
+}
+function renderControls(st) {
+  const on = st.config.role === 'encoder' && (st.controls || []).length;
+  $('#ctl-card').hidden = !on;
+  if (!on || $('#ctl-list').contains(document.activeElement)) return;
+  const relevant = st.controls.filter(c => !(c.path.endsWith('leveler.preset') && !st.config.encoder.audio.tracks[+c.path.split('.')[2]]?.leveler?.enabled));
+  // nur neu aufbauen, wenn sich etwas geändert hat (sonst gehen Klicks ins Leere)
+  const sig = JSON.stringify(relevant.map(c => [c.path, c.value])) + installedPlugins.length;
+  if (sig === renderControls.sig) return;
+  renderControls.sig = sig;
+  $('#ctl-list').replaceChildren(...relevant.map(c => {
+    const lab = document.createElement('label');
+    let el;
+    if (c.kind === 'bool') { el = document.createElement('input'); el.type = 'checkbox'; el.checked = !!c.value; }
+    else { el = document.createElement('select'); el.className = 'input'; for (const o of c.options || []) el.add(new Option({ soft: 'sanft', mid: 'mittel', hard: 'schnell' }[o] || o, o)); el.value = c.value; }
+    el.addEventListener('change', async () => {
+      const value = c.kind === 'bool' ? el.checked : el.value;
+      const r = await fetch('/api/control', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ path: c.path, value }) });
+      if (!r.ok) { el.title = (await r.json().catch(() => ({}))).error || 'abgelehnt'; }
+    });
+    lab.append(el, ' ' + ctlLabel(st, c.path));
+    lab.dataset.path = c.path;
+    return lab;
+  }));
+}
+const _render7 = render;
+render = function (st) { _render7(st); renderControls(st); };
 
 // ---------------- Freie Grafik (Ebene 2)
 const gfxTemplates = {

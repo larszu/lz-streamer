@@ -86,6 +86,7 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/api/signal", post(signal))
         .route("/api/keyframe", post(keyframe))
         .route("/api/caption", post(caption))
+        .route("/api/control", get(controls).post(control))
         .route("/api/devices/refresh", post(refresh_devices))
         .route("/api/preview.jpg", get(preview))
         // Verwaltung
@@ -267,6 +268,7 @@ async fn state(State(app): S, headers: HeaderMap) -> impl IntoResponse {
         "system": *app.ops.system.lock().await,
         "loudness_target": app.ops.settings.lock().await.alarms.loudness_target,
         "renderer": app.renderer.state.lock().await.clone(),
+        "controls": control_list(&app).await,
         "user": {"open": open, "name": me.as_ref().map(|m| m.0.clone()), "role": me.map(|m| m.1).unwrap_or(Role::Admin)},
         "version": env!("CARGO_PKG_VERSION"),
     }))
@@ -317,6 +319,51 @@ struct CaptionReq {
 async fn caption(State(app): S, Json(r): Json<CaptionReq>) -> impl IntoResponse {
     let cmd = if r.second { ChildCmd::Caption2 { text: r.text } } else { ChildCmd::Caption { text: r.text } };
     Json(json!({"ok": app.sup.command(&cmd).await}))
+}
+
+#[derive(Deserialize)]
+struct ControlReq {
+    path: String,
+    value: serde_json::Value,
+}
+
+/// alle schaltbaren Eigenschaften mit Wert
+async fn control_list(app: &App) -> Vec<crate::control::Control> {
+    let cfg = app.sup.config().await;
+    let mut l = crate::control::list(&cfg);
+    let playing = app.renderer.state.lock().await.gfx.playing;
+    l.push(crate::control::Control { path: "graphics.layer2.visible".into(), value: json!(playing), kind: "bool", options: None });
+    l
+}
+
+async fn controls(State(app): S) -> impl IntoResponse {
+    Json(control_list(&app).await)
+}
+
+/// Eigenschaft umstellen: speichern ohne Neustart, laufender Kanal stellt live um.
+pub async fn set_control(app: &App, path: &str, value: &serde_json::Value) -> Result<(), String> {
+    if path == "graphics.layer2.visible" {
+        let on = value.as_bool().ok_or("bool erwartet")?;
+        let c = crate::renderer::GfxCommand { action: if on { "play" } else { "stop" }.into(), ..Default::default() };
+        return crate::renderer::gfx_command(&app.renderer, &c).await;
+    }
+    let before = app.sup.config().await;
+    let mut cfg = before.clone();
+    crate::control::apply(&mut cfg, path, value)?;
+    if crate::control::needs_restart(&before, path) {
+        // Element fehlt in der laufenden Pipeline: mit Neustart übernehmen
+        return app.sup.set_config(cfg).await.map_err(|e| e.to_string());
+    }
+    app.sup.set_config_live(cfg.clone()).await.map_err(|e| e.to_string())?;
+    app.sup.command(&ChildCmd::Control { path: path.to_string(), cfg: Box::new(cfg) }).await;
+    Ok(())
+}
+
+async fn control(State(app): S, Json(r): Json<ControlReq>) -> Response {
+    match set_control(&app, &r.path, &r.value).await {
+        Ok(()) => Json(json!({"ok": true, "controls": control_list(&app).await})).into_response(),
+        Err(e) => err(StatusCode::BAD_REQUEST, e),
+    }
 }
 
 async fn refresh_devices(State(app): S) -> impl IntoResponse {

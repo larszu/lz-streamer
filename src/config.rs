@@ -451,6 +451,8 @@ pub struct CaptionConfig {
     /// Pfad zur Untertiteldatei bei `file`
     pub file: String,
     pub mode: CaptionMode,
+    /// Untertitel live stumm (Quelle bleibt eingestellt)
+    pub muted: bool,
     pub asr: crate::asr::AsrConfig,
     /// zweite Untertitelsprache (608 CC3), aus der Spracherkennung übersetzt
     #[serde(default)]

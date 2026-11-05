@@ -338,6 +338,8 @@ dialog#login h2{margin-block-end:var(--space-2)}
 .gfx-ctl{display:grid;gap:var(--space-3)}
 .gfx-ctl label{display:grid;gap:var(--space-1)}
 .gfx-ctl textarea{font-family:ui-monospace,Menlo,monospace;font-size:.85rem;resize:vertical}
+.ctl-list{display:flex;flex-wrap:wrap;gap:var(--space-2)}
+.ctl-list label{display:flex;align-items:center;gap:var(--space-2);padding:var(--space-2) var(--space-3);border-radius:var(--radius-s);background:var(--surface-2, rgb(127 127 127 / .08))}
 .plugin-row{display:flex;flex-wrap:wrap;align-items:center;gap:var(--space-2)}
 .gfx-btns{display:flex;flex-wrap:wrap;gap:var(--space-2)}
 .caption-send .input{flex:1}

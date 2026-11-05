@@ -299,7 +299,7 @@ async fn serve(port: u16, bind: String, cfg_path: PathBuf, autostart: bool) -> R
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         }
     };
-    tokio::spawn(lz_streamer::renderer::osc_listener("127.0.0.1:4211".into(), sup.clone(), app.renderer.clone()));
+    tokio::spawn(lz_streamer::renderer::osc_listener("127.0.0.1:4211".into(), app.clone()));
     tokio::spawn(lz_streamer::renderer::keep_running(sup.clone(), format!("ws://127.0.0.1:{port}/renderer")));
     axum::serve(listener, server::router(app).into_make_service_with_connect_info::<std::net::SocketAddr>())
         .with_graceful_shutdown(shutdown)
