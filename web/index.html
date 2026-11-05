@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>lz streamer</title>
+<link rel="stylesheet" href="/app.css">
+<script>
+  try { const t = localStorage.getItem('theme'); if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t; } catch {}
+</script>
+</head>
+<body>
+<header class="top">
+  <div class="brand" aria-label="lz streamer"><span>lz<span class="tally-dot logo" aria-hidden="true"></span></span><span class="word">streamer</span></div>
+  <div class="seg" role="group" aria-label="Rolle">
+    <button type="button" data-role="encoder" aria-pressed="true">Senden</button>
+    <button type="button" data-role="decoder" aria-pressed="false">Empfangen</button>
+  </div>
+  <div class="themes" role="group" aria-label="Darstellung">
+    <button type="button" data-t="auto" aria-label="Wie System" title="Wie System"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg></button>
+    <button type="button" data-t="light" aria-label="Hell" title="Hell"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg></button>
+    <button type="button" data-t="dark" aria-label="Dunkel" title="Dunkel"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg></button>
+  </div>
+</header>
+
+<main>
+  <div class="banner" id="missing" hidden></div>
+
+  <div class="col-a">
+    <section class="card stage appear" style="--i:0" aria-labelledby="stage-title">
+      <div class="screen">
+        <img id="preview" alt="Vorschau des Bildes" hidden>
+        <p class="empty" id="preview-empty">Vorschau erscheint, sobald der Kanal läuft.</p>
+        <div class="chips"><span class="chip" id="chip-live" hidden data-s="live">Live</span><span class="chip" id="chip-signal" hidden></span></div>
+      </div>
+      <div class="stage-body">
+        <div class="stage-line">
+          <h1 id="stage-title">Bereit</h1>
+          <span class="chip" id="chip-peer" hidden></span>
+        </div>
+        <p class="stage-sub" id="stage-sub">Eingang wird gesucht …</p>
+        <div class="actions">
+          <div class="main-action"><button type="button" class="btn btn--primary" id="btn-main">Senden starten</button></div>
+          <button type="button" class="btn btn--soft" id="btn-signal" hidden aria-pressed="false" title="Sperrt den Eingang, damit das Standbild übernimmt">Signalverlust testen</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="tiles appear" style="--i:1" id="tiles" aria-label="Kennzahlen"></section>
+
+    <section class="card checklist appear" style="--i:2" id="checklist" aria-labelledby="cl-title">
+      <h2 id="cl-title">Bereit zum Senden <small id="cl-count"></small></h2>
+      <div class="progress" id="cl-progress"><span></span></div>
+      <ol id="cl-list"></ol>
+    </section>
+  </div>
+
+  <div class="col-b">
+    <!-- Encoder -->
+    <section class="card appear" style="--i:3" id="enc-form" aria-labelledby="enc-title">
+      <h2 id="enc-title">Senden</h2>
+      <div class="form">
+        <p class="group-title">Eingang</p>
+        <div class="row2">
+          <label class="field"><span>Quelle</span>
+            <select class="input" data-path="encoder.input.kind">
+              <option value="auto">Automatisch</option><option value="decklink">DeckLink / UltraStudio</option><option value="test">Testbild</option>
+            </select></label>
+          <label class="field"><span>Anschluss</span>
+            <select class="input" data-path="encoder.input.connection">
+              <option value="auto">Automatisch</option><option value="sdi">SDI</option><option value="hdmi">HDMI</option>
+            </select></label>
+        </div>
+        <label class="field" id="enc-device-field" hidden><span>Gerät</span><select class="input" data-path="encoder.input.device" data-num id="enc-device"></select></label>
+        <p class="hint" id="detected"></p>
+
+        <p class="group-title">Ziel (SRT)</p>
+        <div class="seg" role="group" aria-label="SRT-Modus" data-seg="encoder.srt.mode">
+          <button type="button" data-v="caller">An Ziel senden</button>
+          <button type="button" data-v="listener">Auf Gegenstelle warten</button>
+        </div>
+        <div class="row2">
+          <label class="field" data-show-mode="encoder.srt.mode=caller"><span>Zieladresse</span>
+            <input class="input" data-path="encoder.srt.host" placeholder="z. B. 192.0.2.20 oder srt://…" autocomplete="off" spellcheck="false"></label>
+          <label class="field"><span>Port</span><input class="input" data-path="encoder.srt.port" data-num inputmode="numeric"></label>
+        </div>
+
+        <p class="group-title">Bild</p>
+        <div class="row2">
+          <label class="field"><span>Format</span>
+            <select class="input" id="format">
+              <option value="1280x720@50">720p50</option>
+              <option value="1920x1080@25">1080p25</option>
+              <option value="1920x1080@30">1080p30</option>
+              <option value="1920x1080@50">1080p50</option>
+              <option value="1920x1080@60">1080p60</option>
+              <option value="3840x2160@25">2160p25 (UHD)</option>
+              <option value="3840x2160@50">2160p50 (UHD)</option>
+            </select></label>
+          <label class="field"><span>Bitrate (Mbit/s)</span><input class="input" id="bitrate" inputmode="decimal"></label>
+        </div>
+        <div class="seg" role="group" aria-label="Codec" data-seg="encoder.video.codec">
+          <button type="button" data-v="h264">H.264</button><button type="button" data-v="h265">H.265</button>
+        </div>
+
+        <details class="more">
+          <summary>Mehr Einstellungen</summary>
+          <div class="form">
+            <div class="row2">
+              <label class="field"><span>Encoder</span><select class="input" data-path="encoder.video.encoder" id="enc-encoder"></select></label>
+              <label class="field"><span>GOP (ms)</span><input class="input" data-path="encoder.video.gop_ms" data-num inputmode="numeric"></label>
+            </div>
+            <div class="row2">
+              <label class="field"><span>Skalierung</span>
+                <select class="input" data-path="encoder.video.scale_quality"><option value="high">Hochwertig (Lanczos)</option><option value="fast">Schnell (bilinear)</option></select></label>
+              <label class="field"><span>SRT-Latenz (ms)</span><input class="input" data-path="encoder.srt.latency_ms" data-num inputmode="numeric"></label>
+            </div>
+            <div class="row2">
+              <label class="field"><span>SRT-Passwort</span><input class="input" type="password" data-path="encoder.srt.passphrase" autocomplete="new-password" placeholder="leer = unverschlüsselt"></label>
+              <label class="field"><span>Stream-ID</span><input class="input" data-path="encoder.srt.streamid" autocomplete="off"></label>
+            </div>
+            <label class="switch"><input type="checkbox" data-path="encoder.audio.enabled"> Ton (AAC Stereo)</label>
+            <p class="group-title">Bei Signalverlust</p>
+            <div class="row2">
+              <label class="field"><span>Standbild</span>
+                <select class="input" data-path="encoder.standby.pattern"><option value="bars">Farbbalken</option><option value="black">Schwarz</option><option value="image">Bilddatei</option></select></label>
+              <label class="field"><span>Umschalten nach (ms)</span><input class="input" data-path="encoder.standby.timeout_ms" data-num inputmode="numeric"></label>
+            </div>
+            <label class="field" data-show-mode="encoder.standby.pattern=image"><span>Bilddatei (Pfad auf diesem Rechner)</span><input class="input" data-path="encoder.standby.image_path" spellcheck="false"></label>
+            <label class="field"><span>Text im Standbild</span><input class="input" data-path="encoder.standby.text"></label>
+            <p class="group-title">Zusätzlich RTMP</p>
+            <label class="switch"><input type="checkbox" data-path="encoder.rtmp.enabled"> RTMP senden (nur H.264)</label>
+            <label class="field" data-show-mode="encoder.rtmp.enabled=true"><span>RTMP-Ziel mit Stream-Key</span><input class="input" type="password" data-path="encoder.rtmp.url" autocomplete="off" placeholder="rtmp://server/app/key"></label>
+          </div>
+        </details>
+        <ul class="hints" id="enc-hints"></ul>
+      </div>
+    </section>
+
+    <!-- Decoder -->
+    <section class="card appear" style="--i:3" id="dec-form" aria-labelledby="dec-title" hidden>
+      <h2 id="dec-title">Empfangen</h2>
+      <div class="form">
+        <p class="group-title">Quelle (SRT)</p>
+        <div class="seg" role="group" aria-label="SRT-Modus" data-seg="decoder.srt.mode">
+          <button type="button" data-v="caller">Mit Encoder verbinden</button>
+          <button type="button" data-v="listener">Auf Encoder warten</button>
+        </div>
+        <div class="row2">
+          <label class="field" data-show-mode="decoder.srt.mode=caller"><span>Encoder-Adresse</span>
+            <input class="input" data-path="decoder.srt.host" placeholder="z. B. 192.0.2.10 oder srt://…" autocomplete="off" spellcheck="false"></label>
+          <label class="field"><span>Port</span><input class="input" data-path="decoder.srt.port" data-num inputmode="numeric"></label>
+        </div>
+        <p class="group-title">Ausgabe</p>
+        <div class="row2">
+          <label class="field"><span>Ausgabe</span>
+            <select class="input" data-path="decoder.output"><option value="window">Fenster auf diesem Rechner</option><option value="decklink">DeckLink / UltraStudio</option><option value="none">Keine (nur messen)</option></select></label>
+          <label class="field" data-show-mode="decoder.output=decklink"><span>Gerät</span><select class="input" data-path="decoder.device" data-num id="dec-device"></select></label>
+        </div>
+        <label class="switch"><input type="checkbox" data-path="decoder.audio"> Ton ausgeben</label>
+        <details class="more">
+          <summary>Mehr Einstellungen</summary>
+          <div class="form">
+            <div class="row2">
+              <label class="field"><span>SRT-Latenz (ms)</span><input class="input" data-path="decoder.srt.latency_ms" data-num inputmode="numeric"></label>
+              <label class="field"><span>Demux-Puffer (ms)</span><input class="input" data-path="decoder.demux_latency_ms" data-num inputmode="numeric"></label>
+            </div>
+            <div class="row2">
+              <label class="field"><span>DeckLink-Modus</span><input class="input" data-path="decoder.deck_mode" placeholder="auto, 1080p50, 2160p50 …"></label>
+              <label class="field"><span>Decoder</span><input class="input" data-path="decoder.decoder" placeholder="auto"></label>
+            </div>
+            <label class="field"><span>SRT-Passwort</span><input class="input" type="password" data-path="decoder.srt.passphrase" autocomplete="new-password"></label>
+          </div>
+        </details>
+        <ul class="hints" id="dec-hints"></ul>
+      </div>
+    </section>
+
+    <section class="card appear" style="--i:4" aria-labelledby="ev-title">
+      <h2 id="ev-title">Ereignisse <small id="ev-restarts"></small></h2>
+      <ol class="timeline" id="events"></ol>
+    </section>
+  </div>
+</main>
+
+<output class="toast" id="toast" role="status" aria-live="polite"></output>
+<script src="/app.js"></script>
+</body>
+</html>
