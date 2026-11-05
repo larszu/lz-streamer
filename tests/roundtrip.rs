@@ -725,3 +725,27 @@ fn leveler_in_track_reaches_target() {
     eprintln!("Latenz bis lev0: {min}");
     assert!(min >= gstreamer::ClockTime::from_useconds(1500));
 }
+
+/// K1: Hauptspur plus Klare-Sprache-Spur kommen beide an; die Klare-Sprache-Spur
+/// meldet ihre Absenkung, der Kanal läuft in Echtzeit.
+#[test]
+fn clear_speech_track_arrives_next_to_main_track() {
+    use lz_streamer::audio::AudioTrack;
+    init();
+    let port = free_port();
+    let mut cfg = encoder_cfg(port, SrtMode::Listener);
+    let mut cs = AudioTrack { name: "Klare Sprache".into(), ..Default::default() };
+    cs.clear_speech.enabled = true;
+    cs.clear_speech.keep_singing = false;
+    cs.leveler.enabled = true;
+    cfg.audio.tracks = vec![AudioTrack { name: "Programm".into(), ..Default::default() }, cs];
+    let mut enc = Channel::start_encoder(&cfg, &[], &ChannelOptions::default()).unwrap();
+    let mut dec = Channel::start_decoder(&decoder_cfg(port, SrtMode::Caller), &ChannelOptions::default()).unwrap();
+    let (e, d) = run_until(&mut enc, &mut dec, Duration::from_secs(15), |e, d| {
+        d.frames >= 50 && d.audio_tracks.len() == 2 && e.audio_tracks.get(1).and_then(|t| t.clear_speech).is_some_and(|c| c.residual_db < -6.0)
+    });
+    let st = e.audio_tracks[1].clear_speech.unwrap();
+    assert!(e.audio_tracks[0].clear_speech.is_none());
+    assert!(e.fps > cfg.video.fps as f64 * 0.9, "{:.1} fps", e.fps);
+    eprintln!("Klare Sprache: {st:?}, Encoder {:.1} fps, Decoder {} Bilder", e.fps, d.frames);
+}

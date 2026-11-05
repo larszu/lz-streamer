@@ -41,6 +41,8 @@ pub struct AudioTrack {
     pub leveler: crate::leveler::LevelerConfig,
     /// VST3-Plugins vor der Lautheitsregelung, in dieser Reihenfolge
     pub plugins: Vec<crate::plugin::PluginConfig>,
+    /// Klare Sprache: Rest neben der Sprache absenken (DeepFilterNet3)
+    pub clear_speech: crate::clearspeech::ClearSpeechConfig,
 }
 
 impl Default for AudioTrack {
@@ -55,6 +57,7 @@ impl Default for AudioTrack {
             bitrate_kbps: 192,
             leveler: Default::default(),
             plugins: Vec::new(),
+            clear_speech: Default::default(),
         }
     }
 }

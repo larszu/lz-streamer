@@ -334,6 +334,9 @@ const trackFields = [
   { key: 'lev', label: 'Lautheit regeln', type: 'check', rerender: true, get: t => t.leveler?.enabled, set: (t, v) => { t.leveler = { ...(t.leveler || {}), enabled: v }; } },
   { key: 'levt', label: 'Ziel (LUFS)', show: t => t.leveler?.enabled, get: t => t.leveler.target, set: (t, v) => { t.leveler.target = parseFloat(String(v).replace(',', '.')) || -23; } },
   { key: 'levp', label: 'Regelung', type: 'select', show: t => t.leveler?.enabled, options: [['soft', 'sanft'], ['mid', 'mittel'], ['hard', 'schnell']], get: t => t.leveler.preset, set: (t, v) => { t.leveler.preset = v; } },
+  { key: 'cs', label: 'Klare Sprache', type: 'check', rerender: true, get: t => t.clear_speech?.enabled, set: (t, v) => { t.clear_speech = { residual_db: -9, keep_singing: true, ...(t.clear_speech || {}), enabled: v }; } },
+  { key: 'csr', label: 'Rest (dB)', show: t => t.clear_speech?.enabled, get: t => t.clear_speech.residual_db, set: (t, v) => { const n = parseFloat(String(v).replace(',', '.')); t.clear_speech.residual_db = Number.isFinite(n) ? Math.min(0, n) : -9; } },
+  { key: 'csg', label: 'Bei Gesang nicht absenken', type: 'check', show: t => t.clear_speech?.enabled, get: t => t.clear_speech.keep_singing, set: (t, v) => { t.clear_speech.keep_singing = v; } },
   { key: 'plug', label: 'Plugin (VST3)', type: 'select', options: t => pluginOptions(t), get: t => t.plugins?.find(p => p.enabled)?.path || '', set: (t, v) => { t.plugins = v ? [{ enabled: true, path: v }] : []; } },
 ];
 let installedPlugins = [];
@@ -367,6 +370,14 @@ $('#add-replacement').onclick = () => {
 $('#add-track').onclick = () => {
   const n = cfg.encoder.audio.tracks.length;
   cfg.encoder.audio.tracks.push({ name: `Ton ${n + 1}`, language: 'und', layout: 'stereo', channels: [2 * n + 1, 2 * n + 2], gain_db: 0, mute: false, bitrate_kbps: 192, leveler: { enabled: false, target: -23, preset: 'mid', ceiling: -1, range_db: 15, freeze_below: -45 } });
+  renderEditors(); changed('encoder.audio.tracks', cfg.encoder.audio.tracks);
+};
+// Klare Sprache: gleiche Quelle wie die erste Spur, Rest −9 dB, mit Lautheitsregelung
+$('#add-clear-speech').onclick = () => {
+  const src = cfg.encoder.audio.tracks[0] || { language: 'deu', layout: 'stereo', channels: [1, 2] };
+  cfg.encoder.audio.tracks.push({ name: 'Klare Sprache', language: src.language, layout: src.layout, channels: [...src.channels], gain_db: 0, mute: false, bitrate_kbps: 128,
+    leveler: { enabled: true, target: -23, preset: 'mid', ceiling: -1, range_db: 15, freeze_below: -45 }, plugins: [],
+    clear_speech: { enabled: true, residual_db: -9, keep_singing: true } });
   renderEditors(); changed('encoder.audio.tracks', cfg.encoder.audio.tracks);
 };
 $('#add-output').onclick = () => {
@@ -562,7 +573,7 @@ function renderMeters(st) {
     const state = m == null ? '' : (l.true_peak > -1 ? 'error' : Math.abs((l.short_term ?? m) - tg) > 5 ? 'warn' : '');
     return `<div class="meter"><header>${esc(t.name || 'Spur ' + (t.index + 1))} <small>${esc(t.language || '')}${l.silent_s >= 2 ? ' · still' : ''}</small></header>
       <div class="bar" role="meter" aria-label="Momentary-Lautheit" aria-valuemin="-60" aria-valuemax="0" aria-valuenow="${m ?? -60}"><span data-s="${state}" style="inline-size:${m == null ? 0 : pos(m)}%"></span><i style="inset-inline-start:${pos(tg)}%"></i></div>
-      <div class="vals"><span>M <b>${f(m)}</b></span><span>S <b>${f(l.short_term)}</b></span><span>I <b>${f(l.integrated)}</b> LUFS</span><span>LRA <b>${f(l.lra)}</b> LU</span><span>TP <b>${f(l.true_peak)}</b> dBTP</span>${t.leveler_gain ? `<span>Regelung <b>${fmt.format(t.leveler_gain[0] + t.leveler_gain[1])}</b> dB</span>` : ''}${(t.plugins || []).map(p => `<span>${esc(p.name)} <b data-s="${p.running ? '' : 'warn'}">${p.running ? 'aktiv' : 'Bypass'}</b></span>`).join('')}</div></div>`;
+      <div class="vals"><span>M <b>${f(m)}</b></span><span>S <b>${f(l.short_term)}</b></span><span>I <b>${f(l.integrated)}</b> LUFS</span><span>LRA <b>${f(l.lra)}</b> LU</span><span>TP <b>${f(l.true_peak)}</b> dBTP</span>${t.leveler_gain ? `<span>Regelung <b>${fmt.format(t.leveler_gain[0] + t.leveler_gain[1])}</b> dB</span>` : ''}${t.clear_speech ? `<span>Rest <b>${fmt.format(t.clear_speech.residual_db)}</b> dB${t.clear_speech.singing ? ' · Gesang' : ''}</span>` : ''}${(t.plugins || []).map(p => `<span>${esc(p.name)} <b data-s="${p.running ? '' : 'warn'}">${p.running ? 'aktiv' : 'Bypass'}</b></span>`).join('')}</div></div>`;
   }).join('');
 }
 const _render2 = render;

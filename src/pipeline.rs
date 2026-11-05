@@ -240,11 +240,16 @@ pub fn encoder_description(cfg: &EncoderConfig, parts: &EncoderParts) -> String 
             d.push(format!(
                 "ain. ! queue max-size-buffers=0 max-size-bytes=0 max-size-time=1000000000 \
                  ! audioconvert name=amx{i} mix-matrix={mix} ! {out_caps} \
-                 ! volume name=avol{i} volume={:.4} mute={}{}{} ! ebur128level name=lvl{i} interval=500000000{} \
+                 ! volume name=avol{i} volume={:.4} mute={}{}{}{} ! ebur128level name=lvl{i} interval=500000000{} \
                  ! audioconvert ! {aac} name=aenc{i} bitrate={} \
                  ! aacparse ! taginject name=atag{i} ! tee name=ae{i}",
                 crate::audio::db_to_linear(t.gain_db),
                 t.mute,
+                if t.clear_speech.enabled {
+                    format!(" ! audioconvert ! audio/x-raw,format=F32LE,rate=48000 ! audiobuffersplit output-buffer-duration=1/100 ! lzclearspeech name=cs{i}")
+                } else {
+                    String::new()
+                },
                 t.plugins
                     .iter()
                     .enumerate()
@@ -471,6 +476,27 @@ mod tests {
 
     fn parts<'a>(input: &'a ResolvedInput) -> EncoderParts<'a> {
         EncoderParts { input, encoder: "x264enc", aac: Some("avenc_aac"), image_ok: false, rtmp: false, record: None }
+    }
+
+    #[test]
+    fn clear_speech_track_leaves_main_track_untouched() {
+        let mut cfg = EncoderConfig::default();
+        cfg.audio.tracks = vec![crate::audio::AudioTrack::default()];
+        let main = |d: &str| {
+            let a = d.find("audioconvert name=amx0").unwrap();
+            d[a..a + d[a..].find("! mux.").unwrap()].to_string()
+        };
+        let before = main(&encoder_description(&cfg, &parts(&ResolvedInput::Test)));
+        let mut cs = crate::audio::AudioTrack { name: "Klare Sprache".into(), ..Default::default() };
+        cs.clear_speech.enabled = true;
+        cs.leveler.enabled = true;
+        cfg.audio.tracks.push(cs);
+        let d = encoder_description(&cfg, &parts(&ResolvedInput::Test));
+        assert_eq!(main(&d), before, "Hauptspur verändert");
+        assert!(!before.contains("lzclearspeech"));
+        let (c, lev) = (d.find("lzclearspeech name=cs1").unwrap(), d.find("lzloudness name=lev1").unwrap());
+        assert!(c < lev, "{d}");
+        assert!(d.contains("audiobuffersplit output-buffer-duration=1/100 ! lzclearspeech"));
     }
 
     #[test]
