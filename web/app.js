@@ -343,9 +343,15 @@ const outputFields = [
   { key: 'port', label: 'Port', num: true, show: o => o.kind !== 'srt' },
 ];
 function renderEditors() {
+  rowEditor($('#replacements'), cfg.encoder.captions.asr.replacements, [{ key: 'from', label: 'erkannt' }, { key: 'to', label: 'geschrieben' }],
+    () => changed('encoder.captions.asr.replacements', cfg.encoder.captions.asr.replacements), 'Entfernen');
   rowEditor($('#tracks'), cfg.encoder.audio.tracks, trackFields, () => changed('encoder.audio.tracks', cfg.encoder.audio.tracks), 'Entfernen');
   rowEditor($('#outputs'), cfg.encoder.outputs, outputFields, () => changed('encoder.outputs', cfg.encoder.outputs), 'Entfernen');
 }
+$('#add-replacement').onclick = () => {
+  cfg.encoder.captions.asr.replacements.push({ from: '', to: '' });
+  renderEditors(); changed('encoder.captions.asr.replacements', cfg.encoder.captions.asr.replacements);
+};
 $('#add-track').onclick = () => {
   const n = cfg.encoder.audio.tracks.length;
   cfg.encoder.audio.tracks.push({ name: `Ton ${n + 1}`, language: 'und', layout: 'stereo', channels: [2 * n + 1, 2 * n + 2], gain_db: 0, mute: false, bitrate_kbps: 192 });
@@ -356,7 +362,7 @@ $('#add-output').onclick = () => {
   renderEditors(); changed('encoder.outputs', cfg.encoder.outputs);
 };
 const _fillForm = fillForm;
-fillForm = function () { _fillForm(); if (!$('#tracks').contains(document.activeElement) && !$('#outputs').contains(document.activeElement)) renderEditors(); };
+fillForm = function () { _fillForm(); if (!['#tracks', '#outputs', '#replacements'].some(id => $(id).contains(document.activeElement))) renderEditors(); };
 
 // ================================================================ Ansichten
 let view = 'betrieb';
@@ -391,6 +397,7 @@ $('#logout').onclick = async () => { await fetch('/api/logout', { method: 'POST'
 let settings = null;
 async function loadAdmin() {
   try {
+    renderModels(await api('GET', '/api/models'));
     const [presets, s, recs, imgs, users, stats, me] = await Promise.all([
       api('GET', '/api/presets'), api('GET', '/api/settings'), api('GET', '/api/recordings'),
       api('GET', '/api/standby'), api('GET', '/api/users'), api('GET', '/api/stats?minutes=60'), api('GET', '/api/me')]);
@@ -565,3 +572,19 @@ function renderCaptions(st) {
 }
 const _render3 = render;
 render = function (st) { _render3(st); renderCaptions(st); };
+
+// ---------------- Whisper-Modelle
+function renderModels(list) {
+  $('#models').innerHTML = list.map(m => `<li><span>${esc(m.name)} <small>${bytes(m.bytes)}${m.present ? ' · vorhanden' : m.downloading ? ` · lädt ${m.loaded_bytes ? Math.round(m.loaded_bytes * 100 / m.bytes) : 0} %` : ''}</small></span>
+    ${m.present ? `<button class="btn btn--danger" data-mdel="${m.name}">Löschen</button>` : m.downloading ? '' : `<button class="btn btn--soft" data-mget="${m.name}">Laden (${bytes(m.bytes)})</button>`}</li>`).join('');
+  $$('#models [data-mget]').forEach(b => b.onclick = async () => { await api('POST', `/api/models/${b.dataset.mget}/download`); toast('Modell wird geladen'); setTimeout(loadAdmin, 1500); });
+  $$('#models [data-mdel]').forEach(b => b.onclick = async () => { await api('DELETE', `/api/models/${b.dataset.mdel}`); loadAdmin(); });
+}
+function renderAsr(st) {
+  const a = st.runtime.status?.captions?.asr;
+  if (!a) return;
+  const sub = $('#stage-sub');
+  sub.textContent += ` · Spracherkennung: ${a.state}${a.last_delay_ms != null ? `, Verzug ${fmt.format(a.last_delay_ms / 1000)} s` : ''}`;
+}
+const _render4 = render;
+render = function (st) { _render4(st); renderAsr(st); };

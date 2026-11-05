@@ -476,3 +476,66 @@ fn live_captions_and_recording_contain_cea608() {
         assert!(srt.contains("Untertitel eins"), "ffmpeg fand keine 608-Untertitel: {srt}");
     }
 }
+
+/// Spracherkennung ohne Modell: Kanal läuft, Status erklärt, was fehlt.
+#[test]
+fn speech_captions_without_model_keep_channel_running() {
+    use lz_streamer::config::CaptionSource;
+    init();
+    let port = free_port();
+    let mut cfg = encoder_cfg(port, SrtMode::Listener);
+    cfg.captions.source = CaptionSource::Speech;
+    cfg.captions.asr.model_path = "/nicht/vorhanden/ggml-small.bin".into();
+    let mut enc = Channel::start_encoder(&cfg, &[], &ChannelOptions::default()).unwrap();
+    let mut dec = Channel::start_decoder(&decoder_cfg(port, SrtMode::Caller), &ChannelOptions::default()).unwrap();
+    let (e, d) = run_until(&mut enc, &mut dec, Duration::from_secs(10), |e, d| {
+        d.frames >= 50 && e.captions.asr.as_ref().is_some_and(|a| a.state.contains("Modell"))
+    });
+    assert!(e.captions.asr.unwrap().state.contains("fehlt"));
+    assert!(d.fps > 10.0);
+}
+
+/// Mit Modell (LZS_WHISPER_MODEL=…/ggml-small.bin): deutsche Testaufnahme
+/// (macOS-Sprachausgabe) → WER und Textverzug; Absturz der Erkennung lässt
+/// den Kanal weiterlaufen.
+#[test]
+fn speech_captions_with_whisper_model() {
+    use lz_streamer::config::CaptionSource;
+    init();
+    let Ok(model) = std::env::var("LZS_WHISPER_MODEL") else {
+        eprintln!("LZS_WHISPER_MODEL nicht gesetzt – Test übersprungen");
+        return;
+    };
+    let reference = "Guten Abend und herzlich willkommen zum Gottesdienst. Heute hören wir die Predigt über den barmherzigen Samariter. \
+                     Bitte schalten Sie Ihre Mobiltelefone aus. Wir beginnen mit dem ersten Lied.";
+    let wav = std::env::temp_dir().join("lzs-asr-probe.aiff");
+    if !wav.is_file() {
+        let ok = std::process::Command::new("say").args(["-v", "Anna", "-o"]).arg(&wav).arg(reference).status().map(|s| s.success()).unwrap_or(false);
+        if !ok {
+            eprintln!("keine Sprachausgabe – Test übersprungen");
+            return;
+        }
+    }
+    let name = std::path::Path::new(&model).file_stem().unwrap().to_string_lossy().trim_start_matches("ggml-").to_string();
+    let acfg = lz_streamer::asr::AsrConfig { model: name, model_path: model.clone(), ..Default::default() };
+    let m = lz_streamer::asr::measure_file(&wav, &acfg, Some(reference)).unwrap();
+    eprintln!("ASR-Messung: WER {:?}, Verzug Median {:?} ms, Einzelwerte {:?}\nText: {}", m.wer, m.median_delay_ms, m.delays_ms, m.text);
+    assert!(m.wer.unwrap() < 0.35, "WER {:?}", m.wer);
+    assert!(m.median_delay_ms.unwrap() <= 5000.0, "Verzug {:?}", m.median_delay_ms);
+
+    // Kanal mit Erkennung, dann Absturz der Erkennung
+    let port = free_port();
+    let mut cfg = encoder_cfg(port, SrtMode::Listener);
+    cfg.captions.source = CaptionSource::Speech;
+    cfg.captions.asr.model_path = model;
+    let mut enc = Channel::start_encoder(&cfg, &[], &ChannelOptions::default()).unwrap();
+    let mut dec = Channel::start_decoder(&decoder_cfg(port, SrtMode::Caller), &ChannelOptions::default()).unwrap();
+    run_until(&mut enc, &mut dec, Duration::from_secs(15), |e, _| e.captions.asr.as_ref().is_some_and(|a| a.state == "läuft"));
+    enc.crash_asr();
+    let (_, d) = run_until(&mut enc, &mut dec, Duration::from_secs(10), |e, _| e.captions.asr.as_ref().is_some_and(|a| a.state.starts_with("Fehler")));
+    let before = d.frames;
+    let (e, d) = run_until(&mut enc, &mut dec, Duration::from_secs(20), |e, d| {
+        d.frames > before + 50 && e.captions.asr.as_ref().is_some_and(|a| a.state == "läuft")
+    });
+    assert!(d.frames > before && e.captions.asr.unwrap().state == "läuft");
+}

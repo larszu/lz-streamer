@@ -52,6 +52,8 @@ pub struct ChannelStatus {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct CaptionStatus {
+    /// Spracherkennung, falls Quelle „speech“
+    pub asr: Option<crate::asr::AsrStatus>,
     /// Bilder mit Untertitel-Daten seit Start
     pub frames: u64,
     /// in den letzten 2 s Untertitel-Daten gesehen
@@ -204,6 +206,27 @@ pub struct Channel {
     outputs: Vec<(String, String, String)>,
     tracks: Arc<Mutex<Vec<TrackInfo>>>,
     cc: Arc<CaptionCounter>,
+    asr: Option<crate::asr::AsrRunner>,
+}
+
+/// Text in die Live-Untertitelquelle `ccin` schieben (etwas in die Zukunft
+/// gestempelt: cccombiner hängt Untertitel nur an Bilder, die noch nicht
+/// ausgegeben sind).
+fn push_caption_text(pipeline: &gst::Pipeline, cc: &CaptionCounter, text: &str) -> bool {
+    let text = text.trim();
+    if text.is_empty() {
+        return true;
+    }
+    let Some(src) = pipeline.by_name("ccin").and_then(|s| s.downcast::<gst_app::AppSrc>().ok()) else { return false };
+    let mut buf = gst::Buffer::from_slice(text.as_bytes().to_vec());
+    let ms = (text.chars().count() as u64 * 70).clamp(2000, 6000);
+    let rt = pipeline.current_running_time().unwrap_or(gst::ClockTime::ZERO);
+    let b = buf.get_mut().unwrap();
+    b.set_pts(rt + gst::ClockTime::from_mseconds(300));
+    b.set_duration(gst::ClockTime::from_mseconds(ms));
+    let _ = src.push_buffer(buf);
+    *cc.text.lock().unwrap() = Some(text.to_string());
+    true
 }
 
 /// Bilder mit Untertitel-Meta zählen (Encoder: vor dem Encoder).
@@ -482,6 +505,19 @@ impl Channel {
                         "ok",
                         format!("Encoder läuft: {} · {} · SRT {}", enc.label, input.label(), cfg.srt.uri()),
                     );
+                    let asr = (cfg.captions.source == crate::config::CaptionSource::Speech).then(|| {
+                            let (w, c) = (pipeline.downgrade(), cc.clone());
+                            crate::asr::AsrRunner::new(
+                                &pipeline,
+                                "asr_tap",
+                                cfg.captions.asr.clone(),
+                                Arc::new(move |t: String| {
+                                    if let Some(p) = w.upgrade() {
+                                        push_caption_text(&p, &c, &t);
+                                    }
+                                }),
+                            )
+                        });
                     let mut ch = Channel {
                         role: Role::Encoder,
                         pipeline,
@@ -498,6 +534,7 @@ impl Channel {
                         rtmp: rtmp_sender,
                         stopped: false,
                         recording: None,
+                        asr,
                         cc,
                         outputs: cfg
                             .outputs
@@ -734,6 +771,7 @@ impl Channel {
             outputs: Vec::new(),
             tracks,
             cc,
+            asr: None,
         })
     }
 
@@ -790,24 +828,16 @@ impl Channel {
     /// Text in die Live-Untertitelquelle schieben. Anzeigedauer nach Länge
     /// (Pop-on braucht eine Dauer, Roll-up ignoriert sie).
     pub fn push_caption(&self, text: &str) {
-        let text = text.trim();
-        if text.is_empty() {
-            return;
-        }
-        let Some(src) = self.pipeline.by_name("ccin").and_then(|s| s.downcast::<gst_app::AppSrc>().ok()) else {
+        if !push_caption_text(&self.pipeline, &self.cc, text) {
             event(&self.events, "warn", "Untertitelquelle steht nicht auf „live“");
-            return;
-        };
-        let mut buf = gst::Buffer::from_slice(text.as_bytes().to_vec());
-        let ms = (text.chars().count() as u64 * 70).clamp(2000, 6000);
-        // Etwas in die Zukunft stempeln: cccombiner hängt Untertitel nur an
-        // Bilder, die noch nicht ausgegeben sind; „jetzt“ wäre schon zu spät.
-        let rt = self.pipeline.current_running_time().unwrap_or(gst::ClockTime::ZERO);
-        let b = buf.get_mut().unwrap();
-        b.set_pts(rt + gst::ClockTime::from_mseconds(300));
-        b.set_duration(gst::ClockTime::from_mseconds(ms));
-        let _ = src.push_buffer(buf);
-        *self.cc.text.lock().unwrap() = Some(text.to_string());
+        }
+    }
+
+    /// Spracherkennung abstürzen lassen (Test „Kanal läuft weiter“).
+    pub fn crash_asr(&mut self) {
+        if let Some(a) = self.asr.as_mut() {
+            a.crash();
+        }
     }
 
     pub fn force_keyframe(&self) {
@@ -821,6 +851,9 @@ impl Channel {
         self.stopped = true;
         if let Some(r) = self.rtmp.as_mut() {
             r.stop();
+        }
+        if let Some(a) = self.asr.as_mut() {
+            a.stop();
         }
         if self.pipeline.by_name("rec").is_some() {
             // Aufnahme sauber abschließen: EOS durch die Pipeline, dann erst stoppen
@@ -872,6 +905,11 @@ impl Channel {
 
         if let Some(r) = self.rtmp.as_mut() {
             r.poll(&self.events);
+        }
+        if let Some(a) = self.asr.as_mut() {
+            for t in a.poll() {
+                event(&self.events, if t.contains("läuft") { "ok" } else { "warn" }, t);
+            }
         }
 
         let standby = self
@@ -968,6 +1006,7 @@ impl Channel {
             recording: self.recording.clone().or_else(|| self.newest_recording()),
             audio_tracks: self.tracks.lock().unwrap().clone(),
             captions: CaptionStatus {
+                asr: self.asr.as_ref().map(|a| a.status()),
                 frames: self.cc.frames.load(Ordering::Relaxed),
                 present: self.cc.last.lock().unwrap().is_some_and(|t| t.elapsed() < Duration::from_secs(2)),
                 text: self.cc.text.lock().unwrap().clone(),

@@ -68,6 +68,21 @@ enum Cmd {
         #[arg(long, default_value_t = 50)]
         fps: u32,
     },
+    /// Spracherkennung an einer Aufnahme messen: Text, Verzug, Wortfehlerrate
+    UntertitelMessen {
+        #[arg(long)]
+        audio: PathBuf,
+        /// Referenztext (Datei) für die Wortfehlerrate
+        #[arg(long)]
+        referenz: Option<PathBuf>,
+        /// Pfad zur ggml-Modelldatei
+        #[arg(long)]
+        modell: PathBuf,
+        #[arg(long, default_value = "de")]
+        sprache: String,
+        #[arg(long, default_value_t = 2000)]
+        chunk: u32,
+    },
     /// Gefundene Encoder, Geräte und fehlende Bausteine anzeigen
     Info,
 }
@@ -131,6 +146,14 @@ fn main() -> Result<()> {
                 "Aufschlüsselung (Median): Quelle {} ms · Encode {} ms · Parser+Mux {} ms · SRT+Demux+Decode {} ms · Ausgabe {} ms",
                 s.source_ms, s.encode_ms, s.mux_ms, s.transport_decode_ms, s.output_ms
             );
+            Ok(())
+        }
+        Cmd::UntertitelMessen { audio, referenz, modell, sprache, chunk } => {
+            let name = modell.file_stem().map(|s| s.to_string_lossy().trim_start_matches("ggml-").to_string()).unwrap_or_default();
+            let cfg = lz_streamer::asr::AsrConfig { model: name, model_path: modell.to_string_lossy().to_string(), language: sprache, chunk_ms: chunk, ..Default::default() };
+            let reference = referenz.map(std::fs::read_to_string).transpose()?;
+            let m = lz_streamer::asr::measure_file(&audio, &cfg, reference.as_deref())?;
+            println!("{}", serde_json::to_string_pretty(&m)?);
             Ok(())
         }
         Cmd::Info => {

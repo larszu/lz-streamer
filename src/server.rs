@@ -94,6 +94,9 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/api/standby", get(standby_list).post(standby_upload))
         .route("/api/standby/{name}", get(standby_get).delete(standby_delete))
         .route("/api/standby/{name}/use", post(standby_use))
+        .route("/api/models", get(models))
+        .route("/api/models/{name}/download", post(model_download))
+        .route("/api/models/{name}", delete(model_delete))
         .route("/api/recordings", get(recordings))
         .route("/api/recordings/{name}", get(recording_get).delete(recording_delete))
         // Anmeldung
@@ -477,4 +480,60 @@ async fn recording_delete(State(app): S, Path(name): Path<String>) -> Response {
         }
         Err(e) => err(StatusCode::NOT_FOUND, e.to_string()),
     }
+}
+
+// ------------------------------------------------------------ Whisper-Modelle
+
+async fn models(State(app): S) -> impl IntoResponse {
+    let dir = app.sup.models_dir();
+    let list: Vec<_> = crate::asr::MODELS
+        .iter()
+        .map(|(name, _, size)| {
+            let f = dir.join(format!("ggml-{name}.bin"));
+            let part = dir.join(format!("ggml-{name}.bin.part"));
+            json!({
+                "name": name,
+                "bytes": *size,
+                "present": f.is_file(),
+                "downloading": part.is_file(),
+                "loaded_bytes": std::fs::metadata(&part).map(|m| m.len()).ok(),
+                "url": crate::asr::model_url(name),
+            })
+        })
+        .collect();
+    Json(list)
+}
+
+/// Modell von whisper.cpp (Hugging Face) laden – nur auf Klick in der Oberfläche.
+async fn model_download(State(app): S, Path(name): Path<String>) -> Response {
+    if !crate::asr::MODELS.iter().any(|(n, _, _)| *n == name) {
+        return err(StatusCode::NOT_FOUND, "Unbekanntes Modell");
+    }
+    let dir = app.sup.models_dir();
+    let _ = std::fs::create_dir_all(&dir);
+    let part = dir.join(format!("ggml-{name}.bin.part"));
+    let done = dir.join(format!("ggml-{name}.bin"));
+    if part.is_file() {
+        return err(StatusCode::CONFLICT, "Lädt schon");
+    }
+    let url = crate::asr::model_url(&name);
+    let sup = app.sup.clone();
+    tokio::spawn(async move {
+        sup.log("info", format!("Lade Modell {name} …")).await;
+        let st = tokio::process::Command::new("curl").args(["-L", "-f", "-s", "-o"]).arg(&part).arg(&url).status().await;
+        match st {
+            Ok(s) if s.success() && std::fs::rename(&part, &done).is_ok() => sup.log("ok", format!("Modell {name} geladen")).await,
+            _ => {
+                let _ = std::fs::remove_file(&part);
+                sup.log("error", format!("Modell {name} nicht ladbar")).await
+            }
+        }
+    });
+    ok()
+}
+
+async fn model_delete(State(app): S, Path(name): Path<String>) -> Response {
+    let Some(n) = admin::safe_name(&name) else { return err(StatusCode::BAD_REQUEST, "Ungültiger Name") };
+    let _ = std::fs::remove_file(app.sup.models_dir().join(format!("ggml-{n}.bin")));
+    ok()
 }
