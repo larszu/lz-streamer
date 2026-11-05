@@ -37,7 +37,7 @@ impl Class {
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
-struct Frame {
+pub struct Frame {
     db: f64,
     flat: f64,
     voicing: f64,

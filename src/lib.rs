@@ -14,6 +14,7 @@ pub mod leveler;
 pub mod loudness;
 pub mod lzloudness;
 pub mod ops;
+pub mod plugin;
 pub mod pipeline;
 pub mod renderer;
 pub mod report;

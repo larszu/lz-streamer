@@ -99,6 +99,7 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/api/standby", get(standby_list).post(standby_upload))
         .route("/api/standby/{name}", get(standby_get).delete(standby_delete))
         .route("/api/standby/{name}/use", post(standby_use))
+        .route("/api/plugins", get(plugins))
         .route("/api/models", get(models))
         .route("/api/models/{name}/download", post(model_download))
         .route("/api/models/{name}", delete(model_delete))
@@ -504,6 +505,10 @@ async fn recording_delete(State(app): S, Path(name): Path<String>) -> Response {
 }
 
 // ------------------------------------------------------------ Whisper-Modelle
+
+async fn plugins() -> impl IntoResponse {
+    Json(crate::plugin::installed().into_iter().map(|(name, path)| json!({ "name": name, "path": path })).collect::<Vec<_>>())
+}
 
 async fn models(State(app): S) -> impl IntoResponse {
     let dir = app.sup.models_dir();
