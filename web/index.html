@@ -150,11 +150,22 @@
             <p class="group-title">Untertitel (CEA-608/708)</p>
             <div class="row2">
               <label class="field"><span>Quelle</span>
-                <select class="input" data-path="encoder.captions.source"><option value="off">Aus</option><option value="sdi">Aus dem SDI-Eingang durchreichen</option><option value="file">Untertiteldatei (.srt/.vtt)</option><option value="live">Live (Text, Spracherkennung)</option></select></label>
+                <select class="input" data-path="encoder.captions.source"><option value="off">Aus</option><option value="sdi">Aus dem SDI-Eingang durchreichen</option><option value="file">Untertiteldatei (.srt/.vtt)</option><option value="live">Live-Text (API, Eingabefeld)</option><option value="speech">Spracherkennung (Whisper lokal)</option></select></label>
               <label class="field"><span>Darstellung</span>
                 <select class="input" data-path="encoder.captions.mode"><option value="pop-on">Pop-on (ganze Zeilen)</option><option value="roll-up2">Roll-up, 2 Zeilen</option><option value="roll-up3">Roll-up, 3 Zeilen</option><option value="paint-on">Paint-on</option></select></label>
             </div>
             <label class="field" data-show-mode="encoder.captions.source=file"><span>Untertiteldatei (Pfad)</span><input class="input" data-path="encoder.captions.file" spellcheck="false"></label>
+            <div class="row2" data-show-mode="encoder.captions.source=speech">
+              <label class="field"><span>Modell</span><select class="input" data-path="encoder.captions.asr.model"><option value="tiny">tiny (schnell)</option><option value="base">base</option><option value="small">small (empfohlen)</option><option value="medium">medium (genauer)</option><option value="large-v3-turbo">large-v3-turbo</option></select></label>
+              <label class="field"><span>Sprache</span><input class="input" data-path="encoder.captions.asr.language" placeholder="de"></label>
+              <label class="field"><span>Tonspur Nr. (0 = erste)</span><input class="input" data-path="encoder.captions.asr.track" data-num inputmode="numeric"></label>
+              <label class="field"><span>Stückgröße (ms)</span><input class="input" data-path="encoder.captions.asr.chunk_ms" data-num inputmode="numeric"></label>
+            </div>
+            <div data-show-mode="encoder.captions.source=speech">
+              <p class="hint">Ersetzungen (Namen, Fachbegriffe): erkannt → geschrieben</p>
+              <div class="list-edit" id="replacements"></div>
+              <button type="button" class="btn btn--soft" id="add-replacement">Ersetzung hinzufügen</button>
+            </div>
             <p class="group-title">Beschnitt (Pixel am Eingang)</p>
             <div class="row2">
               <label class="field"><span>Oben</span><input class="input" data-path="encoder.input.crop.0" data-num inputmode="numeric"></label>
@@ -274,6 +285,11 @@
       <h2 id="sb-title">Standbilder</h2>
       <div class="gallery" id="standby"></div>
       <label class="btn btn--soft">Bild hochladen (PNG/JPEG)<input type="file" accept="image/png,image/jpeg" id="standby-file" hidden></label>
+    </section>
+    <section class="card" aria-labelledby="mo-title">
+      <h2 id="mo-title">Spracherkennung <small>Whisper-Modelle</small></h2>
+      <ol class="rows" id="models"></ol>
+      <p class="hint">Modelle kommen von whisper.cpp (Hugging Face) und bleiben auf diesem Rechner. Geladen wird nur auf Klick.</p>
     </section>
     <section class="card" aria-labelledby="sy-title">
       <h2 id="sy-title">System</h2>

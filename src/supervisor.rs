@@ -93,6 +93,11 @@ impl Supervisor {
         })
     }
 
+    /// Whisper-Modelle liegen neben den Aufnahmen im Datenverzeichnis.
+    pub fn models_dir(&self) -> PathBuf {
+        self.record_dir.parent().map(|p| p.join("modelle")).unwrap_or_else(|| PathBuf::from("modelle"))
+    }
+
     pub async fn config(&self) -> Config {
         self.state.lock().await.config.clone()
     }
@@ -185,6 +190,10 @@ impl Supervisor {
         let mut cfg = cfg.clone();
         if cfg.encoder.record.dir.trim().is_empty() {
             cfg.encoder.record.dir = self.record_dir.to_string_lossy().to_string();
+        }
+        let asr = &mut cfg.encoder.captions.asr;
+        if asr.model_path.trim().is_empty() {
+            asr.model_path = self.models_dir().join(format!("ggml-{}.bin", asr.model)).to_string_lossy().to_string();
         }
         std::fs::write(&cfg_file, serde_json::to_vec(&cfg).unwrap())?;
         let _ = std::fs::remove_file(&self.preview_path);

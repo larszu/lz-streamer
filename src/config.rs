@@ -371,8 +371,10 @@ pub enum CaptionSource {
     Sdi,
     /// Untertiteldatei (.srt/.vtt) zeitgenau einspielen
     File,
-    /// Text live per API, OSC oder Spracherkennung
+    /// Text live per API oder OSC
     Live,
+    /// Spracherkennung aus einer Tonspur (Whisper lokal)
+    Speech,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -405,6 +407,7 @@ pub struct CaptionConfig {
     /// Pfad zur Untertiteldatei bei `file`
     pub file: String,
     pub mode: CaptionMode,
+    pub asr: crate::asr::AsrConfig,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]

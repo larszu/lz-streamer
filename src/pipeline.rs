@@ -213,14 +213,22 @@ pub fn encoder_description(cfg: &EncoderConfig, parts: &EncoderParts) -> String 
             d.push(format!(
                 "ain. ! queue max-size-buffers=0 max-size-bytes=0 max-size-time=1000000000 \
                  ! audioconvert name=amx{i} mix-matrix={mix} ! {out_caps} \
-                 ! volume name=avol{i} volume={:.4} mute={} ! ebur128level name=lvl{i} interval=500000000 \
+                 ! volume name=avol{i} volume={:.4} mute={} ! ebur128level name=lvl{i} interval=500000000{} \
                  ! audioconvert ! {aac} name=aenc{i} bitrate={} \
                  ! aacparse ! taginject name=atag{i} ! tee name=ae{i}",
                 crate::audio::db_to_linear(t.gain_db),
                 t.mute,
+                if asr_track(cfg) == Some(i) { format!(" ! tee name=araw{i} ! queue max-size-buffers=0 max-size-bytes=0 max-size-time=1000000000") } else { String::new() },
                 t.bitrate_kbps.clamp(32, 512) * 1000
             ));
             d.push(format!("ae{i}. ! queue max-size-buffers=0 max-size-bytes=0 max-size-time=2000000000 ! mux."));
+            if asr_track(cfg) == Some(i) {
+                d.push(format!(
+                    "araw{i}. ! queue leaky=downstream max-size-buffers=0 max-size-bytes=0 max-size-time=2000000000 \
+                     ! audioconvert ! audioresample ! audio/x-raw,format=F32LE,layout=interleaved,rate=16000,channels=1 \
+                     ! appsink name=asr_tap sync=false async=false max-buffers=0 drop=false"
+                ));
+            }
             if parts.rtmp && i == 0 {
                 d.push(
                     "ae0. ! queue leaky=downstream max-size-buffers=200 max-size-bytes=0 max-size-time=0 \
@@ -277,6 +285,15 @@ pub fn encoder_description(cfg: &EncoderConfig, parts: &EncoderParts) -> String 
     d.join("  ")
 }
 
+/// Welche Tonspur die Spracherkennung hört (nur bei Quelle „speech“).
+pub fn asr_track(cfg: &EncoderConfig) -> Option<usize> {
+    if cfg.captions.source != CaptionSource::Speech || !cfg.audio.enabled {
+        return None;
+    }
+    let n = crate::audio::effective_tracks(&cfg.audio.tracks).len();
+    Some((cfg.captions.asr.track as usize).min(n.saturating_sub(1)))
+}
+
 pub fn cc_inserter(codec: Codec) -> &'static str {
     match codec {
         Codec::H264 => "h264ccinserter",
@@ -306,7 +323,7 @@ pub fn caption_branch(cfg: &EncoderConfig) -> Option<String> {
         CaptionSource::File if !c.file.trim().is_empty() => {
             Some(format!("filesrc location={} ! subparse ! text/x-raw,format=utf8 ! {tail}", quote(c.file.trim())))
         }
-        CaptionSource::Live => Some(format!(
+        CaptionSource::Live | CaptionSource::Speech => Some(format!(
             "appsrc name=ccin is-live=true format=time do-timestamp=false caps=text/x-raw,format=utf8 ! {tail}"
         )),
         _ => None,
@@ -473,6 +490,9 @@ mod tests {
         cfg.captions.mode = crate::config::CaptionMode::RollUp2;
         let d = encoder_description(&cfg, &parts(&input));
         assert!(d.contains("appsrc name=ccin") && d.contains("mode=roll-up2"));
+        cfg.captions.source = CaptionSource::Speech;
+        let d = encoder_description(&cfg, &parts(&input));
+        assert!(d.contains("tee name=araw0") && d.contains("appsink name=asr_tap") && d.contains("rate=16000"));
         cfg.captions.source = CaptionSource::Sdi;
         let deck = ResolvedInput::Decklink { device: 0, connection: "sdi" };
         let d = encoder_description(&cfg, &parts(&deck));
