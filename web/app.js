@@ -597,9 +597,15 @@ $('#caption-send').addEventListener('submit', async e => {
   const text = $('#caption-text').value.trim(); if (!text) return;
   await api('POST', '/api/caption', { text }); $('#caption-text').value = '';
 });
+$('#caption-send2').addEventListener('submit', async e => {
+  e.preventDefault();
+  const text = $('#caption-text2').value.trim(); if (!text) return;
+  await api('POST', '/api/caption', { text, second: true }); $('#caption-text2').value = '';
+});
 function renderCaptions(st) {
   const s = st.runtime.status, enc = st.config.role === 'encoder';
   $('#caption-send').hidden = !(enc && s && st.config.encoder.captions.source === 'live');
+  $('#caption-send2').hidden = $('#caption-send').hidden || !st.config.encoder.captions.second?.enabled;
   const cc = s?.captions;
   $('#chip-cc').hidden = !cc?.present;
   const line = $('#caption-line');

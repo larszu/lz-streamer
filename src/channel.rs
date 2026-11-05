@@ -56,6 +56,9 @@ pub struct ChannelStatus {
 pub struct CaptionStatus {
     /// Spracherkennung, falls Quelle „speech“
     pub asr: Option<crate::asr::AsrStatus>,
+    /// Übersetzung für die zweite Sprache (CC3)
+    #[serde(default)]
+    pub translation: Option<crate::asr::AsrStatus>,
     /// Bilder mit Untertitel-Daten seit Start
     pub frames: u64,
     /// in den letzten 2 s Untertitel-Daten gesehen
@@ -196,6 +199,8 @@ pub enum ChildCmd {
     Keyframe,
     /// Untertiteltext live einspeisen (Quelle „live“)
     Caption { text: String },
+    /// Text der zweiten Sprache (CC3) live einspeisen, z. B. von einer Dolmetscherin
+    Caption2 { text: String },
     Stop,
 }
 
@@ -253,6 +258,8 @@ pub struct Channel {
     tracks: Arc<Mutex<Vec<TrackInfo>>>,
     cc: Arc<CaptionCounter>,
     asr: Option<crate::asr::AsrRunner>,
+    /// zweite Untertitelsprache (Übersetzung auf CC3)
+    second: Option<SecondLanguage>,
     gfx: Option<crate::gfx::FrameReceiver>,
     caption_seen: Option<(String, Instant)>,
     /// Laufzeit, zu der das aktuelle Aufnahme-Segment begann
@@ -270,11 +277,15 @@ fn push_caption_text(pipeline: &gst::Pipeline, cc: &CaptionCounter, text: &str) 
 
 /// Wie `push_caption_text`, aber mit Wunschzeit (Laufzeit ns), etwa „gesprochen + Erkennungsverzug“.
 fn push_caption_at(pipeline: &gst::Pipeline, cc: &CaptionCounter, text: &str, at_ns: Option<u64>) -> bool {
+    push_caption_to(pipeline, "ccin", cc, text, at_ns)
+}
+
+fn push_caption_to(pipeline: &gst::Pipeline, appsrc: &str, cc: &CaptionCounter, text: &str, at_ns: Option<u64>) -> bool {
     let text = text.trim();
     if text.is_empty() {
         return true;
     }
-    let Some(src) = pipeline.by_name("ccin").and_then(|s| s.downcast::<gst_app::AppSrc>().ok()) else { return false };
+    let Some(src) = pipeline.by_name(appsrc).and_then(|s| s.downcast::<gst_app::AppSrc>().ok()) else { return false };
     let mut buf = gst::Buffer::from_slice(text.as_bytes().to_vec());
     let ms = (text.chars().count() as u64 * 70).clamp(2000, 6000);
     let rt = pipeline.current_running_time().unwrap_or(gst::ClockTime::ZERO);
@@ -295,11 +306,37 @@ fn push_caption_at(pipeline: &gst::Pipeline, cc: &CaptionCounter, text: &str, at
     true
 }
 
+struct SecondLanguage {
+    /// Übersetzung aus der Spracherkennung; ohne sie wird CC3 live eingespeist
+    asr: Option<crate::asr::AsrRunner>,
+    cc: Arc<CaptionCounter>,
+    language: String,
+    written: Option<usize>,
+}
+
+/// Untertiteldateien einer Sprache nachführen; `lang` setzt den Dateinamen `<aufnahme>.<lang>.srt`.
+fn sync_subtitle_files(cc: &CaptionCounter, rec: &str, start: u64, written: &mut Option<usize>, lang: Option<&str>) {
+    let mut cues = cc.cues.lock().unwrap();
+    // Zeilen vor dem Segment gehören zu früheren Dateien
+    cues.retain(|c| c.end_ns > start);
+    if *written == Some(cues.len()) || cues.is_empty() && written.is_some() {
+        return;
+    }
+    let base = std::path::Path::new(rec);
+    let path = match lang {
+        Some(l) => base.with_extension(format!("{l}.ts")),
+        None => base.to_path_buf(),
+    };
+    if crate::subtitles::write(&path, &cues, start).is_ok() {
+        *written = Some(cues.len());
+    }
+}
+
 /// Encoder mit Aufnahme: den erzeugten 608-Strom zurücklesen. Jede sichtbare
 /// Zeile wird mit ihrer Anzeigezeit (Laufzeit) für die Untertiteldateien gemerkt,
 /// ein Löschen beendet die Zeile.
-fn hook_recording_cues(pipeline: &gst::Pipeline, cc: &Arc<CaptionCounter>) {
-    if let Some(pad) = pipeline.by_name("encjson").and_then(|e| e.static_pad("sink")) {
+fn hook_recording_cues(pipeline: &gst::Pipeline, cc: &Arc<CaptionCounter>, suffix: &str) {
+    if let Some(pad) = pipeline.by_name(&format!("encjson{suffix}")).and_then(|e| e.static_pad("sink")) {
         pad.add_probe(gst::PadProbeType::BUFFER, |_, info| {
             if let Some(gst::PadProbeData::Buffer(b)) = info.data.as_mut() {
                 if b.duration().is_none() {
@@ -309,7 +346,7 @@ fn hook_recording_cues(pipeline: &gst::Pipeline, cc: &Arc<CaptionCounter>) {
             gst::PadProbeReturn::Ok
         });
     }
-    let Some(sink) = pipeline.by_name("enccc").and_then(|s| s.downcast::<gst_app::AppSink>().ok()) else { return };
+    let Some(sink) = pipeline.by_name(&format!("enccc{suffix}")).and_then(|s| s.downcast::<gst_app::AppSink>().ok()) else { return };
     let cc = cc.clone();
     let last: Arc<Mutex<Option<String>>> = Arc::default();
     sink.set_callbacks(
@@ -643,7 +680,7 @@ impl Channel {
             configure_audio(&pipeline, cfg);
             let cc: Arc<CaptionCounter> = Arc::default();
             count_captions(&venc.static_pad("sink").unwrap(), &cc);
-            hook_recording_cues(&pipeline, &cc);
+            hook_recording_cues(&pipeline, &cc, "");
             if let Some(v2) = pipeline.by_name("venc2") {
                 set_props(&v2, &caps::encoder_props(enc.factory, cfg.video.bitrate_kbps, cfg.video.gop_frames()), &events);
             }
@@ -703,10 +740,14 @@ impl Channel {
                     );
                     let asr = (cfg.captions.source == crate::config::CaptionSource::Speech).then(|| {
                             let (w, c) = (pipeline.downgrade(), cc.clone());
+                            let mut acfg = cfg.captions.asr.clone();
+                            if cfg.captions.second_active() && acfg.threads == 0 {
+                                acfg.threads = 6;
+                            }
                             crate::asr::AsrRunner::new(
                                 &pipeline,
                                 "asr_tap",
-                                cfg.captions.asr.clone(),
+                                acfg,
                                 Arc::new(move |t: String, at: Option<u64>| {
                                     if let Some(p) = w.upgrade() {
                                         push_caption_at(&p, &c, &t, at);
@@ -714,8 +755,38 @@ impl Channel {
                                 }),
                             )
                         });
+                    let second = cfg.captions.second_active().then(|| {
+                        let cc2: Arc<CaptionCounter> = Arc::default();
+                        hook_recording_cues(&pipeline, &cc2, "2");
+                        let speech = cfg.captions.source == crate::config::CaptionSource::Speech;
+                        let mut acfg = cfg.captions.asr.clone();
+                        acfg.translate = true;
+                        // eigenes Modell neben dem der Hauptsprache, Kerne geteilt
+                        let model = cfg.captions.second.model.trim();
+                        if !model.is_empty() && model != acfg.model {
+                            acfg.model_path = std::path::Path::new(&acfg.model_path)
+                                .with_file_name(format!("ggml-{model}.bin"))
+                                .to_string_lossy()
+                                .into_owned();
+                            acfg.model = model.to_string();
+                        }
+                        acfg.threads = 4;
+                        let (w, c) = (pipeline.downgrade(), cc2.clone());
+                        let runner = speech.then(|| crate::asr::AsrRunner::new(
+                            &pipeline,
+                            "asr_tap2",
+                            acfg,
+                            Arc::new(move |t: String, at: Option<u64>| {
+                                if let Some(p) = w.upgrade() {
+                                    push_caption_to(&p, "ccin2", &c, &t, at);
+                                }
+                            }),
+                        ));
+                        SecondLanguage { asr: runner, cc: cc2, language: cfg.captions.second.language.clone(), written: None }
+                    });
                     let mut ch = Channel {
                         role: Role::Encoder,
+                        second,
                         pipeline,
                         counters,
                         events,
@@ -831,7 +902,7 @@ impl Channel {
                     };
                     *k2.lock().unwrap() = Some(codec);
                     event(&e2, "info", format!("Videostrom {name}, Decoder {dec}"));
-                    pipeline::decoder_video_branch(codec, dec, cfg2.output, cfg2.device, &cfg2.deck_mode, ts_off, (cfg2.show_captions, cfg2.cc_line))
+                    pipeline::decoder_video_branch(codec, dec, cfg2.output, cfg2.device, &cfg2.deck_mode, ts_off, (cfg2.show_captions, cfg2.cc_line, cfg2.caption_channel))
                 }
                 "audio/mpeg" => {
                     // Alle Tonspuren auf einen Umschalter, ausgegeben wird eine.
@@ -954,6 +1025,7 @@ impl Channel {
         pipeline.set_state(gst::State::Playing).context("Decoder-Pipeline startet nicht")?;
         event(&events, "ok", format!("Decoder wartet auf {}", cfg.srt.uri()));
         Ok(Channel {
+            second: None,
             role: Role::Decoder,
             pipeline,
             counters,
@@ -996,19 +1068,17 @@ impl Channel {
         if self.pipeline.by_name("rec").is_none() {
             // ohne Aufnahme braucht niemand die Zeilen
             self.cc.cues.lock().unwrap().clear();
-            return;
-        }
-        let mut cues = self.cc.cues.lock().unwrap();
-        // Zeilen vor dem Segment gehören zu früheren Dateien
-        let start = self.rec_start_ns;
-        cues.retain(|c| c.end_ns > start);
-        if self.cues_written == Some(cues.len()) || cues.is_empty() && self.cues_written.is_some() {
+            if let Some(s) = &self.second {
+                s.cc.cues.lock().unwrap().clear();
+            }
             return;
         }
         let Some(rec) = self.recording.clone().or_else(|| self.newest_recording()) else { return };
         self.recording.get_or_insert(rec.clone());
-        if crate::subtitles::write(std::path::Path::new(&rec), &cues, start).is_ok() {
-            self.cues_written = Some(cues.len());
+        let start = self.rec_start_ns;
+        sync_subtitle_files(&self.cc, &rec, start, &mut self.cues_written, None);
+        if let Some(s) = self.second.as_mut() {
+            sync_subtitle_files(&s.cc, &rec, start, &mut s.written, Some(&s.language));
         }
     }
 
@@ -1050,6 +1120,7 @@ impl Channel {
             }
             ChildCmd::Keyframe => self.force_keyframe(),
             ChildCmd::Caption { text } => self.push_caption(text),
+            ChildCmd::Caption2 { text } => self.push_caption2(text),
             ChildCmd::Stop => self.stop(),
         }
     }
@@ -1060,6 +1131,18 @@ impl Channel {
         if !push_caption_text(&self.pipeline, &self.cc, text) {
             event(&self.events, "warn", "Untertitelquelle steht nicht auf „live“");
         }
+    }
+
+    pub fn push_caption2(&self, text: &str) {
+        let ok = self.second.as_ref().is_some_and(|s| push_caption_to(&self.pipeline, "ccin2", &s.cc, text, None));
+        if !ok {
+            event(&self.events, "warn", "Zweite Untertitelsprache ist nicht eingeschaltet");
+        }
+    }
+
+    /// Zeilen der Übersetzung (zweite Sprache, für Messungen).
+    pub fn asr2_phrases(&self) -> Vec<crate::asr::Phrase> {
+        self.second.as_ref().and_then(|s| s.asr.as_ref()).map(|a| a.phrases.lock().unwrap().clone()).unwrap_or_default()
     }
 
     /// Zeilen der Spracherkennung (für Messungen).
@@ -1101,15 +1184,29 @@ impl Channel {
         if let Some(a) = self.asr.as_mut() {
             a.stop();
         }
+        if let Some(a) = self.second.as_mut().and_then(|s| s.asr.as_mut()) {
+            a.stop();
+        }
         if self.pipeline.by_name("rec").is_some() {
             self.update_sidecars();
+        }
+        if std::env::var("LZS_STOP_DEBUG").is_ok() {
+            eprintln!("vor EOS");
         }
         if let Some(rec) = self.pipeline.by_name("rec") {
             // Aufnahme sauber abschließen: EOS nur in den Mitschnitt schicken
             // (ein EOS an die ganze Pipeline blockiert an Live-Quellen, deren
             // Streaming-Thread gerade wartet), dann auf „Fragment geschlossen“ warten.
-            for pad in rec.sink_pads() {
+            // Bild zuerst: der Ton läuft dem Bild voraus und wartet in splitmuxsink
+            // auf es; ein EOS am Ton zuerst blockiert so lange.
+            let mut pads = rec.sink_pads();
+            pads.sort_by_key(|p| p.name() != "video");
+            for pad in pads {
+                let t = Instant::now();
                 pad.send_event(gst::event::Eos::new());
+                if std::env::var("LZS_STOP_DEBUG").is_ok() {
+                    eprintln!("EOS {} {:?}", pad.name(), t.elapsed());
+                }
             }
             if let Some(bus) = self.pipeline.bus() {
                 let end = Instant::now() + Duration::from_secs(3);
@@ -1123,7 +1220,11 @@ impl Channel {
                 }
             }
         }
+        let t = Instant::now();
         let _ = self.pipeline.set_state(gst::State::Null);
+        if std::env::var("LZS_STOP_DEBUG").is_ok() {
+            eprintln!("Null nach {:?}", t.elapsed());
+        }
     }
 
     /// Bus leeren, Zustände vergleichen, Status bauen. Etwa zweimal pro Sekunde aufrufen.
@@ -1160,6 +1261,9 @@ impl Channel {
                                 self.recording = Some(loc);
                                 self.rec_start_ns = st.get::<u64>("running-time").unwrap_or(0);
                                 self.cues_written = None;
+                                if let Some(s) = self.second.as_mut() {
+                                    s.written = None;
+                                }
                             }
                         }
                     }
@@ -1198,6 +1302,11 @@ impl Channel {
         if let Some(a) = self.asr.as_mut() {
             for t in a.poll() {
                 event(&self.events, if t.contains("läuft") { "ok" } else { "warn" }, t);
+            }
+        }
+        if let Some(a) = self.second.as_mut().and_then(|s| s.asr.as_mut()) {
+            for t in a.poll() {
+                event(&self.events, if t.contains("läuft") { "ok" } else { "warn" }, format!("Übersetzung: {t}"));
             }
         }
 
@@ -1325,6 +1434,7 @@ impl Channel {
             }),
             captions: CaptionStatus {
                 asr: self.asr.as_ref().map(|a| a.status()),
+                translation: self.second.as_ref().and_then(|s| s.asr.as_ref()).map(|a| a.status()),
                 frames: self.cc.frames.load(Ordering::Relaxed),
                 present: self.cc.last.lock().unwrap().is_some_and(|t| t.elapsed() < Duration::from_secs(2)),
                 text: self.cc.text.lock().unwrap().clone(),

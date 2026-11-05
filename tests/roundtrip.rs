@@ -880,3 +880,54 @@ fn recording_gets_srt_and_vtt_in_sync() {
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// U6: zweite Untertitelsprache auf CC3 neben CC1 im selben TS; der Decoder
+/// wählt den Kanal, neben der Aufnahme liegen Dateien je Sprache.
+#[test]
+fn second_caption_language_on_cc3() {
+    use lz_streamer::config::{CaptionMode, CaptionSource};
+    init();
+    let port = free_port();
+    let dir = std::env::temp_dir().join(format!("lzs-u6-{port}"));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut cfg = encoder_cfg(port, SrtMode::Listener);
+    cfg.captions.source = CaptionSource::Live;
+    cfg.captions.mode = CaptionMode::PopOn;
+    cfg.captions.second.enabled = true;
+    cfg.record.enabled = true;
+    cfg.record.dir = dir.to_string_lossy().to_string();
+    let mut enc = Channel::start_encoder(&cfg, &[], &ChannelOptions::default()).unwrap();
+    let mut dc = decoder_cfg(port, SrtMode::Caller);
+    dc.caption_channel = 3;
+    let mut dec = Channel::start_decoder(&dc, &ChannelOptions::default()).unwrap();
+    let t0 = Instant::now();
+    run_until(&mut enc, &mut dec, Duration::from_secs(10), |_, d| d.frames >= 25);
+    eprintln!("Anlauf {:?}", t0.elapsed());
+    for (de, en) in [("Guten Abend", "Good evening"), ("Willkommen", "Welcome")] {
+        enc.command(&ChildCmd::Caption { text: de.into() });
+        enc.command(&ChildCmd::Caption2 { text: en.into() });
+        let end = Instant::now() + Duration::from_millis(2500);
+        while Instant::now() < end {
+            status(&mut enc);
+            status(&mut dec);
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+    let (_, d) = run_until(&mut enc, &mut dec, Duration::from_secs(8), |_, d| d.captions.text.as_deref().is_some_and(|t| t.contains("Good evening") || t.contains("Welcome")));
+    let shown = d.captions.text.unwrap_or_default();
+    assert!(!shown.contains("Abend") && !shown.contains("Willkommen"), "CC3-Decoder zeigt CC1: {shown}");
+    let rec = std::path::PathBuf::from(status(&mut enc).0.recording.unwrap());
+    let t = Instant::now();
+    enc.stop();
+    eprintln!("Stopp {:?}", t.elapsed());
+    let t = Instant::now();
+    drop(dec);
+    eprintln!("Decoder weg {:?}", t.elapsed());
+    let de = std::fs::read_to_string(rec.with_extension("srt")).unwrap();
+    let en = std::fs::read_to_string(rec.with_extension("eng.srt")).expect(".eng.srt fehlt");
+    assert!(de.contains("Guten Abend") && !de.contains("Good"), "{de}");
+    assert!(en.contains("Good evening") && en.contains("Welcome") && !en.contains("Abend"), "{en}");
+    assert!(rec.with_extension("eng.vtt").exists());
+    eprintln!("CC1:\n{de}CC3:\n{en}");
+    let _ = std::fs::remove_dir_all(&dir);
+}

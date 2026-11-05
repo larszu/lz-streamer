@@ -265,7 +265,13 @@ pub fn encoder_description(cfg: &EncoderConfig, parts: &EncoderParts) -> String 
                 d.push(format!(
                     "araw{i}. ! queue leaky=downstream max-size-buffers=0 max-size-bytes=0 max-size-time=2000000000 \
                      ! audioconvert ! audioresample ! audio/x-raw,format=F32LE,layout=interleaved,rate=16000,channels=1 \
-                     ! appsink name=asr_tap sync=false async=false max-buffers=0 drop=false"
+                     ! {}appsink name=asr_tap sync=false async=false max-buffers=0 drop=false{}",
+                    if cfg.captions.second_active() { "tee name=asrt ! queue ! " } else { "" },
+                    if cfg.captions.second_active() {
+                        "  asrt. ! queue max-size-buffers=0 max-size-bytes=0 max-size-time=2000000000 ! appsink name=asr_tap2 sync=false async=false max-buffers=0 drop=false"
+                    } else {
+                        ""
+                    }
                 ));
             }
             if parts.rtmp && i == 0 {
@@ -355,23 +361,50 @@ pub fn cc_extractor(codec: Codec) -> &'static str {
 /// Bei SDI hängt die Meta schon am Bild (`output-cc=true`), dann kein Zweig.
 pub fn caption_branch(cfg: &EncoderConfig) -> Option<String> {
     let c = &cfg.captions;
-    // Mit Aufnahme: den fertigen 608-Strom zurücklesen; seine Anzeigezeiten ergeben die Untertiteldateien
-    let (rec_tap, rec_side) = if cfg.record.enabled {
-        (
-            "tee name=ccrt ! ",
-            "  ccrt. ! queue leaky=downstream max-size-buffers=0 max-size-bytes=0 max-size-time=2000000000 \
-             ! ccconverter ! closedcaption/x-cea-608,format=raw ! cea608tojson name=encjson unbuffered=true \
-             ! appsink name=enccc sync=false async=false",
+    // Je Sprache: tttocea608 → 608 (raw); mit Aufnahme zurückgelesen, damit die
+    // Untertiteldateien die Anzeigezeiten tragen. Zwei Sprachen: cea608mux legt
+    // die zweite auf CC3 (Feld 2).
+    let second = c.second_active();
+    let lang = |n: &str, src: &str, pad: &str| {
+        let (tap, side) = if cfg.record.enabled {
+            (
+                format!("tee name=ccrt{n} ! "),
+                format!(
+                    "  ccrt{n}. ! queue leaky=downstream max-size-buffers=0 max-size-bytes=0 max-size-time=2000000000 \
+                     ! cea608tojson name=encjson{n} unbuffered=true ! appsink name=enccc{n} sync=false async=false"
+                ),
+            )
+        } else {
+            (String::new(), String::new())
+        };
+        format!(
+            "{src} ! tttocea608 name=cc608{n} mode={} ! closedcaption/x-cea-608,format=raw,framerate={}/1 \
+             ! {tap}queue max-size-buffers=0 max-size-bytes=0 max-size-time=2000000000 ! {pad}{side}",
+            c.mode.gst_nick(),
+            cfg.video.fps
         )
-    } else {
-        ("", "")
     };
-    let tail = format!(
-        "tttocea608 name=cc608 mode={} ! ccconverter ! closedcaption/x-cea-708,format=cc_data,framerate={}/1 \
-         ! {rec_tap}queue max-size-buffers=0 max-size-bytes=0 max-size-time=2000000000 ! ccc.caption{rec_side}",
-        c.mode.gst_nick(),
+    let to_combiner = format!(
+        "ccconverter ! closedcaption/x-cea-708,format=cc_data,framerate={}/1 ! queue max-size-buffers=0 max-size-bytes=0 max-size-time=2000000000 ! ccc.caption",
         cfg.video.fps
     );
+    let tail = |src: &str| {
+        if second {
+            // Mux zuerst, damit die Zweige seine Pads beim Parsen finden
+            format!(
+                "cea608mux name=cmux ! {to_combiner}  {}  {}",
+                lang("", src, "cmux.cc1"),
+                // tttocea608 schreibt immer Feld 1; CC3 ist derselbe Kanal im zweiten Feld
+                lang(
+                    "2",
+                    "appsrc name=ccin2 is-live=true format=time do-timestamp=false caps=text/x-raw,format=utf8",
+                    "capssetter caps=closedcaption/x-cea-608,field=(int)1 ! cmux.cc3"
+                )
+            )
+        } else {
+            lang("", src, &to_combiner)
+        }
+    };
     match c.source {
         CaptionSource::File if !c.file.trim().is_empty() => {
             // Text zusätzlich abgreifen: für die Grafik und die Rückfall-Einblendung
@@ -381,11 +414,10 @@ pub fn caption_branch(cfg: &EncoderConfig) -> Option<String> {
                 String::new()
             };
             let side = if tap.is_empty() { String::new() } else { "  cct. ! queue ! appsink name=cctext sync=true async=false".to_string() };
-            Some(format!("filesrc location={} ! subparse ! text/x-raw,format=utf8 ! {tap}{tail}{side}", quote(c.file.trim())))
+            let src = format!("filesrc location={} ! subparse ! text/x-raw,format=utf8 ! {tap}identity", quote(c.file.trim()));
+            Some(format!("{}{side}", tail(&src)))
         }
-        CaptionSource::Live | CaptionSource::Speech => Some(format!(
-            "appsrc name=ccin is-live=true format=time do-timestamp=false caps=text/x-raw,format=utf8 ! {tail}"
-        )),
+        CaptionSource::Live | CaptionSource::Speech => Some(tail("appsrc name=ccin is-live=true format=time do-timestamp=false caps=text/x-raw,format=utf8")),
         _ => None,
     }
 }
@@ -437,10 +469,12 @@ pub fn decoder_video_branch(
     device: u32,
     deck_mode: &str,
     ts_offset_ns: i64,
-    captions: (bool, u32),
+    captions: (bool, u32, u8),
 ) -> String {
     let parser = crate::caps::parser_for(codec);
-    let (show, cc_line) = captions;
+    let (show, cc_line, channel) = captions;
+    // CC3 liegt im zweiten Feld
+    let field = if channel == 3 { 1 } else { 0 };
     let sink = match output {
         OutputKind::Window => format!("autovideosink name=vsink sync=true async=false ts-offset={ts_offset_ns}"),
         OutputKind::Decklink => format!(
@@ -453,14 +487,14 @@ pub fn decoder_video_branch(
     };
     // libav dekodiert sonst im Frame-Threading und hält dafür mehrere Bilder zurück
     let dec_props = if decoder.starts_with("avdec_") { " thread-type=slice" } else { "" };
-    let overlay = if show && output != OutputKind::None { "cea608overlay ! videoconvert ! " } else { "" };
+    let overlay = if show && output != OutputKind::None { format!("cea608overlay field={field} ! videoconvert ! ") } else { String::new() };
     let extractor = cc_extractor(codec);
     format!(
         "queue name=vq max-size-buffers=0 max-size-bytes=0 max-size-time=1000000000 ! {parser} ! tee name=pt  \
          pt. ! queue max-size-buffers=0 max-size-bytes=0 max-size-time=1000000000 ! {decoder} name=vdec{dec_props} \
          ! videoconvert name=vconv ! tee name=dt  \
          pt. ! queue leaky=downstream max-size-buffers=0 max-size-bytes=0 max-size-time=2000000000 ! {extractor} \
-         ! ccconverter ! closedcaption/x-cea-608,format=raw ! cea608tojson name=ccjson unbuffered=true ! appsink name=ccsink sync=false async=false max-buffers=20 drop=true  \
+         ! ccconverter ! closedcaption/x-cea-608,format=raw,field={field} ! cea608tojson name=ccjson unbuffered=true ! appsink name=ccsink sync=false async=false max-buffers=20 drop=true  \
          dt. ! queue max-size-buffers=2 max-size-bytes=0 max-size-time=0 ! {overlay}{sink}  \
          dt. ! queue leaky=downstream max-size-buffers=1 max-size-bytes=0 max-size-time=0 \
          ! videorate drop-only=true max-rate=2 ! videoscale ! videoconvert ! video/x-raw,width=480,pixel-aspect-ratio=1/1 \
@@ -707,12 +741,12 @@ mod tests {
 
     #[test]
     fn decoder_branches() {
-        let v = decoder_video_branch(Codec::H264, "vtdec_hw", OutputKind::Decklink, 0, "1080p50", -120_000_000, (true, 9));
+        let v = decoder_video_branch(Codec::H264, "vtdec_hw", OutputKind::Decklink, 0, "1080p50", -120_000_000, (true, 9, 1));
         assert!(v.contains("cc-line=9") && v.contains("cea608overlay") && v.contains("h264ccextractor"));
         assert!(v.contains("ts-offset=-120000000"));
         assert!(v.contains("h264parse ! tee name=pt") && v.contains("vtdec_hw name=vdec"));
         assert!(v.contains("decklinkvideosink name=vsink device-number=0 mode=1080p50"));
-        let v = decoder_video_branch(Codec::H265, "avdec_h265", OutputKind::None, 0, "", 0, (true, 0));
+        let v = decoder_video_branch(Codec::H265, "avdec_h265", OutputKind::None, 0, "", 0, (true, 0, 3));
         assert!(v.contains("h265ccextractor") && !v.contains("cea608overlay"));
         assert!(v.contains("thread-type=slice"));
         assert!(v.contains("GRAY8") && v.contains("h265parse"));

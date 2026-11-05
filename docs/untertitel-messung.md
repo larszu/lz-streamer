@@ -151,3 +151,34 @@ Abgleich mit den 608-Untertiteln, die ffmpeg (`movie=…[out0+subcc]`) aus der A
 - `.scc`
 - **SDI-Untertitel:** Sie kommen ohne Text-Zweig und landen nicht in den Dateien.
 - **WebVTT-Spur in HLS:** Sie kommt mit der HLS-Ausgabe (#23).
+
+## Zweite Untertitelsprache (U6)
+
+Stand: 05.11.2026. Eine zweite Sprache liegt auf CC3. Das ist der erste Kanal im zweiten 608-Feld, im selben TS wie CC1.
+- **Spracherkennung:** Eine zweite Whisper-Erkennung übersetzt ins Englische. Whisper kann nur dorthin übersetzen.
+- **Live-Text:** Die zweite Sprache kommt aus einem eigenen Eingabefeld, etwa von einer Dolmetscherin, oder über `POST /api/caption {"text":…, "second":true}`.
+- **Decoder:** Er wählt CC1 oder CC3 (`decoder.caption_channel`).
+- **Untertiteldateien:** Neben der Aufnahme entstehen je Sprache eigene Dateien, `<aufnahme>.srt` und `<aufnahme>.eng.srt` bzw. `.vtt`.
+
+**Rechenlast:** Zwei Erkennungen mit small und je 8 Kernen schafft ein M1 Pro nicht in Echtzeit. Gemessen:
+- Zeilenverzug am Decoder im Median 72 s
+- WER 0,84
+
+Deshalb übersetzt die zweite Erkennung mit einem eigenen, kleineren Modell (Vorgabe `base`, 4 Kerne), die Hauptsprache bekommt 6 Kerne.
+
+Messung DE → EN live, `de_de.mp4`, Hauptsprache small, Übersetzung base, Roll-up 2, Stücke 3 s:
+
+| | CC1 (Deutsch) | CC3 (Englisch) | Zusatzverzug |
+|---|---|---|---|
+| Zeile erkannt, Median (p95) | 4,9 s (5,9 s) | 4,7 s (8,3 s) | −0,2 s |
+| Zeile am Decoder, Median (p95) | 7,0 s (8,0 s) | 7,6 s (10,9 s) | **+0,6 s** |
+| WER (Encoder-Zeilen) | 0,13 | 0,68 gegen die englische Referenz | |
+
+Zum Vergleich ohne zweite Sprache: Zeile am Decoder 7,6 s im Median, WER 0,13.
+
+**Bewertung:**
+- Für Übersetzungen ist die WER ein grobes Maß; small kam früher auf 0,60.
+- **Decoder-WER des Messwerkzeugs (≈ 15):** Roll-up zeigt Zwischenstände Zeichen für Zeichen, die Wortzählung des Werkzeugs liest sie falsch. Auf `main` ist das genauso, es ist kein Fehler der Untertitel.
+- **Behoben:** Die Untertiteldateien machten bei Roll-up aus jedem Zeichenschritt eine eigene Zeile, im Messlauf 858 Einträge. Eine wachsende Zeile bleibt jetzt eine Zeile, im Messlauf 73 Einträge.
+
+Messbefehl: wie oben, zusätzlich `--zweitsprache $D/de_de.ref.en.txt --zweitmodell base`.

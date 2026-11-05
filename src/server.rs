@@ -309,10 +309,14 @@ async fn keyframe(State(app): S) -> impl IntoResponse {
 #[derive(Deserialize)]
 struct CaptionReq {
     text: String,
+    /// zweite Sprache (CC3)
+    #[serde(default)]
+    second: bool,
 }
 
 async fn caption(State(app): S, Json(r): Json<CaptionReq>) -> impl IntoResponse {
-    Json(json!({"ok": app.sup.command(&ChildCmd::Caption { text: r.text }).await}))
+    let cmd = if r.second { ChildCmd::Caption2 { text: r.text } } else { ChildCmd::Caption { text: r.text } };
+    Json(json!({"ok": app.sup.command(&cmd).await}))
 }
 
 async fn refresh_devices(State(app): S) -> impl IntoResponse {

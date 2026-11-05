@@ -20,6 +20,12 @@ pub fn push(cues: &mut Vec<Cue>, start_ns: u64, dur_ns: u64, text: &str) {
         return;
     }
     if let Some(prev) = cues.last_mut() {
+        // Roll-up und Paint-on bauen eine Zeile Zeichen für Zeichen auf: dieselbe Zeile wächst
+        if prev.end_ns >= start_ns && text.starts_with(prev.text.as_str()) {
+            prev.text = text.to_string();
+            prev.end_ns = prev.end_ns.max(start_ns + dur_ns.max(1));
+            return;
+        }
         if prev.end_ns > start_ns {
             prev.end_ns = start_ns.max(prev.start_ns + 1);
         }
@@ -77,5 +83,16 @@ mod tests {
         assert!(vtt.starts_with("WEBVTT\n\n00:00:00.000 --> 00:00:01.000\nErste Zeile\n\n"), "{vtt}");
         // nach dem Ende einer Zeile beginnt ein Segment: Zeile fehlt dort
         assert_eq!(to_srt(&c, 13 * S).matches("-->").count(), 1);
+    }
+
+    #[test]
+    fn growing_line_stays_one_cue() {
+        let mut c = Vec::new();
+        for (i, t) in ["Gu", "Guten", "Guten Ab", "Guten Abend"].iter().enumerate() {
+            push(&mut c, (10 + i as u64) * S / 10, 6 * S, t);
+        }
+        push(&mut c, 3 * S, 6 * S, "Neue Zeile");
+        assert_eq!(c.len(), 2, "{c:?}");
+        assert_eq!((c[0].start_ns, c[0].text.as_str(), c[0].end_ns), (S, "Guten Abend", 3 * S));
     }
 }

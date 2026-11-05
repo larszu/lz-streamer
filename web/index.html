@@ -49,6 +49,10 @@
           <input class="input" id="caption-text" placeholder="Untertitel senden …" autocomplete="off">
           <button class="btn btn--soft" type="submit">Senden</button>
         </form>
+        <form class="caption-send" id="caption-send2" hidden>
+          <input class="input" id="caption-text2" placeholder="Zweite Sprache (CC3) senden …" autocomplete="off">
+          <button class="btn btn--soft" type="submit">Senden</button>
+        </form>
         <div class="actions">
           <div class="main-action"><button type="button" class="btn btn--primary" id="btn-main">Senden starten</button></div>
           <button type="button" class="btn btn--soft" id="btn-signal" hidden aria-pressed="false" title="Sperrt den Eingang, damit das Standbild übernimmt">Signalverlust testen</button>
@@ -180,6 +184,11 @@
               <label class="field"><span>Tonspur Nr. (0 = erste)</span><input class="input" data-path="encoder.captions.asr.track" data-num inputmode="numeric"></label>
               <label class="field"><span>Stückgröße (ms)</span><input class="input" data-path="encoder.captions.asr.chunk_ms" data-num inputmode="numeric"></label>
             </div>
+            <div class="row2">
+              <label class="switch"><input type="checkbox" data-path="encoder.captions.second.enabled"> Zweite Sprache auf CC3</label>
+              <label class="field"><span>Sprache der zweiten Spur</span><input class="input" data-path="encoder.captions.second.language" placeholder="eng"></label>
+            </div>
+            <p class="hint">Mit Spracherkennung übersetzt Whisper ins Englische; bei Live-Text kommt die zweite Sprache aus dem zweiten Eingabefeld. YouTube und viele Player zeigen nur die erste Spur (CC1).</p>
             <div data-show-mode="encoder.captions.source=speech">
               <p class="hint">Ersetzungen (Namen, Fachbegriffe): erkannt → geschrieben</p>
               <div class="list-edit" id="replacements"></div>
@@ -245,6 +254,7 @@
         <p class="hint" id="dec-tracks"></p>
         <div class="row2">
           <label class="switch"><input type="checkbox" data-path="decoder.show_captions"> Untertitel ins Bild einblenden</label>
+          <label class="field"><span>Untertitel-Kanal</span><select class="input" data-path="decoder.caption_channel" data-num><option value="1">CC1 (erste Sprache)</option><option value="3">CC3 (zweite Sprache)</option></select></label>
           <label class="field"><span>CC in VANC-Zeile (DeckLink, 0 = aus)</span><input class="input" data-path="decoder.cc_line" data-num inputmode="numeric"></label>
         </div>
         <details class="more">
