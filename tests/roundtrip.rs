@@ -406,3 +406,73 @@ fn loudness_per_track_minus23() {
     eprintln!("Decoder: {dl:?}");
     assert!((dl.momentary.unwrap() + 23.0).abs() <= 0.5, "nach AAC: M = {:?}", dl.momentary);
 }
+
+fn srt_file(tag: &str) -> std::path::PathBuf {
+    let p = std::env::temp_dir().join(format!("lzs-cc-{tag}-{}.srt", std::process::id()));
+    std::fs::write(&p, "1\n00:00:03,000 --> 00:00:05,000\nHallo Welt\n\n2\n00:00:06,000 --> 00:00:08,000\nZweite Zeile Test\n\n").unwrap();
+    p
+}
+
+/// Untertiteldatei → CEA-608 in der H.264-SEI → SRT → Decoder liest den Text.
+#[test]
+fn captions_from_file_arrive_as_cea608() {
+    use lz_streamer::config::CaptionSource;
+    init();
+    let port = free_port();
+    let mut cfg = encoder_cfg(port, SrtMode::Listener);
+    cfg.captions.source = CaptionSource::File;
+    cfg.captions.file = srt_file("file").to_string_lossy().to_string();
+    let mut dec = Channel::start_decoder(&decoder_cfg(port, SrtMode::Caller), &ChannelOptions::default()).unwrap();
+    let mut enc = Channel::start_encoder(&cfg, &[], &ChannelOptions::default()).unwrap();
+    let mut seen = Vec::new();
+    let (e, _) = run_until(&mut enc, &mut dec, Duration::from_secs(20), |_, d| {
+        if let Some(t) = &d.captions.text {
+            if !seen.contains(t) {
+                seen.push(t.clone());
+            }
+        }
+        seen.iter().any(|t| t.contains("Zweite Zeile Test"))
+    });
+    assert!(seen.iter().any(|t| t.contains("Hallo Welt")), "{seen:?}");
+    assert!(e.captions.frames > 0, "Encoder sah keine Untertitel-Meta");
+}
+
+/// Live-Text per Befehl (wie POST /api/caption) kommt beim Decoder an,
+/// und die Aufnahme enthält die Untertitel (ffmpeg liest sie als 608).
+#[test]
+fn live_captions_and_recording_contain_cea608() {
+    use lz_streamer::config::{CaptionMode, CaptionSource};
+    init();
+    let port = free_port();
+    let dir = std::env::temp_dir().join(format!("lzs-ccrec-{port}"));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut cfg = encoder_cfg(port, SrtMode::Listener);
+    cfg.captions.source = CaptionSource::Live;
+    cfg.captions.mode = CaptionMode::PopOn;
+    cfg.record.enabled = true;
+    cfg.record.dir = dir.to_string_lossy().to_string();
+    let mut enc = Channel::start_encoder(&cfg, &[], &ChannelOptions::default()).unwrap();
+    let mut dec = Channel::start_decoder(&decoder_cfg(port, SrtMode::Caller), &ChannelOptions::default()).unwrap();
+    run_until(&mut enc, &mut dec, Duration::from_secs(10), |_, d| d.frames >= 25);
+    // cea608tott gibt eine Pop-on-Zeile aus, sobald die nächste kommt
+    enc.command(&ChildCmd::Caption { text: "Live Untertitel eins".into() });
+    std::thread::sleep(Duration::from_millis(2500));
+    enc.command(&ChildCmd::Caption { text: "Live Untertitel zwei".into() });
+    let (_, d) = run_until(&mut enc, &mut dec, Duration::from_secs(10), |_, d| {
+        d.captions.text.as_deref().is_some_and(|t| t.contains("Untertitel eins"))
+    });
+    assert!(d.captions.frames > 0);
+    std::thread::sleep(Duration::from_secs(1));
+    let rec = status(&mut enc).0.recording.unwrap();
+    enc.stop();
+    if std::process::Command::new("ffmpeg").arg("-version").output().is_ok() {
+        let out = std::process::Command::new("ffmpeg")
+            .args(["-v", "error", "-f", "lavfi", "-i"])
+            .arg(format!("movie={}[out0+subcc]", rec))
+            .args(["-map", "0:1", "-f", "srt", "-"])
+            .output()
+            .unwrap();
+        let srt = String::from_utf8_lossy(&out.stdout);
+        assert!(srt.contains("Untertitel eins"), "ffmpeg fand keine 608-Untertitel: {srt}");
+    }
+}

@@ -36,7 +36,8 @@
       <div class="screen">
         <img id="preview" alt="Vorschau des Bildes" hidden>
         <p class="empty" id="preview-empty">Vorschau erscheint, sobald der Kanal läuft.</p>
-        <div class="chips"><span class="chip" id="chip-live" hidden data-s="live">Live</span><span class="chip" id="chip-signal" hidden></span></div>
+        <div class="chips"><span class="chip" id="chip-live" hidden data-s="live">Live</span><span class="chip" id="chip-signal" hidden></span><span class="chip" id="chip-cc" data-s="ok" hidden>CC</span></div>
+        <p class="caption-line" id="caption-line" hidden></p>
       </div>
       <div class="stage-body">
         <div class="stage-line">
@@ -44,6 +45,10 @@
           <span class="chip" id="chip-peer" hidden></span>
         </div>
         <p class="stage-sub" id="stage-sub">Eingang wird gesucht …</p>
+        <form class="caption-send" id="caption-send" hidden>
+          <input class="input" id="caption-text" placeholder="Untertitel senden …" autocomplete="off">
+          <button class="btn btn--soft" type="submit">Senden</button>
+        </form>
         <div class="actions">
           <div class="main-action"><button type="button" class="btn btn--primary" id="btn-main">Senden starten</button></div>
           <button type="button" class="btn btn--soft" id="btn-signal" hidden aria-pressed="false" title="Sperrt den Eingang, damit das Standbild übernimmt">Signalverlust testen</button>
@@ -142,6 +147,14 @@
               <label class="field"><span>Neue Datei alle (min)</span><input class="input" data-path="encoder.record.segment_minutes" data-num inputmode="numeric"></label>
             </div>
             <label class="field"><span>Ordner (leer = Aufnahmeordner)</span><input class="input" data-path="encoder.record.dir" spellcheck="false"></label>
+            <p class="group-title">Untertitel (CEA-608/708)</p>
+            <div class="row2">
+              <label class="field"><span>Quelle</span>
+                <select class="input" data-path="encoder.captions.source"><option value="off">Aus</option><option value="sdi">Aus dem SDI-Eingang durchreichen</option><option value="file">Untertiteldatei (.srt/.vtt)</option><option value="live">Live (Text, Spracherkennung)</option></select></label>
+              <label class="field"><span>Darstellung</span>
+                <select class="input" data-path="encoder.captions.mode"><option value="pop-on">Pop-on (ganze Zeilen)</option><option value="roll-up2">Roll-up, 2 Zeilen</option><option value="roll-up3">Roll-up, 3 Zeilen</option><option value="paint-on">Paint-on</option></select></label>
+            </div>
+            <label class="field" data-show-mode="encoder.captions.source=file"><span>Untertiteldatei (Pfad)</span><input class="input" data-path="encoder.captions.file" spellcheck="false"></label>
             <p class="group-title">Beschnitt (Pixel am Eingang)</p>
             <div class="row2">
               <label class="field"><span>Oben</span><input class="input" data-path="encoder.input.crop.0" data-num inputmode="numeric"></label>
@@ -193,6 +206,10 @@
           <label class="field"><span>sonst Spur Nr. (0 = erste)</span><input class="input" data-path="decoder.audio_track" data-num inputmode="numeric"></label>
         </div>
         <p class="hint" id="dec-tracks"></p>
+        <div class="row2">
+          <label class="switch"><input type="checkbox" data-path="decoder.show_captions"> Untertitel ins Bild einblenden</label>
+          <label class="field"><span>CC in VANC-Zeile (DeckLink, 0 = aus)</span><input class="input" data-path="decoder.cc_line" data-num inputmode="numeric"></label>
+        </div>
         <details class="more">
           <summary>Mehr Einstellungen</summary>
           <div class="form">
