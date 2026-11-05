@@ -1,5 +1,6 @@
 //! lz-streamer – eigener Video-Encoder/Decoder auf Rust + GStreamer.
 
+pub mod audio;
 pub mod caps;
 pub mod channel;
 pub mod config;

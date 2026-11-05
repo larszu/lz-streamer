@@ -245,3 +245,134 @@ fn hd_upscaled_to_uhd_h265_roundtrip() {
     assert_eq!(d.resolution.as_deref(), Some("3840×2160"));
     assert_eq!(e.input_format.as_deref(), Some("1920×1080p25 (Testbild)"));
 }
+
+fn three_languages(cfg: &mut EncoderConfig) {
+    use lz_streamer::audio::{AudioTrack, Layout};
+    cfg.audio.tracks = vec![
+        AudioTrack { name: "Deutsch".into(), language: "deu".into(), layout: Layout::Stereo, channels: vec![1, 2], ..Default::default() },
+        AudioTrack { name: "English".into(), language: "eng".into(), layout: Layout::Stereo, channels: vec![3, 4], ..Default::default() },
+        AudioTrack { name: "Français".into(), language: "fra".into(), layout: Layout::Mono, channels: vec![5], gain_db: -6.0, ..Default::default() },
+    ];
+}
+
+/// Mehrere Tonspuren mit Sprachkennung über SRT; der Decoder sieht alle drei.
+#[test]
+fn multilingual_audio_tracks_arrive_with_language_codes() {
+    init();
+    let port = free_port();
+    let mut cfg = encoder_cfg(port, SrtMode::Listener);
+    three_languages(&mut cfg);
+    let mut enc = Channel::start_encoder(&cfg, &[], &ChannelOptions::default()).unwrap();
+    let mut dec = Channel::start_decoder(&decoder_cfg(port, SrtMode::Caller), &ChannelOptions::default()).unwrap();
+    let (_, d) = run_until(&mut enc, &mut dec, Duration::from_secs(15), |_, d| {
+        d.frames >= 25 && d.audio_tracks.len() == 3 && d.audio_tracks.iter().all(|t| t.language.is_some())
+    });
+    // GStreamer meldet die PMT-Sprachen als ISO 639-1 („de“), verglichen wird über den Schlüssel
+    let langs: Vec<String> = d.audio_tracks.iter().map(|t| lz_streamer::audio::language_key(t.language.as_deref().unwrap())).collect();
+    assert_eq!(langs, vec!["de", "en", "fr"], "Reihenfolge/Sprachen");
+    assert_eq!(d.audio_tracks.iter().filter(|t| t.selected).count(), 1);
+    // ohne Wunsch: erste Spur mit Sprachkennung
+    assert!(d.audio_tracks.iter().find(|t| t.selected).unwrap().language.as_deref().is_some_and(|l| l.starts_with("de")));
+
+    // Sprachwahl: Englisch bevorzugt
+    let mut dc = decoder_cfg(port, SrtMode::Caller);
+    dc.audio_language = "eng".into();
+    drop(dec);
+    let mut dec = Channel::start_decoder(&dc, &ChannelOptions::default()).unwrap();
+    let (_, d) = run_until(&mut enc, &mut dec, Duration::from_secs(15), |_, d| {
+        d.audio_tracks.iter().any(|t| t.selected && t.language.as_deref() == Some("en"))
+    });
+    assert_eq!(d.audio_tracks.iter().filter(|t| t.selected).count(), 1);
+}
+
+fn ffprobe_streams(path: &std::path::Path) -> Vec<(String, u32, String)> {
+    let out = std::process::Command::new("ffprobe")
+        .args(["-v", "error", "-show_entries", "stream=codec_type,channels:stream_tags=language", "-of", "json"])
+        .arg(path)
+        .output()
+        .expect("ffprobe");
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    v["streams"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| {
+            (
+                s["codec_type"].as_str().unwrap_or("").to_string(),
+                s["channels"].as_u64().unwrap_or(0) as u32,
+                s["tags"]["language"].as_str().unwrap_or("").to_string(),
+            )
+        })
+        .collect()
+}
+
+fn record_roundtrip(container: lz_streamer::config::RecordContainer, ext: &str) {
+    init();
+    if std::process::Command::new("ffprobe").arg("-version").output().is_err() {
+        eprintln!("ffprobe fehlt – Test übersprungen");
+        return;
+    }
+    let port = free_port();
+    let dir = std::env::temp_dir().join(format!("lzs-rec-{port}"));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut cfg = encoder_cfg(port, SrtMode::Listener);
+    three_languages(&mut cfg);
+    cfg.record.enabled = true;
+    cfg.record.dir = dir.to_string_lossy().to_string();
+    cfg.record.container = container;
+    let mut enc = Channel::start_encoder(&cfg, &[], &ChannelOptions::default()).unwrap();
+    let end = Instant::now() + Duration::from_secs(3);
+    let mut rec = None;
+    while Instant::now() < end {
+        let (s, _) = status(&mut enc);
+        rec = rec.or(s.recording);
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    enc.stop();
+    let file = std::path::PathBuf::from(rec.expect("keine Aufnahme gemeldet"));
+    assert!(file.to_string_lossy().ends_with(ext));
+    let streams = ffprobe_streams(&file);
+    assert!(streams.iter().any(|s| s.0 == "video"), "{streams:?}");
+    let audio: Vec<_> = streams.iter().filter(|s| s.0 == "audio").collect();
+    assert_eq!(audio.len(), 3, "{streams:?}");
+    assert_eq!(audio.iter().map(|a| a.1).collect::<Vec<_>>(), vec![2, 2, 1], "{streams:?}");
+    let langs: Vec<&str> = audio.iter().map(|a| a.2.as_str()).collect();
+    assert_eq!(langs, vec!["deu", "eng", "fra"], "{streams:?}");
+}
+
+#[test]
+fn recording_ts_in_parallel_keeps_all_tracks() {
+    record_roundtrip(lz_streamer::config::RecordContainer::Ts, ".ts");
+}
+
+#[test]
+fn recording_mp4_in_parallel_keeps_all_tracks() {
+    record_roundtrip(lz_streamer::config::RecordContainer::Mp4, ".mp4");
+}
+
+/// Zusätzliche Ausgänge: zweiter SRT-Listener und UDP liefern denselben Strom.
+#[test]
+fn extra_outputs_srt_and_udp() {
+    use lz_streamer::config::{ExtraOutput, OutputType};
+    init();
+    let (port, port2) = (free_port(), free_port());
+    let udp = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    udp.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    let uport = udp.local_addr().unwrap().port();
+    let mut cfg = encoder_cfg(port, SrtMode::Listener);
+    let mut second = ExtraOutput { name: "Backup".into(), ..Default::default() };
+    second.srt.mode = SrtMode::Listener;
+    second.srt.port = port2;
+    let third = ExtraOutput { name: "Lokal UDP".into(), kind: OutputType::Udp, host: "127.0.0.1".into(), port: uport, ..Default::default() };
+    cfg.outputs = vec![second, third];
+    let mut enc = Channel::start_encoder(&cfg, &[], &ChannelOptions::default()).unwrap();
+    let mut buf = [0u8; 2048];
+    let n = udp.recv(&mut buf).expect("kein UDP-Paket");
+    assert!(n >= 188 && buf[0] == 0x47, "kein TS über UDP ({n} Byte)");
+    let mut dec = Channel::start_decoder(&decoder_cfg(port2, SrtMode::Caller), &ChannelOptions::default()).unwrap();
+    let (e, _) = run_until(&mut enc, &mut dec, Duration::from_secs(15), |e, d| {
+        d.frames >= 25 && e.outputs.first().is_some_and(|o| o.connected == Some(true))
+    });
+    assert_eq!(e.outputs.len(), 2);
+    assert_eq!(e.outputs[1].connected, None);
+}

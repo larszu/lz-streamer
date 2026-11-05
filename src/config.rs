@@ -107,16 +107,82 @@ impl VideoConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct AudioConfig {
     pub enabled: bool,
-    pub bitrate_kbps: u32,
+    /// Kanäle am Eingang: 2, 8 oder 16 (eingebettetes SDI-Audio)
+    pub input_channels: u32,
+    /// Tonspuren je Ausgang; leer = eine Stereospur aus Kanal 1/2
+    pub tracks: Vec<crate::audio::AudioTrack>,
 }
 
 impl Default for AudioConfig {
     fn default() -> Self {
-        Self { enabled: true, bitrate_kbps: 192 }
+        Self { enabled: true, input_channels: 16, tracks: vec![crate::audio::AudioTrack::default()] }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum OutputType {
+    #[default]
+    Srt,
+    Udp,
+    Rtp,
+}
+
+/// Weiterer Ausgang desselben Transportstroms (wie die Mehrfachausgänge des Vorbilds).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct ExtraOutput {
+    pub enabled: bool,
+    pub name: String,
+    pub kind: OutputType,
+    pub srt: SrtConfig,
+    /// UDP/RTP: Ziel (auch Multicast)
+    pub host: String,
+    pub port: u16,
+    pub ttl: u32,
+}
+
+impl Default for ExtraOutput {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            name: "Ausgang".into(),
+            kind: OutputType::Srt,
+            srt: SrtConfig { mode: SrtMode::Caller, port: 9001, ..SrtConfig::default() },
+            host: "239.0.0.1".into(),
+            port: 5000,
+            ttl: 16,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum RecordContainer {
+    /// MPEG-TS: übersteht auch einen harten Abbruch
+    #[default]
+    Ts,
+    Mp4,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct RecordConfig {
+    pub enabled: bool,
+    /// leer = Aufnahmeordner im Datenverzeichnis
+    pub dir: String,
+    pub container: RecordContainer,
+    /// neue Datei alle n Minuten (0 = eine Datei)
+    pub segment_minutes: u32,
+}
+
+impl Default for RecordConfig {
+    fn default() -> Self {
+        Self { enabled: false, dir: String::new(), container: RecordContainer::Ts, segment_minutes: 60 }
     }
 }
 
@@ -271,7 +337,7 @@ impl Default for RtmpConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(default)]
 pub struct EncoderConfig {
     pub input: InputConfig,
@@ -280,6 +346,9 @@ pub struct EncoderConfig {
     pub standby: StandbyConfig,
     pub srt: SrtConfig,
     pub rtmp: RtmpConfig,
+    /// weitere Ausgänge (SRT, UDP, RTP) neben dem Haupt-SRT
+    pub outputs: Vec<ExtraOutput>,
+    pub record: RecordConfig,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -309,6 +378,10 @@ pub struct DecoderConfig {
     pub decoder: String,
     /// Reserve am Ausgang zusätzlich zum Demux-Puffer (Jitter, Decodierzeit).
     pub output_buffer_ms: u32,
+    /// welche Tonspur ausgegeben wird (0 = erste)
+    pub audio_track: u32,
+    /// bevorzugte Sprache (z. B. "deu"); hat Vorrang vor `audio_track`
+    pub audio_language: String,
 }
 
 impl Default for DecoderConfig {
@@ -322,11 +395,13 @@ impl Default for DecoderConfig {
             demux_latency_ms: 40,
             decoder: "auto".into(),
             output_buffer_ms: 60,
+            audio_track: 0,
+            audio_language: String::new(),
         }
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(default)]
 pub struct Config {
     pub role: Role,
@@ -356,6 +431,17 @@ impl Config {
         self.encoder.srt.latency_ms = self.encoder.srt.latency_ms.clamp(20, 8000);
         self.decoder.srt.latency_ms = self.decoder.srt.latency_ms.clamp(20, 8000);
         self.encoder.standby.timeout_ms = self.encoder.standby.timeout_ms.clamp(100, 10_000);
+        let a = &mut self.encoder.audio;
+        a.input_channels = match a.input_channels { 0..=2 => 2, 3..=8 => 8, _ => 16 };
+        for t in &mut a.tracks {
+            t.language = crate::audio::normalize_language(&t.language);
+            t.gain_db = t.gain_db.clamp(-60.0, 20.0);
+            t.bitrate_kbps = t.bitrate_kbps.clamp(32, 512);
+        }
+        a.tracks.truncate(8);
+        for o in &mut self.encoder.outputs {
+            o.srt.normalize();
+        }
     }
 
     /// Hinweise statt Pflichtfelder: nichts davon verhindert den Start.
