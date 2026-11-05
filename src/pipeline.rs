@@ -240,11 +240,12 @@ pub fn encoder_description(cfg: &EncoderConfig, parts: &EncoderParts) -> String 
             d.push(format!(
                 "ain. ! queue max-size-buffers=0 max-size-bytes=0 max-size-time=1000000000 \
                  ! audioconvert name=amx{i} mix-matrix={mix} ! {out_caps} \
-                 ! volume name=avol{i} volume={:.4} mute={} ! ebur128level name=lvl{i} interval=500000000{} \
+                 ! volume name=avol{i} volume={:.4} mute={}{} ! ebur128level name=lvl{i} interval=500000000{} \
                  ! audioconvert ! {aac} name=aenc{i} bitrate={} \
                  ! aacparse ! taginject name=atag{i} ! tee name=ae{i}",
                 crate::audio::db_to_linear(t.gain_db),
                 t.mute,
+                if t.leveler.enabled { format!(" ! audioconvert ! audio/x-raw,format=F32LE ! lzloudness name=lev{i}") } else { String::new() },
                 if asr_track(cfg) == Some(i) { format!(" ! tee name=araw{i} ! queue max-size-buffers=0 max-size-bytes=0 max-size-time=1000000000") } else { String::new() },
                 t.bitrate_kbps.clamp(32, 512) * 1000
             ));

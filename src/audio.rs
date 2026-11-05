@@ -37,6 +37,8 @@ pub struct AudioTrack {
     pub gain_db: f64,
     pub mute: bool,
     pub bitrate_kbps: u32,
+    /// Lautheitsregelung (lzloudness) für diese Spur
+    pub leveler: crate::leveler::LevelerConfig,
 }
 
 impl Default for AudioTrack {
@@ -49,6 +51,7 @@ impl Default for AudioTrack {
             gain_db: 0.0,
             mute: false,
             bitrate_kbps: 192,
+            leveler: Default::default(),
         }
     }
 }
