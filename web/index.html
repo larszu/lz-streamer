@@ -63,6 +63,22 @@
       <div class="meters" id="meters"></div>
     </section>
 
+    <section class="card appear" style="--i:2" id="gfx-card" aria-labelledby="gfx-title" hidden>
+      <h2 id="gfx-title">Grafik <small>OGraf, Ebene 2</small></h2>
+      <div class="gfx-ctl">
+        <label><span>Grafik</span><select class="input" id="gfx-id"></select></label>
+        <label class="gfx-data"><span>Inhalt (JSON)</span><textarea class="input" id="gfx-data" rows="3" spellcheck="false"></textarea></label>
+        <div class="gfx-btns">
+          <button type="button" class="btn btn--primary" data-gfx="show">Einblenden</button>
+          <button type="button" class="btn btn--soft" data-gfx="prev">Zurück</button>
+          <button type="button" class="btn btn--soft" data-gfx="next">Weiter</button>
+          <button type="button" class="btn btn--soft" data-gfx="update">Aktualisieren</button>
+          <button type="button" class="btn btn--soft" data-gfx="stop">Ausblenden</button>
+        </div>
+        <p class="hint" id="gfx-state"></p>
+      </div>
+    </section>
+
   </div>
 
   <div class="col-b">

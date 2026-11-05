@@ -58,68 +58,96 @@ pub fn crop(bgra: &[u8], width: u32, r: (u32, u32, u32, u32)) -> Vec<u8> {
     out
 }
 
+/// je Ebene das letzte sichtbare Rechteck
 #[derive(Default)]
 struct Latest {
-    composition: Option<gst_video::VideoOverlayComposition>,
+    layers: Vec<Option<gst_video::VideoOverlayRectangle>>,
 }
 
-/// Nimmt Renderer-Bilder auf einem TCP-Port entgegen.
+impl Latest {
+    fn composition(&self) -> Option<gst_video::VideoOverlayComposition> {
+        let rects: Vec<&gst_video::VideoOverlayRectangle> = self.layers.iter().flatten().collect();
+        if rects.is_empty() { None } else { gst_video::VideoOverlayComposition::new(rects).ok() }
+    }
+}
+
+/// Nimmt Renderer-Bilder auf einem TCP-Port je Ebene entgegen. Ebene 1 trägt
+/// die Untertitel, Ebene 2 freie Grafiken (Bauchbinde, Liedtexte …); sie
+/// werden übereinander gelegt, Ebene 2 oben.
 pub struct FrameReceiver {
     latest: Arc<Mutex<Latest>>,
-    connected: Arc<AtomicBool>,
-    pub port: u16,
+    connected: Arc<Vec<AtomicBool>>,
+    pub ports: Vec<u16>,
 }
 
-fn composition_from(bgra: &[u8], width: u32, height: u32) -> Option<gst_video::VideoOverlayComposition> {
+fn rectangle_from(bgra: &[u8], width: u32, height: u32) -> Option<gst_video::VideoOverlayRectangle> {
     let r = alpha_bbox(bgra, width, height)?;
     let pixels = crop(bgra, width, r);
     let mut buf = gst::Buffer::from_mut_slice(pixels);
     gst_video::VideoMeta::add(buf.get_mut().unwrap(), gst_video::VideoFrameFlags::empty(), gst_video::VideoFormat::Bgra, r.2, r.3).ok()?;
-    let rect = gst_video::VideoOverlayRectangle::new_raw(&buf, r.0 as i32, r.1 as i32, r.2, r.3, gst_video::VideoOverlayFormatFlags::empty());
-    gst_video::VideoOverlayComposition::new([&rect]).ok()
+    Some(gst_video::VideoOverlayRectangle::new_raw(&buf, r.0 as i32, r.1 as i32, r.2, r.3, gst_video::VideoOverlayFormatFlags::empty()))
+}
+
+#[cfg(test)]
+fn composition_from(bgra: &[u8], width: u32, height: u32) -> Option<gst_video::VideoOverlayComposition> {
+    let r = rectangle_from(bgra, width, height)?;
+    gst_video::VideoOverlayComposition::new([&r]).ok()
 }
 
 impl FrameReceiver {
-    /// Port öffnen und im Hintergrund Bilder lesen. Die Größe muss dem
-    /// Ausgabeformat entsprechen (so meldet es der Webserver dem Renderer).
-    pub fn listen(port: u16, width: u32, height: u32) -> std::io::Result<Self> {
-        let listener = TcpListener::bind(("127.0.0.1", port))?;
-        let port = listener.local_addr()?.port();
-        let latest: Arc<Mutex<Latest>> = Arc::default();
-        let connected: Arc<AtomicBool> = Arc::default();
-        let (l2, c2) = (latest.clone(), connected.clone());
-        std::thread::spawn(move || {
-            let size = (width * height * 4) as usize;
-            for stream in listener.incoming() {
-                let Ok(mut s) = stream else { continue };
-                c2.store(true, Ordering::Relaxed);
-                let mut frame = vec![0u8; size];
-                while s.read_exact(&mut frame).is_ok() {
-                    let comp = composition_from(&frame, width, height);
-                    l2.lock().unwrap().composition = comp;
+    /// Ports öffnen (0 = frei wählen) und im Hintergrund Bilder lesen. Die
+    /// Größe muss dem Ausgabeformat entsprechen (so meldet es der Webserver
+    /// dem Renderer).
+    pub fn listen(ports: &[u16], width: u32, height: u32) -> std::io::Result<Self> {
+        let listeners = ports.iter().map(|p| TcpListener::bind(("127.0.0.1", *p))).collect::<std::io::Result<Vec<_>>>()?;
+        let ports = listeners.iter().map(|l| l.local_addr().map(|a| a.port())).collect::<std::io::Result<Vec<_>>>()?;
+        let latest = Arc::new(Mutex::new(Latest { layers: vec![None; listeners.len()] }));
+        let connected: Arc<Vec<AtomicBool>> = Arc::new(listeners.iter().map(|_| AtomicBool::new(false)).collect());
+        for (i, listener) in listeners.into_iter().enumerate() {
+            let (l2, c2) = (latest.clone(), connected.clone());
+            std::thread::spawn(move || {
+                let size = (width * height * 4) as usize;
+                for stream in listener.incoming() {
+                    let Ok(mut s) = stream else { continue };
+                    c2[i].store(true, Ordering::Relaxed);
+                    let mut frame = vec![0u8; size];
+                    while s.read_exact(&mut frame).is_ok() {
+                        let r = rectangle_from(&frame, width, height);
+                        l2.lock().unwrap().layers[i] = r;
+                    }
+                    // Verbindung weg: Grafik entfernen, Bild läuft ohne sie weiter
+                    c2[i].store(false, Ordering::Relaxed);
+                    l2.lock().unwrap().layers[i] = None;
                 }
-                // Verbindung weg: Grafik entfernen, Bild läuft ohne sie weiter
-                c2.store(false, Ordering::Relaxed);
-                l2.lock().unwrap().composition = None;
-            }
-        });
-        Ok(Self { latest, connected, port })
+            });
+        }
+        Ok(Self { latest, connected, ports })
+    }
+
+    /// Port der ersten Ebene (Untertitel)
+    pub fn port(&self) -> u16 {
+        self.ports[0]
     }
 
     pub fn connected(&self) -> bool {
-        self.connected.load(Ordering::Relaxed)
+        self.connected.iter().any(|c| c.load(Ordering::Relaxed))
+    }
+
+    /// sichtbare Grafik auf Ebene `i` (0-basiert)
+    pub fn layer_visible(&self, i: usize) -> bool {
+        self.latest.lock().unwrap().layers.get(i).is_some_and(|l| l.is_some())
     }
 
     pub fn has_graphic(&self) -> bool {
-        self.latest.lock().unwrap().composition.is_some()
+        self.latest.lock().unwrap().layers.iter().any(|l| l.is_some())
     }
 
-    /// `overlaycomposition`-Element mit dem jeweils letzten Bild verbinden.
+    /// `overlaycomposition`-Element mit den jeweils letzten Bildern verbinden.
     pub fn attach(&self, el: &gst::Element) {
         let latest = self.latest.clone();
         el.connect("draw", false, move |_| {
             // Signal verlangt immer einen Wert des Typs; ohne Grafik ist er NULL
-            let c: Option<gst_video::VideoOverlayComposition> = latest.lock().unwrap().composition.clone();
+            let c: Option<gst_video::VideoOverlayComposition> = latest.lock().unwrap().composition();
             Some(c.to_value())
         });
     }

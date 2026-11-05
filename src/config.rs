@@ -392,6 +392,14 @@ pub struct GraphicsConfig {
     pub graphics_dir: String,
 }
 
+impl GraphicsConfig {
+    /// Bild-Ports der beiden Ebenen: Untertitel auf `frame_port`, freie Grafik
+    /// eins darüber (0 = jeweils frei wählen)
+    pub fn layer_ports(&self) -> [u16; 2] {
+        if self.frame_port == 0 { [0, 0] } else { [self.frame_port, self.frame_port.saturating_add(1)] }
+    }
+}
+
 impl Default for GraphicsConfig {
     fn default() -> Self {
         Self { burn: BurnTarget::Off, renderer: String::new(), frame_port: 4201, graphic: "lz-captions".into(), graphics_dir: String::new() }

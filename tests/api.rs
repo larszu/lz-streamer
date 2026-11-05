@@ -194,3 +194,67 @@ async fn report_pdf_has_sections() {
         }
     }
 }
+
+/// U4: freie Grafik auf Ebene 2 über `POST /api/graphics`; ein neu verbundener
+/// Renderer bekommt die laufende Grafik wieder.
+#[tokio::test]
+async fn graphics_layer2_commands_and_restore() {
+    use futures_util::StreamExt;
+    let _ = gstreamer::init();
+    let root = std::env::temp_dir().join(format!("lzs-api-gfx-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let data = DataDir::new(root.clone());
+    let mut cfg = Config::default();
+    cfg.encoder.graphics.burn = lz_streamer::config::BurnTarget::All;
+    cfg.encoder.graphics.frame_port = 4777;
+    let sup = Supervisor::new(cfg, root.join("config.json"), root.join("run"), data.recordings());
+    let app = App::new(sup.clone(), Ops::new(data), Capabilities::probe(), vec![]);
+    let r = router(app.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let r2 = r.clone();
+    tokio::spawn(async move {
+        axum::serve(listener, r2.into_make_service_with_connect_info::<std::net::SocketAddr>()).await.unwrap();
+    });
+    let connect = || async { tokio_tungstenite::connect_async(format!("ws://{addr}/renderer")).await.unwrap().0 };
+    async fn next(ws: &mut (impl StreamExt<Item = Result<tokio_tungstenite::tungstenite::Message, tokio_tungstenite::tungstenite::Error>> + Unpin)) -> Value {
+        loop {
+            if let Some(Ok(tokio_tungstenite::tungstenite::Message::Text(t))) = ws.next().await {
+                return serde_json::from_str(&t).unwrap();
+            }
+        }
+    }
+    let mut ws = connect().await;
+    let hello = next(&mut ws).await;
+    assert_eq!(hello["layers"], 2);
+    assert_eq!(hello["framePorts"], json!([4777, 4778]));
+    assert_eq!(next(&mut ws).await["graphicId"], "lz-captions");
+    assert_eq!(next(&mut ws).await["type"], "play");
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    let show = json!({"action": "show", "graphicId": "lz-lower-third", "data": {"name": "Anna Beispiel", "title": "Technik"}});
+    let (st, _, _) = call(&r, "POST", "/api/graphics", Some(show), None).await;
+    assert_eq!(st, StatusCode::OK);
+    let l = next(&mut ws).await;
+    assert_eq!((l["type"].as_str(), l["layer"].as_u64(), l["graphicId"].as_str()), (Some("load"), Some(2), Some("lz-lower-third")));
+    assert_eq!(l["data"]["name"], "Anna Beispiel");
+    assert_eq!(next(&mut ws).await["type"], "play");
+    call(&r, "POST", "/api/graphics", Some(json!({"action": "next"})), None).await;
+    assert_eq!(next(&mut ws).await["params"]["delta"], 1);
+    call(&r, "POST", "/api/graphics", Some(json!({"action": "update", "data": {"title": "Ton"}})), None).await;
+    assert_eq!(next(&mut ws).await["data"]["title"], "Ton");
+    assert_eq!(call(&r, "POST", "/api/graphics", Some(json!({"action": "tanzen"})), None).await.0, StatusCode::BAD_REQUEST);
+
+    // Renderer neu verbunden: Untertitel plus laufende Bauchbinde mit aktuellem Text
+    drop(ws);
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    let mut ws = connect().await;
+    let msgs: Vec<Value> = { let mut v = vec![]; for _ in 0..5 { v.push(next(&mut ws).await); } v };
+    let l2: Vec<&Value> = msgs.iter().filter(|m| m["layer"] == 2).collect();
+    assert_eq!(l2.len(), 2, "{msgs:?}");
+    assert_eq!(l2[0]["data"], json!({"name": "Anna Beispiel", "title": "Ton"}));
+    assert_eq!(l2[1]["type"], "play");
+    let (_, state, _) = call(&r, "GET", "/api/graphics", None, None).await;
+    assert_eq!(state["gfx"]["graphic_id"], "lz-lower-third");
+    assert_eq!(state["gfx"]["playing"], true);
+}

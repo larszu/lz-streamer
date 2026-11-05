@@ -624,6 +624,47 @@ function renderGfx(st) {
 const _render5 = render;
 render = function (st) { _render5(st); renderGfx(st); };
 
+// ---------------- Freie Grafik (Ebene 2)
+const gfxTemplates = {
+  'lz-lower-third': { name: 'Name', title: 'Funktion' },
+  'lz-title': { title: 'Titel' },
+  'lz-lyrics': { title: 'Lied', layout: 'lowerthird', slides: [{ part: 'Strophe 1', lines: [['Erste Zeile', 'Zweite Zeile']] }] },
+  'lz-bug': {},
+};
+function renderGfxCard(st) {
+  const on = st.config.role === 'encoder' && st.config.encoder.graphics.burn !== 'off';
+  $('#gfx-card').hidden = !on;
+  if (!on) return;
+  const r = st.renderer || {};
+  const ids = [...new Set([...(r.library || []).filter(id => id !== st.config.encoder.graphics.graphic), ...Object.keys(gfxTemplates)])];
+  const sel = $('#gfx-id');
+  if (sel.options.length !== ids.length || [...sel.options].some((o, i) => o.value !== ids[i])) {
+    const keep = sel.value || r.gfx?.graphic_id || ids[0];
+    sel.replaceChildren(...ids.map(id => new Option(id, id)));
+    sel.value = ids.includes(keep) ? keep : ids[0];
+    if (!$('#gfx-data').value) $('#gfx-data').value = JSON.stringify(gfxTemplates[sel.value] || {}, null, 1);
+  }
+  const l = r.layers?.[2] || r.layers?.['2'];
+  const g = r.gfx || {};
+  $('#gfx-state').textContent = !r.connected ? 'Kein Renderer verbunden – Befehle werden gemerkt und beim Verbinden ausgeführt.'
+    : g.graphic_id ? `${g.graphic_id}: ${g.playing ? 'im Bild' : 'geladen'}${l?.step != null ? ` · Schritt ${l.step + 1}` : ''}${l?.error ? ` · Fehler: ${l.error}` : ''}`
+    : 'Nichts geladen.';
+}
+$('#gfx-id').addEventListener('change', () => { $('#gfx-data').value = JSON.stringify(gfxTemplates[$('#gfx-id').value] || {}, null, 1); });
+document.querySelectorAll('[data-gfx]').forEach(b => b.addEventListener('click', async () => {
+  const action = b.dataset.gfx;
+  const body = { action };
+  if (action === 'show' || action === 'update') {
+    try { body.data = JSON.parse($('#gfx-data').value || '{}'); }
+    catch { $('#gfx-state').textContent = 'Inhalt ist kein gültiges JSON.'; return; }
+  }
+  if (action === 'show') body.graphicId = $('#gfx-id').value;
+  const r = await fetch('/api/graphics', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  if (!r.ok) $('#gfx-state').textContent = (await r.json().catch(() => ({}))).error || 'Befehl abgelehnt';
+}));
+const _render6 = render;
+render = function (st) { _render6(st); renderGfxCard(st); };
+
 // ---------------- PDF-Bericht mit Zeitraum
 function repLink() {
   const q = new URLSearchParams();
