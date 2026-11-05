@@ -45,6 +45,10 @@ pub struct AsrConfig {
     pub replacements: Vec<Replacement>,
     /// ins Englische übersetzen (Whisper-eigene Übersetzung)
     pub translate: bool,
+    /// Wort für Wort senden (für Roll-up) statt ganzer Zeilen
+    pub word_mode: bool,
+    /// Ausgabe nach Sprechzeit takten (gleichmäßig statt stoßweise)
+    pub paced: bool,
 }
 
 impl Default for AsrConfig {
@@ -58,6 +62,9 @@ impl Default for AsrConfig {
             chunk_ms: 3000,
             replacements: Vec::new(),
             translate: false,
+            word_mode: false,
+            // gemessen: bringt am Decoder nichts (docs/untertitel-messung.md)
+            paced: false,
         }
     }
 }
@@ -158,13 +165,38 @@ pub struct AsrStatus {
     pub last_delay_ms: Option<f64>,
 }
 
-/// Erkannter Text mit Verzug, an den Kanal weitergereicht.
-pub type TextSink = Arc<dyn Fn(String) + Send + Sync>;
+/// Erkannter Text an den Kanal; optional mit Ziel-Zeitstempel (ns Laufzeit),
+/// zu dem er im Bild stehen soll.
+pub type TextSink = Arc<dyn Fn(String, Option<u64>) + Send + Sync>;
+
+/// Gleichmäßig takten: Whisper liefert ein Stück auf einmal. Ohne Taktung
+/// stauen sich die Zeilen in der 608-Übertragung (≈ 60 Byte/s). Mit Taktung
+/// bekommt jede Zeile den Zeitpunkt „gesprochen + D“, D = P90 der zuletzt
+/// beobachteten Erkennungsverzüge.
+#[derive(Default)]
+pub struct Pacer {
+    recent: std::collections::VecDeque<u64>,
+}
+
+impl Pacer {
+    pub fn target(&mut self, now_ns: u64, first_word_ns: u64) -> u64 {
+        self.recent.push_back(now_ns.saturating_sub(first_word_ns));
+        while self.recent.len() > 30 {
+            self.recent.pop_front();
+        }
+        let mut v: Vec<u64> = self.recent.iter().copied().collect();
+        v.sort_unstable();
+        let d = v[((v.len() as f64 - 1.0) * 0.9).round() as usize];
+        (first_word_ns + d).max(now_ns + 300_000_000)
+    }
+}
 
 /// Whisper liefert Wort für Wort. Für CEA-608 (32 Zeichen je Zeile) werden
 /// daraus Zeilen: Schluss bei Satzende, bei 32 Zeichen oder nach einer Pause.
 #[derive(Default)]
 pub struct Phraser {
+    /// jedes Wort sofort als eigene Ausgabe (Roll-up)
+    pub word_mode: bool,
     /// innerhalb von [ … ] oder ( … ): Geräuschbeschreibung, nicht anzeigen
     bracket: i32,
     words: Vec<String>,
@@ -218,6 +250,10 @@ impl Phraser {
         self.words.push(w.to_string());
         self.last_end = end.or(pts);
         self.last_word_at = Some(Instant::now());
+        if self.word_mode {
+            out.extend(self.take());
+            return out;
+        }
         if w.ends_with(['.', '?', '!', ':']) {
             out.extend(self.take());
         }
@@ -234,6 +270,7 @@ impl Phraser {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn emit_phrase(
     mut ph: Phrase,
     repl: &[Replacement],
@@ -242,6 +279,7 @@ fn emit_phrase(
     last: &Mutex<(Option<String>, Option<f64>)>,
     on_text: &TextSink,
     phrases: &Mutex<Vec<Phrase>>,
+    pacer: Option<&Mutex<Pacer>>,
 ) {
     ph.text = apply_replacements(&ph.text, repl);
     let delay = match (main.current_running_time(), ph.first_word_ns) {
@@ -250,7 +288,11 @@ fn emit_phrase(
     };
     seg.fetch_add(1, Ordering::Relaxed);
     *last.lock().unwrap() = (Some(ph.text.clone()), delay);
-    on_text(ph.text.clone());
+    let target = match (pacer, main.current_running_time(), ph.first_word_ns) {
+        (Some(p), Some(now), Some(fw)) => Some(p.lock().unwrap().target(now.nseconds(), fw)),
+        _ => None,
+    };
+    on_text(ph.text.clone(), target);
     phrases.lock().unwrap().push(ph);
 }
 
@@ -264,6 +306,7 @@ pub struct AsrRunner {
     last: Arc<Mutex<(Option<String>, Option<f64>)>>,
     on_text: TextSink,
     phraser: Arc<Mutex<Phraser>>,
+    pacer: Arc<Mutex<Pacer>>,
     /// alle ausgegebenen Zeilen (für Messungen)
     pub phrases: Arc<Mutex<Vec<Phrase>>>,
     pub state: String,
@@ -272,6 +315,7 @@ pub struct AsrRunner {
 impl AsrRunner {
     /// `tap_name`: appsink der Haupt-Pipeline mit 16-kHz-Mono-Ton.
     pub fn new(main: &gst::Pipeline, tap_name: &str, cfg: AsrConfig, on_text: TextSink) -> Self {
+        let word_mode = cfg.word_mode;
         let tap: Arc<Mutex<Option<gst_app::AppSrc>>> = Arc::default();
         if let Some(sink) = main.by_name(tap_name).and_then(|s| s.downcast::<gst_app::AppSink>().ok()) {
             let t = tap.clone();
@@ -297,7 +341,8 @@ impl AsrRunner {
             segments: Arc::default(),
             last: Arc::default(),
             on_text,
-            phraser: Arc::default(),
+            phraser: Arc::new(Mutex::new(Phraser { word_mode, ..Default::default() })),
+            pacer: Arc::default(),
             phrases: Arc::default(),
             state: "startet".into(),
         }
@@ -353,7 +398,7 @@ impl AsrRunner {
             s.set_max_bytes(16_000 * 4 * 20);
         }
         if let Some(sink) = p.by_name("t").and_then(|s| s.downcast::<gst_app::AppSink>().ok()) {
-            let (seg, last, on_text, repl, main, phraser, phrases) = (
+            let (seg, last, on_text, repl, main, phraser, phrases, pacer, paced) = (
                 self.segments.clone(),
                 self.last.clone(),
                 self.on_text.clone(),
@@ -361,6 +406,8 @@ impl AsrRunner {
                 self.main.clone(),
                 self.phraser.clone(),
                 self.phrases.clone(),
+                self.pacer.clone(),
+                self.cfg.paced,
             );
             sink.set_callbacks(
                 gst_app::AppSinkCallbacks::builder()
@@ -376,7 +423,7 @@ impl AsrRunner {
                         let end = buf.pts().zip(buf.duration()).map(|(p, d)| (p + d).nseconds());
                         let done = phraser.lock().unwrap().push(&raw, pts, end);
                         for ph in done {
-                            emit_phrase(ph, &repl, &main, &seg, &last, &on_text, &phrases);
+                            emit_phrase(ph, &repl, &main, &seg, &last, &on_text, &phrases, paced.then_some(&*pacer));
                         }
                         Ok(gst::FlowSuccess::Ok)
                     })
@@ -404,7 +451,16 @@ impl AsrRunner {
         let mut ev = Vec::new();
         let idle = self.phraser.lock().unwrap().flush_idle(Duration::from_millis(1200));
         if let Some(ph) = idle {
-            emit_phrase(ph, &self.cfg.replacements, &self.main, &self.segments, &self.last, &self.on_text, &self.phrases);
+            emit_phrase(
+                ph,
+                &self.cfg.replacements,
+                &self.main,
+                &self.segments,
+                &self.last,
+                &self.on_text,
+                &self.phrases,
+                self.cfg.paced.then_some(&*self.pacer),
+            );
         }
         if let Some(p) = self.pipeline.clone() {
             let bus = p.bus().unwrap();
@@ -573,6 +629,23 @@ mod tests {
         let l = p.push("Amen.", Some(13 * s), None);
         let t: Vec<_> = l.iter().map(|x| x.text.as_str()).collect();
         assert_eq!(t, vec!["hören", "Amen."], "Pause trennt, Klammern verschwinden");
+    }
+
+    #[test]
+    fn pacer_spreads_bursts() {
+        let mut p = Pacer::default();
+        let s = 1_000_000_000u64;
+        // Stoß: drei Wörter (gesprochen bei 1, 2, 3 s) kommen gemeinsam bei 5 s an
+        let t: Vec<u64> = [1, 2, 3].iter().map(|w| p.target(5 * s, w * s)).collect();
+        assert!(t[0] < t[1] && t[1] < t[2], "gleichmäßig nach Sprechzeit: {t:?}");
+        assert!(t.iter().all(|x| *x >= 5 * s + 300_000_000));
+    }
+
+    #[test]
+    fn word_mode_emits_each_word() {
+        let mut p = Phraser { word_mode: true, ..Default::default() };
+        assert_eq!(p.push("Guten", Some(1), None)[0].text, "Guten");
+        assert_eq!(p.push("Abend", Some(2), None)[0].text, "Abend");
     }
 
     #[test]

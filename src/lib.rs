@@ -18,6 +18,7 @@ pub mod report;
 pub mod server;
 pub mod stats;
 pub mod supervisor;
+pub mod vad;
 
 /// 4181–4198 belegt die AV-Suite, 4199 lz-nvx-toolbox.
 pub const DEFAULT_PORT: u16 = 4200;

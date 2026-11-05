@@ -231,6 +231,11 @@ pub struct Channel {
 /// gestempelt: cccombiner hängt Untertitel nur an Bilder, die noch nicht
 /// ausgegeben sind).
 fn push_caption_text(pipeline: &gst::Pipeline, cc: &CaptionCounter, text: &str) -> bool {
+    push_caption_at(pipeline, cc, text, None)
+}
+
+/// Wie `push_caption_text`, aber mit Wunschzeit (Laufzeit ns), etwa „gesprochen + Erkennungsverzug“.
+fn push_caption_at(pipeline: &gst::Pipeline, cc: &CaptionCounter, text: &str, at_ns: Option<u64>) -> bool {
     let text = text.trim();
     if text.is_empty() {
         return true;
@@ -239,8 +244,10 @@ fn push_caption_text(pipeline: &gst::Pipeline, cc: &CaptionCounter, text: &str) 
     let mut buf = gst::Buffer::from_slice(text.as_bytes().to_vec());
     let ms = (text.chars().count() as u64 * 70).clamp(2000, 6000);
     let rt = pipeline.current_running_time().unwrap_or(gst::ClockTime::ZERO);
+    let earliest = rt + gst::ClockTime::from_mseconds(300);
+    let pts = at_ns.map(gst::ClockTime::from_nseconds).map(|t| t.max(earliest)).unwrap_or(earliest);
     let b = buf.get_mut().unwrap();
-    b.set_pts(rt + gst::ClockTime::from_mseconds(300));
+    b.set_pts(pts);
     b.set_duration(gst::ClockTime::from_mseconds(ms));
     let _ = src.push_buffer(buf);
     *cc.text.lock().unwrap() = Some(text.to_string());
@@ -598,9 +605,9 @@ impl Channel {
                                 &pipeline,
                                 "asr_tap",
                                 cfg.captions.asr.clone(),
-                                Arc::new(move |t: String| {
+                                Arc::new(move |t: String, at: Option<u64>| {
                                     if let Some(p) = w.upgrade() {
-                                        push_caption_text(&p, &c, &t);
+                                        push_caption_at(&p, &c, &t, at);
                                     }
                                 }),
                             )

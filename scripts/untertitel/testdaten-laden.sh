@@ -57,7 +57,10 @@ if os.path.exists(f"{other}.dev.tsv"):
 inputs, filt = [], []
 for i, p in enumerate(parts):
     inputs += ["-i", p]
-    filt.append(f"[{i}:a]aresample=48000,aformat=channel_layouts=mono,apad=pad_dur=2[a{i}]")
+    # Jede Äußerung auf −23 LUFS bringen: FLEURS-Aufnahmen schwanken stark
+    # (einzelne englische Sprecher liegen bei −50 … −80 dB und würden sonst
+    # nicht erkannt). Im Sendebetrieb ist der Ton ebenso ausgesteuert.
+    filt.append(f"[{i}:a]aresample=48000,aformat=channel_layouts=mono,loudnorm=I=-23:TP=-2:LRA=11,aresample=48000,apad=pad_dur=2[a{i}]")
 cat = "".join(f"[a{i}]" for i in range(len(parts)))
 k = len(parts)
 filt.append(f"[{k}:a]atrim=0:2[s]")
