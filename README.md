@@ -58,6 +58,16 @@ Unterwegs gefunden und behoben:
 - H.265 in UHD schafft libav am Mac nicht in Echtzeit (8–12 fps bei 2160p25). Für H.265 bleibt darum die Hardware die Voreinstellung.
 - Dynamisch angehängte Decoder-Senken brauchen `async=false`. Sonst blockiert die Ton-Senke im Preroll, und der Decoder steht still (Deadlock).
 
+## Herunterladen
+
+Fertige Pakete stehen unter [Releases](../../releases):
+- **macOS (Apple Silicon):** `lz-streamer-<version>-macos-arm64.tar.gz`. Voraussetzung: `brew install gstreamer`.
+- **Windows (x64):** `lz-streamer-<version>-windows-x64.zip`. Voraussetzung: der GStreamer-1.26-Laufzeit-Installer (MSVC 64 bit, „Complete“).
+
+Beide Pakete bestehen aus einer einzelnen Datei; die Oberfläche ist eingebaut. Hinweise stehen in `LIESMICH.txt` im Paket.
+
+Release bauen: Tag `v<version>` setzen und das Mac-Paket lokal bauen (`cargo build --release`). Das Windows-Paket entsteht auf Zuruf mit `gh workflow run "Release Windows" -f tag=v<version>`; Actions-Minuten kosten im privaten Repo Geld.
+
 ## Starten
 
 ```bash

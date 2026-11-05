@@ -1,0 +1,11 @@
+lz-streamer für Windows (x64)
+
+Voraussetzung: GStreamer 1.26 (MSVC, 64 bit) – Laufzeit-Installer von
+https://gstreamer.freedesktop.org/download/  →  "MSVC 64-bit runtime installer",
+bei der Installation "Complete" wählen. Danach Windows einmal ab- und anmelden,
+damit der GStreamer-Ordner im PATH steht.
+
+Optional: Blackmagic Desktop Video (DeckLink/UltraStudio), NVIDIA-Treiber für NVENC.
+
+Starten:  lz-streamer.exe   →  http://127.0.0.1:4200
+Hilfe:    lz-streamer.exe --help

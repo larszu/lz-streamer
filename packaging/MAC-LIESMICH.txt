@@ -1,0 +1,12 @@
+lz-streamer für macOS (Apple Silicon)
+
+Voraussetzung: GStreamer über Homebrew
+  brew install gstreamer
+Optional: Blackmagic Desktop Video (UltraStudio/DeckLink).
+
+Beim ersten Start meldet macOS evtl. „nicht verifizierter Entwickler“:
+  xattr -d com.apple.quarantine ./lz-streamer
+oder Rechtsklick → Öffnen.
+
+Starten:  ./lz-streamer   →  http://127.0.0.1:4200
+Hilfe:    ./lz-streamer --help
