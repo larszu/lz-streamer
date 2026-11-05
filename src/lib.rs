@@ -7,6 +7,7 @@ pub mod channel;
 pub mod config;
 pub mod devices;
 pub mod latency;
+pub mod loudness;
 pub mod ops;
 pub mod pipeline;
 pub mod server;

@@ -235,6 +235,7 @@ async fn state(State(app): S, headers: HeaderMap) -> impl IntoResponse {
         "runtime": snap,
         "alarms": alarms,
         "system": *app.ops.system.lock().await,
+        "loudness_target": app.ops.settings.lock().await.alarms.loudness_target,
         "user": {"open": open, "name": me.as_ref().map(|m| m.0.clone()), "role": me.map(|m| m.1).unwrap_or(Role::Admin)},
         "version": env!("CARGO_PKG_VERSION"),
     }))

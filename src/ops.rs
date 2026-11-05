@@ -27,6 +27,10 @@ pub struct StatPoint {
     pub standby: bool,
     pub connected: bool,
     pub cpu: f64,
+    /// Short-Term-Lautheit je Spur (LUFS)
+    pub loudness: Vec<Option<f64>>,
+    /// True Peak je Spur (dBTP)
+    pub true_peak: Vec<Option<f64>>,
 }
 
 #[derive(Debug, Clone, Serialize, Default)]
@@ -152,6 +156,17 @@ impl Ops {
                 memory_percent: info.memory_percent,
                 disk_free_gb: if info.disk_total_gb > 0.0 { info.disk_free_gb } else { f64::MAX },
                 last_error: snap.last_error.clone(),
+                tracks: st
+                    .map(|s| {
+                        s.audio_tracks
+                            .iter()
+                            .map(|t| {
+                                let l = t.loudness.clone().unwrap_or_default();
+                                (t.name.clone().unwrap_or_else(|| format!("Spur {}", t.index + 1)), l.short_term, l.true_peak, l.silent_s)
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default(),
             };
             let fresh = admin::evaluate_alarms(&self.settings.lock().await.alarms, &input);
             {
@@ -191,6 +206,8 @@ impl Ops {
                 standby: st.is_some_and(|s| s.standby),
                 connected: st.is_some_and(|s| s.srt.connected),
                 cpu: info.cpu_percent,
+                loudness: st.map(|s| s.audio_tracks.iter().map(|t| t.loudness.as_ref().and_then(|l| l.short_term)).collect()).unwrap_or_default(),
+                true_peak: st.map(|s| s.audio_tracks.iter().map(|t| t.loudness.as_ref().and_then(|l| l.true_peak)).collect()).unwrap_or_default(),
             };
             *self.system.lock().await = info;
             let mut stats = self.stats.lock().await;
@@ -262,10 +279,11 @@ pub fn report_csv(stats: &[StatPoint], events: &[crate::supervisor::Event]) -> S
             .map(|d| d.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M:%S").to_string())
             .unwrap_or_default()
     };
-    let mut s = String::from("zeit;laeuft;bitrate_kbps;rtt_ms;verloren;wiederholt;fps;standbild;verbunden;cpu\n");
+    let mut s = String::from("zeit;laeuft;bitrate_kbps;rtt_ms;verloren;wiederholt;fps;standbild;verbunden;cpu;lautheit_s_lufs_je_spur;true_peak_dbtp_je_spur\n");
+    let join = |v: &[Option<f64>]| v.iter().map(|x| x.map(|x| format!("{x:.1}")).unwrap_or_default()).collect::<Vec<_>>().join("/");
     for p in stats {
         s.push_str(&format!(
-            "{};{};{:.0};{};{};{};{:.1};{};{};{:.0}\n",
+            "{};{};{:.0};{};{};{};{:.1};{};{};{:.0};{};{}\n",
             ts(p.at_ms),
             p.running as u8,
             p.bitrate_kbps,
@@ -275,7 +293,9 @@ pub fn report_csv(stats: &[StatPoint], events: &[crate::supervisor::Event]) -> S
             p.fps,
             p.standby as u8,
             p.connected as u8,
-            p.cpu
+            p.cpu,
+            join(&p.loudness),
+            join(&p.true_peak)
         ));
     }
     s.push_str("\nzeit;stufe;ereignis\n");
@@ -291,11 +311,19 @@ mod tests {
 
     #[test]
     fn csv_has_header_and_rows() {
-        let p = StatPoint { at_ms: 1_762_300_000_000, running: true, bitrate_kbps: 8000.4, rtt_ms: Some(1.234), ..Default::default() };
+        let p = StatPoint {
+            at_ms: 1_762_300_000_000,
+            running: true,
+            bitrate_kbps: 8000.4,
+            rtt_ms: Some(1.234),
+            loudness: vec![Some(-23.04), None, Some(-18.0)],
+            ..Default::default()
+        };
         let e = crate::supervisor::Event { at_ms: 1_762_300_000_000, level: "ok".into(), text: "a;b".into() };
         let csv = report_csv(&[p], &[e]);
         assert!(csv.starts_with("zeit;laeuft;bitrate_kbps"));
         assert!(csv.contains(";1;8000;1.23;"));
+        assert!(csv.contains(";-23.0//-18.0;"), "{csv}");
         assert!(csv.contains(";ok;a,b"));
     }
 

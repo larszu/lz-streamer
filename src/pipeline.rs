@@ -207,7 +207,8 @@ pub fn encoder_description(cfg: &EncoderConfig, parts: &EncoderParts) -> String 
             d.push(format!(
                 "ain. ! queue max-size-buffers=0 max-size-bytes=0 max-size-time=1000000000 \
                  ! audioconvert name=amx{i} mix-matrix={mix} ! {out_caps} \
-                 ! volume name=avol{i} volume={:.4} mute={} ! audioconvert ! {aac} name=aenc{i} bitrate={} \
+                 ! volume name=avol{i} volume={:.4} mute={} ! ebur128level name=lvl{i} interval=500000000 \
+                 ! audioconvert ! {aac} name=aenc{i} bitrate={} \
                  ! aacparse ! taginject name=atag{i} ! tee name=ae{i}",
                 crate::audio::db_to_linear(t.gain_db),
                 t.mute,
@@ -330,7 +331,7 @@ pub fn decoder_audio_branch(output: OutputKind, audio: bool, device: u32, ts_off
     };
     format!(
         "queue max-size-buffers=0 max-size-bytes=0 max-size-time=1000000000 ! aacparse ! avdec_aac \
-         ! audioconvert ! audioresample ! {sink}"
+         ! audioconvert ! ebur128level name=lvl0 interval=500000000 ! audioconvert ! audioresample ! {sink}"
     )
 }
 
