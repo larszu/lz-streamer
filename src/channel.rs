@@ -449,9 +449,9 @@ impl Channel {
             }
         });
 
-        // Ausgabepuffer: Demux-Puffer plus etwa drei Bilder Reserve. Die
-        // SRT-Latenz ist hier bewusst nicht enthalten (siehe ts-offset oben).
-        pipeline.set_latency(gst::ClockTime::from_mseconds(cfg.demux_latency_ms as u64 + 60));
+        // Ausgabepuffer: Demux-Puffer plus Reserve. Die SRT-Latenz ist hier
+        // bewusst nicht enthalten (siehe ts-offset oben).
+        pipeline.set_latency(gst::ClockTime::from_mseconds((cfg.demux_latency_ms + cfg.output_buffer_ms) as u64));
         pipeline.set_state(gst::State::Playing).context("Decoder-Pipeline startet nicht")?;
         event(&events, "ok", format!("Decoder wartet auf {}", cfg.srt.uri()));
         Ok(Channel {

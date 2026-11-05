@@ -307,6 +307,8 @@ pub struct DecoderConfig {
     pub demux_latency_ms: u32,
     /// "auto" oder ein GStreamer-Decoder (z. B. "avdec_h264").
     pub decoder: String,
+    /// Reserve am Ausgang zusätzlich zum Demux-Puffer (Jitter, Decodierzeit).
+    pub output_buffer_ms: u32,
 }
 
 impl Default for DecoderConfig {
@@ -319,6 +321,7 @@ impl Default for DecoderConfig {
             audio: true,
             demux_latency_ms: 40,
             decoder: "auto".into(),
+            output_buffer_ms: 60,
         }
     }
 }

@@ -30,6 +30,8 @@ Eigener Video-Encoder und -Decoder: **Eingang → Encoder → SRT** (dazu option
 | H.265 VideoToolbox → avdec_h265 | 120 ms | 220 ms |
 | H.265 VideoToolbox → vtdec_hw (Voreinstellung für H.265) | 120 ms | 549 ms |
 
+`latenz` schlüsselt zusätzlich nach Stationen auf (Quelle, Encode, Parser+Mux, SRT+Demux+Decode, Ausgabe). Mit SRT 40 ms, Demux 0 und Reserve 20 sind es 134–155 ms; der größte vermeidbare Posten ist mit 37–51 ms die Wartezeit im `mpegtsmux`. Vergleich mit Lynx, AJA, Haivision und Matrox, Hardware-Empfehlung und Latenz-Rechenmodell: **[docs/vergleich-hardware-latenz.md](docs/vergleich-hardware-latenz.md)**.
+
 Unterwegs gefunden und behoben:
 
 - `srtsrc` meldet die SRT-Latenz als Pipeline-Latenz, obwohl die Pakete erst nach Ablauf dieses Puffers ankommen. Die Latenz kam dadurch am Ausgang doppelt dazu. Ausgeglichen wird das mit `ts-offset` und einer festen Pipeline-Latenz: 456 statt 227 ms.
@@ -50,7 +52,7 @@ cargo build --release
 ./target/release/lz-streamer info          # was ist da: Encoder, DeckLink, fehlende Bausteine
 ./target/release/lz-streamer               # Oberfläche auf http://127.0.0.1:4200
 ./target/release/lz-streamer serve --bind 0.0.0.0 --autostart   # im Netz erreichbar, Kanal sofort an
-./target/release/lz-streamer latenz [--h265] [--srt-latency 40] [--decoder avdec_h265]
+./target/release/lz-streamer latenz [--h265] [--srt-latency 40] [--decoder avdec_h265] [--demux 0] [--reserve 20]
 ```
 
 - **Port 4200.** 4181–4198 belegt die AV-Suite, 4199 belegt `lz-nvx-toolbox`.
