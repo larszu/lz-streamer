@@ -693,3 +693,35 @@ fn jpeg_halves(path: &std::path::Path) -> (f64, f64) {
     p.set_state(gst::State::Null).unwrap();
     r
 }
+
+/// lzloudness in der Spur: Testton −20 LUFS wird auf das Ziel −16 geregelt,
+/// True Peak bleibt unter der Grenze, die Vorausschau steht in der Latenz.
+#[test]
+fn leveler_in_track_reaches_target() {
+    use lz_streamer::audio::AudioTrack;
+    use lz_streamer::leveler::{LevelerConfig, Preset};
+    init();
+    let port = free_port();
+    let mut cfg = encoder_cfg(port, SrtMode::Listener);
+    cfg.audio.tracks = vec![AudioTrack {
+        channels: vec![1, 2],
+        leveler: LevelerConfig { enabled: true, target: -16.0, preset: Preset::Hard, ceiling: -1.0, ..Default::default() },
+        ..Default::default()
+    }];
+    let mut enc = Channel::start_encoder(&cfg, &[], &ChannelOptions::default()).unwrap();
+    let mut dec = Channel::start_decoder(&decoder_cfg(port, SrtMode::Caller), &ChannelOptions::default()).unwrap();
+    let (e, _) = run_until(&mut enc, &mut dec, Duration::from_secs(20), |e, _| {
+        e.audio_tracks[0].loudness.as_ref().and_then(|l| l.short_term).is_some_and(|s| (s + 16.0).abs() < 1.0) && e.uptime_s > 5.0
+    });
+    let l = e.audio_tracks[0].loudness.clone().unwrap();
+    eprintln!("geregelt: {l:?}, Regelung {:?}", e.audio_tracks[0].leveler_gain);
+    assert!(l.true_peak.unwrap() <= -0.9, "TP {:?}", l.true_peak);
+    assert!(e.audio_tracks[0].leveler_gain.unwrap().0 > 3.0);
+    // Latenz: Vorausschau 1,5 ms wird gemeldet
+    let lev = enc.pipeline().by_name("lev0").unwrap();
+    let mut q = gstreamer::query::Latency::new();
+    assert!(lev.static_pad("src").unwrap().query(&mut q), "Latenzabfrage");
+    let (_, min, _) = q.result();
+    eprintln!("Latenz bis lev0: {min}");
+    assert!(min >= gstreamer::ClockTime::from_useconds(1500));
+}

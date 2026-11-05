@@ -282,7 +282,7 @@ function rowEditor(host, items, fields, onChange, removeLabel) {
         el.value = String(f.get ? f.get(item) : item[f.key]);
       } else if (f.type === 'check') {
         el = document.createElement('input'); el.type = 'checkbox';
-        el.checked = !!item[f.key];
+        el.checked = !!(f.get ? f.get(item) : item[f.key]);
       } else if (f.type === 'days') {
         el = document.createElement('div'); el.className = 'days';
         ['Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa', 'So'].forEach((d, k) => {
@@ -331,6 +331,9 @@ const trackFields = [
   { key: 'gain_db', label: 'Pegel (dB)', num: true },
   { key: 'bitrate_kbps', label: 'kbit/s', num: true },
   { key: 'mute', label: 'Stumm', type: 'check' },
+  { key: 'lev', label: 'Lautheit regeln', type: 'check', rerender: true, get: t => t.leveler?.enabled, set: (t, v) => { t.leveler = { ...(t.leveler || {}), enabled: v }; } },
+  { key: 'levt', label: 'Ziel (LUFS)', show: t => t.leveler?.enabled, get: t => t.leveler.target, set: (t, v) => { t.leveler.target = parseFloat(String(v).replace(',', '.')) || -23; } },
+  { key: 'levp', label: 'Regelung', type: 'select', show: t => t.leveler?.enabled, options: [['soft', 'sanft'], ['mid', 'mittel'], ['hard', 'schnell']], get: t => t.leveler.preset, set: (t, v) => { t.leveler.preset = v; } },
 ];
 const outputFields = [
   { key: 'enabled', label: 'An', type: 'check' },
@@ -354,7 +357,7 @@ $('#add-replacement').onclick = () => {
 };
 $('#add-track').onclick = () => {
   const n = cfg.encoder.audio.tracks.length;
-  cfg.encoder.audio.tracks.push({ name: `Ton ${n + 1}`, language: 'und', layout: 'stereo', channels: [2 * n + 1, 2 * n + 2], gain_db: 0, mute: false, bitrate_kbps: 192 });
+  cfg.encoder.audio.tracks.push({ name: `Ton ${n + 1}`, language: 'und', layout: 'stereo', channels: [2 * n + 1, 2 * n + 2], gain_db: 0, mute: false, bitrate_kbps: 192, leveler: { enabled: false, target: -23, preset: 'mid', ceiling: -1, range_db: 15, freeze_below: -45 } });
   renderEditors(); changed('encoder.audio.tracks', cfg.encoder.audio.tracks);
 };
 $('#add-output').onclick = () => {
@@ -546,10 +549,11 @@ function renderMeters(st) {
   $('#meters').innerHTML = tr.map(t => {
     const l = t.loudness || {};
     const m = l.momentary;
-    const state = m == null ? '' : (l.true_peak > -1 ? 'error' : Math.abs((l.short_term ?? m) - target) > 5 ? 'warn' : '');
+    const tg = t.target ?? target;
+    const state = m == null ? '' : (l.true_peak > -1 ? 'error' : Math.abs((l.short_term ?? m) - tg) > 5 ? 'warn' : '');
     return `<div class="meter"><header>${esc(t.name || 'Spur ' + (t.index + 1))} <small>${esc(t.language || '')}${l.silent_s >= 2 ? ' · still' : ''}</small></header>
-      <div class="bar" role="meter" aria-label="Momentary-Lautheit" aria-valuemin="-60" aria-valuemax="0" aria-valuenow="${m ?? -60}"><span data-s="${state}" style="inline-size:${m == null ? 0 : pos(m)}%"></span><i style="inset-inline-start:${pos(target)}%"></i></div>
-      <div class="vals"><span>M <b>${f(m)}</b></span><span>S <b>${f(l.short_term)}</b></span><span>I <b>${f(l.integrated)}</b> LUFS</span><span>LRA <b>${f(l.lra)}</b> LU</span><span>TP <b>${f(l.true_peak)}</b> dBTP</span></div></div>`;
+      <div class="bar" role="meter" aria-label="Momentary-Lautheit" aria-valuemin="-60" aria-valuemax="0" aria-valuenow="${m ?? -60}"><span data-s="${state}" style="inline-size:${m == null ? 0 : pos(m)}%"></span><i style="inset-inline-start:${pos(tg)}%"></i></div>
+      <div class="vals"><span>M <b>${f(m)}</b></span><span>S <b>${f(l.short_term)}</b></span><span>I <b>${f(l.integrated)}</b> LUFS</span><span>LRA <b>${f(l.lra)}</b> LU</span><span>TP <b>${f(l.true_peak)}</b> dBTP</span>${t.leveler_gain ? `<span>Regelung <b>${fmt.format(t.leveler_gain[0] + t.leveler_gain[1])}</b> dB</span>` : ''}</div></div>`;
   }).join('');
 }
 const _render2 = render;

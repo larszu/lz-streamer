@@ -99,6 +99,10 @@ pub struct TrackInfo {
     pub selected: bool,
     /// Lautheit nach EBU R 128 (Encoder: je Spur hinter Matrix und Pegel; Decoder: ausgegebene Spur)
     pub loudness: Option<crate::loudness::Loudness>,
+    /// Regelung der Lautheitsregelung: (AGC dB, schnelle Absenkung dB)
+    pub leveler_gain: Option<(f64, f64)>,
+    /// eigenes Lautheitsziel der Spur (bei eingeschalteter Regelung)
+    pub target: Option<f64>,
     #[serde(skip)]
     pub demux_pad: String,
     #[serde(skip)]
@@ -140,6 +144,9 @@ fn output_target(o: &crate::config::ExtraOutput) -> String {
 /// Sprachkennung und Titel je Tonspur setzen (vor PLAYING).
 fn configure_audio(pipeline: &gst::Pipeline, cfg: &EncoderConfig) {
     for (i, track) in crate::audio::effective_tracks(&cfg.audio.tracks).iter().enumerate() {
+        if let Some(l) = pipeline.by_name(&format!("lev{i}")).and_then(|e| e.downcast::<crate::lzloudness::LzLoudness>().ok()) {
+            l.set_config(track.leveler.clone());
+        }
         if let Some(t) = pipeline.by_name(&format!("atag{i}")) {
             let title = track.name.replace('"', "'");
             t.set_property("tags", format!("language-code={},title=\"{title}\"", track.language));
@@ -465,6 +472,7 @@ impl Channel {
     }
 
     pub fn start_encoder(cfg: &EncoderConfig, devices: &[CaptureDevice], opts: &ChannelOptions) -> Result<Self> {
+        crate::lzloudness::register();
         let events: Events = Arc::default();
         let input = devices::resolve_input(&cfg.input, devices);
         if !caps::element_available("fallbackswitch") {
@@ -649,6 +657,7 @@ impl Channel {
                                     language: Some(t.language.clone()),
                                     name: Some(t.name.clone()),
                                     selected: i == 0,
+                                    target: t.leveler.enabled.then_some(t.leveler.target),
                                     ..Default::default()
                                 })
                                 .collect(),
@@ -1185,7 +1194,17 @@ impl Channel {
                 })
                 .collect(),
             recording: self.recording.clone().or_else(|| self.newest_recording()),
-            audio_tracks: self.tracks.lock().unwrap().clone(),
+            audio_tracks: {
+                let mut t = self.tracks.lock().unwrap().clone();
+                for (i, tr) in t.iter_mut().enumerate() {
+                    tr.leveler_gain = self
+                        .pipeline
+                        .by_name(&format!("lev{i}"))
+                        .and_then(|e| e.downcast::<crate::lzloudness::LzLoudness>().ok())
+                        .and_then(|l| l.gain());
+                }
+                t
+            },
             graphics: self.gfx.as_ref().map(|g| GfxStatus {
                 renderer_connected: g.connected(),
                 graphic_visible: g.has_graphic(),

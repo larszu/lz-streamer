@@ -164,7 +164,7 @@ impl Ops {
                             .iter()
                             .map(|t| {
                                 let l = t.loudness.clone().unwrap_or_default();
-                                (t.name.clone().unwrap_or_else(|| format!("Spur {}", t.index + 1)), l.short_term, l.true_peak, l.silent_s)
+                                (t.name.clone().unwrap_or_else(|| format!("Spur {}", t.index + 1)), l.short_term, l.true_peak, l.silent_s, t.target)
                             })
                             .collect()
                     })

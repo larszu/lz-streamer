@@ -259,8 +259,8 @@ pub struct AlarmInput {
     pub memory_percent: f64,
     pub disk_free_gb: f64,
     pub last_error: Option<String>,
-    /// je Tonspur: Name, Short-Term-Lautheit, True Peak, Stille in s
-    pub tracks: Vec<(String, Option<f64>, Option<f64>, f64)>,
+    /// je Tonspur: Name, Short-Term-Lautheit, True Peak, Stille in s, eigenes Ziel
+    pub tracks: Vec<(String, Option<f64>, Option<f64>, f64, Option<f64>)>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -291,15 +291,16 @@ pub fn evaluate_alarms(s: &AlarmSettings, i: &AlarmInput) -> Vec<Alarm> {
         if s.max_restarts > 0 && i.restarts_10min >= s.max_restarts {
             add("restarts", "error", format!("{} Neustarts in 10 Minuten", i.restarts_10min));
         }
-        for (n, (name, short, tp, silent)) in i.tracks.iter().enumerate() {
+        for (n, (name, short, tp, silent, own)) in i.tracks.iter().enumerate() {
+            let target = own.unwrap_or(s.loudness_target);
             if s.silence_s > 0 && *silent >= s.silence_s as f64 {
                 add(&format!("silence:{n}"), "warn", format!("Tonspur „{name}“ still seit {silent:.0} s"));
             } else if let Some(st) = short {
-                if s.loudness_tolerance_lu > 0.0 && (st - s.loudness_target).abs() > s.loudness_tolerance_lu {
+                if s.loudness_tolerance_lu > 0.0 && (st - target).abs() > s.loudness_tolerance_lu {
                     add(
                         &format!("loudness:{n}"),
                         "warn",
-                        format!("Tonspur „{name}“ {st:.1} LUFS, Ziel {:.0} ±{:.0} LU", s.loudness_target, s.loudness_tolerance_lu),
+                        format!("Tonspur „{name}“ {st:.1} LUFS, Ziel {target:.0} ±{:.0} LU", s.loudness_tolerance_lu),
                     );
                 }
             }
@@ -481,12 +482,13 @@ mod tests {
     fn loudness_alarms_per_track() {
         let s = AlarmSettings::default();
         let base = AlarmInput { running: true, encoder: true, disk_free_gb: 100.0, ..Default::default() };
-        let ok = AlarmInput { tracks: vec![("DE".into(), Some(-23.5), Some(-3.0), 0.0)], ..base.clone() };
+        let ok = AlarmInput { tracks: vec![("DE".into(), Some(-23.5), Some(-3.0), 0.0, None)], ..base.clone() };
         assert!(evaluate_alarms(&s, &ok).is_empty());
         let bad = AlarmInput {
             tracks: vec![
-                ("DE".into(), Some(-35.0), Some(-0.2), 0.0),
-                ("EN".into(), None, None, 12.0),
+                ("DE".into(), Some(-35.0), Some(-0.2), 0.0, None),
+                ("EN".into(), None, None, 12.0, None),
+                ("Stream".into(), Some(-16.0), Some(-3.0), 0.0, Some(-16.0)),
             ],
             ..base
         };
