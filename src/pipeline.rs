@@ -240,11 +240,17 @@ pub fn encoder_description(cfg: &EncoderConfig, parts: &EncoderParts) -> String 
             d.push(format!(
                 "ain. ! queue max-size-buffers=0 max-size-bytes=0 max-size-time=1000000000 \
                  ! audioconvert name=amx{i} mix-matrix={mix} ! {out_caps} \
-                 ! volume name=avol{i} volume={:.4} mute={}{} ! ebur128level name=lvl{i} interval=500000000{} \
+                 ! volume name=avol{i} volume={:.4} mute={}{}{} ! ebur128level name=lvl{i} interval=500000000{} \
                  ! audioconvert ! {aac} name=aenc{i} bitrate={} \
                  ! aacparse ! taginject name=atag{i} ! tee name=ae{i}",
                 crate::audio::db_to_linear(t.gain_db),
                 t.mute,
+                t.plugins
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, p)| p.enabled && !p.path.is_empty())
+                    .map(|(j, _)| format!(" ! audioconvert ! audio/x-raw,format=F32LE,rate=48000 ! lzplugin name=plug{i}_{j}"))
+                    .collect::<String>(),
                 if t.leveler.enabled { format!(" ! audioconvert ! audio/x-raw,format=F32LE ! lzloudness name=lev{i}") } else { String::new() },
                 if asr_track(cfg) == Some(i) { format!(" ! tee name=araw{i} ! queue max-size-buffers=0 max-size-bytes=0 max-size-time=1000000000") } else { String::new() },
                 t.bitrate_kbps.clamp(32, 512) * 1000
@@ -465,6 +471,23 @@ mod tests {
 
     fn parts<'a>(input: &'a ResolvedInput) -> EncoderParts<'a> {
         EncoderParts { input, encoder: "x264enc", aac: Some("avenc_aac"), image_ok: false, rtmp: false, record: None }
+    }
+
+    #[test]
+    fn plugins_sit_before_leveler_and_meter() {
+        let mut cfg = EncoderConfig::default();
+        let mut t = crate::audio::AudioTrack::default();
+        t.leveler.enabled = true;
+        t.plugins = vec![
+            crate::plugin::PluginConfig { enabled: true, path: "/a.vst3".into() },
+            crate::plugin::PluginConfig { enabled: false, path: "/b.vst3".into() },
+            crate::plugin::PluginConfig { enabled: true, path: "/c.vst3".into() },
+        ];
+        cfg.audio.tracks = vec![t];
+        let d = encoder_description(&cfg, &parts(&ResolvedInput::Test));
+        let (a, c, lev, lvl) = (d.find("lzplugin name=plug0_0").unwrap(), d.find("lzplugin name=plug0_2").unwrap(), d.find("lzloudness name=lev0").unwrap(), d.find("ebur128level name=lvl0").unwrap());
+        assert!(a < c && c < lev && lev < lvl, "{d}");
+        assert!(!d.contains("plug0_1"));
     }
 
     #[test]

@@ -116,6 +116,14 @@ enum Cmd {
         #[arg(long)]
         korpus: PathBuf,
     },
+    /// Hilfsprozess für ein VST3-Plugin (wird von `lzplugin` gestartet)
+    #[command(hide = true)]
+    PluginHost {
+        #[arg(long)]
+        plugin: String,
+        #[arg(long, default_value_t = 2)]
+        channels: usize,
+    },
     /// Gefundene Encoder, Geräte und fehlende Bausteine anzeigen
     Info,
 }
@@ -208,6 +216,7 @@ fn main() -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&r)?);
             Ok(())
         }
+        Cmd::PluginHost { plugin, channels } => lz_streamer::plugin::run_host(&plugin, channels),
         Cmd::KlassenMessen { korpus } => {
             let r = lz_streamer::vad::evaluate_corpus(&korpus)?;
             for (c, ok, n) in &r.per_class {

@@ -278,7 +278,7 @@ function rowEditor(host, items, fields, onChange, removeLabel) {
       let el;
       if (f.type === 'select') {
         el = document.createElement('select');
-        for (const [v, t] of f.options) el.add(new Option(t, v));
+        for (const [v, t] of (typeof f.options === 'function' ? f.options(item) : f.options)) el.add(new Option(t, v));
         el.value = String(f.get ? f.get(item) : item[f.key]);
       } else if (f.type === 'check') {
         el = document.createElement('input'); el.type = 'checkbox';
@@ -334,7 +334,16 @@ const trackFields = [
   { key: 'lev', label: 'Lautheit regeln', type: 'check', rerender: true, get: t => t.leveler?.enabled, set: (t, v) => { t.leveler = { ...(t.leveler || {}), enabled: v }; } },
   { key: 'levt', label: 'Ziel (LUFS)', show: t => t.leveler?.enabled, get: t => t.leveler.target, set: (t, v) => { t.leveler.target = parseFloat(String(v).replace(',', '.')) || -23; } },
   { key: 'levp', label: 'Regelung', type: 'select', show: t => t.leveler?.enabled, options: [['soft', 'sanft'], ['mid', 'mittel'], ['hard', 'schnell']], get: t => t.leveler.preset, set: (t, v) => { t.leveler.preset = v; } },
+  { key: 'plug', label: 'Plugin (VST3)', type: 'select', options: t => pluginOptions(t), get: t => t.plugins?.find(p => p.enabled)?.path || '', set: (t, v) => { t.plugins = v ? [{ enabled: true, path: v }] : []; } },
 ];
+let installedPlugins = [];
+function pluginOptions(t) {
+  const opts = [['', 'keins'], ...installedPlugins.map(p => [p.path, p.name])];
+  // gespeichertes Plugin, das hier nicht installiert ist, trotzdem zeigen
+  for (const p of t.plugins || []) if (p.path && !opts.some(o => o[0] === p.path)) opts.push([p.path, p.path.split(/[\\/]/).pop().replace(/\.vst3$/, '') + ' (fehlt)']);
+  return opts;
+}
+fetch('/api/plugins').then(r => r.ok ? r.json() : []).then(l => { installedPlugins = l; if (cfg) renderEditors(); }).catch(() => {});
 const outputFields = [
   { key: 'enabled', label: 'An', type: 'check' },
   { key: 'name', label: 'Name' },
@@ -553,7 +562,7 @@ function renderMeters(st) {
     const state = m == null ? '' : (l.true_peak > -1 ? 'error' : Math.abs((l.short_term ?? m) - tg) > 5 ? 'warn' : '');
     return `<div class="meter"><header>${esc(t.name || 'Spur ' + (t.index + 1))} <small>${esc(t.language || '')}${l.silent_s >= 2 ? ' · still' : ''}</small></header>
       <div class="bar" role="meter" aria-label="Momentary-Lautheit" aria-valuemin="-60" aria-valuemax="0" aria-valuenow="${m ?? -60}"><span data-s="${state}" style="inline-size:${m == null ? 0 : pos(m)}%"></span><i style="inset-inline-start:${pos(tg)}%"></i></div>
-      <div class="vals"><span>M <b>${f(m)}</b></span><span>S <b>${f(l.short_term)}</b></span><span>I <b>${f(l.integrated)}</b> LUFS</span><span>LRA <b>${f(l.lra)}</b> LU</span><span>TP <b>${f(l.true_peak)}</b> dBTP</span>${t.leveler_gain ? `<span>Regelung <b>${fmt.format(t.leveler_gain[0] + t.leveler_gain[1])}</b> dB</span>` : ''}</div></div>`;
+      <div class="vals"><span>M <b>${f(m)}</b></span><span>S <b>${f(l.short_term)}</b></span><span>I <b>${f(l.integrated)}</b> LUFS</span><span>LRA <b>${f(l.lra)}</b> LU</span><span>TP <b>${f(l.true_peak)}</b> dBTP</span>${t.leveler_gain ? `<span>Regelung <b>${fmt.format(t.leveler_gain[0] + t.leveler_gain[1])}</b> dB</span>` : ''}${(t.plugins || []).map(p => `<span>${esc(p.name)} <b data-s="${p.running ? '' : 'warn'}">${p.running ? 'aktiv' : 'Bypass'}</b></span>`).join('')}</div></div>`;
   }).join('');
 }
 const _render2 = render;

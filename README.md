@@ -18,6 +18,7 @@ Eigener Video-Encoder und -Decoder: **Eingang → Encoder → SRT** (dazu option
   - Endet der Aufpasser, beendet sich auch der Kanal. Es bleiben keine verwaisten Prozesse zurück.
 - **Live-Status:** Vorschaubild, Signal und Eingangsformat, Bitrate, SRT-RTT, Verluste und Wiederholungen, Encoder (Hardware/Software), Bilder/s, Laufzeit, Neustarts, Ereignisliste. Mit „Signalverlust testen“ lässt sich das Standbild ohne Kabelziehen ausprobieren.
 - **Ton wie im Broadcast:** Matrix vom Eingang (2/8/16 eingebettete SDI-Kanäle) auf bis zu 8 Tonspuren je Ausgang, Mono/Stereo/Downmix, Pegel, Stumm, Sprachkennung (ISO 639) im TS. Der Decoder wählt die Spur nach Sprache oder Nummer.
+- **VST3-Plugins je Tonspur** (z. B. LZ Defeedback): Das Plugin läuft in einem eigenen Hilfsprozess. Stürzt es ab oder antwortet es nicht innerhalb einer halben Blockdauer, geht der Ton unbearbeitet weiter, ohne Lücke und ohne Neustart des Kanals; der Hilfsprozess startet von selbst neu. Die Anzeige je Spur zeigt „aktiv“ oder „Bypass“. Gefunden werden die Plugins in den üblichen VST3-Ordnern.
 - **Mehrere Ausgänge** aus demselben Strom: weitere SRT-Ziele (auch Rendezvous), TS über UDP/RTP (auch Multicast), dazu RTMP.
 - **Aufnahme parallel** zum Stream: TS oder fragmentiertes MP4, Segmente, alle Tonspuren. Aufnahmen-Liste mit Download; älteste löschen, wenn die Platte voll wird.
 - **Verwaltung:**
@@ -141,6 +142,7 @@ lz-streamer serve ── axum (REST + Weboberfläche, eingebettet) ── Aufpas
 | `GET /api/alarms` · `/api/stats?minutes=` · `/api/system` · `/api/report.csv` | Alarme, Verlauf, Systemlast, Bericht |
 | `GET/POST /api/standby`, `GET/DELETE /api/standby/{name}`, `POST …/use` | Standbilder |
 | `GET /api/recordings`, `GET/DELETE /api/recordings/{name}` | Aufnahmen |
+| `GET /api/plugins` | installierte VST3-Plugins |
 | `POST /api/login` · `/api/logout`, `GET /api/me`, `GET/POST /api/users`, `DELETE /api/users/{name}` | Anmeldung und Benutzer; ohne Benutzer bleibt die Oberfläche offen, der erste wird Administrator |
 
 ## Bezug zum Vorbild
@@ -181,4 +183,5 @@ Reihenfolge nach `haivision-kb-analyse/docs/nachbau-konzept.md` §5–§7:
 - **Umschaltlücke:** Zwischen Signalverlust und Standbild liegen `standby.timeout_ms` ohne neue Bilder (Voreinstellung 500 ms).
 - **H.265 mit `vtdec_hw`** hält rund 20 Bilder zurück (450 ms bei 50p, 826 ms bei 25p). Für H.265 bis 1080p ist `--decoder avdec_h265` die latenzarme Wahl (220 ms).
 - Offene Paritätspunkte mit Begründung: [docs/funktionsparitaet-kb.md](docs/funktionsparitaet-kb.md).
+- **Plugins mit eigener Latenz:** Beim Wechsel zwischen Bypass und Plugin verschiebt sich der Ton um die Plugin-Latenz. LZ Defeedback meldet 0 Samples und ist davon nicht betroffen. Geprüft ist nur LZ Defeedback am Mac.
 - **UHD50 H.265** ist am M1 Pro Grenzlast: 4K-HEVC-Encode schafft dort ≈ 52 fps.

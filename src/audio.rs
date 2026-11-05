@@ -39,6 +39,8 @@ pub struct AudioTrack {
     pub bitrate_kbps: u32,
     /// Lautheitsregelung (lzloudness) für diese Spur
     pub leveler: crate::leveler::LevelerConfig,
+    /// VST3-Plugins vor der Lautheitsregelung, in dieser Reihenfolge
+    pub plugins: Vec<crate::plugin::PluginConfig>,
 }
 
 impl Default for AudioTrack {
@@ -52,6 +54,7 @@ impl Default for AudioTrack {
             mute: false,
             bitrate_kbps: 192,
             leveler: Default::default(),
+            plugins: Vec::new(),
         }
     }
 }
