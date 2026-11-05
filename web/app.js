@@ -476,12 +476,22 @@ $('#add-schedule').onclick = () => {
   renderSchedule([]); saveSettings(); loadAdmin();
 };
 
+$('#cfg-import').addEventListener('change', async e => {
+  const f = e.target.files?.[0]; if (!f) return;
+  try {
+    const cfgIn = JSON.parse(await f.text());
+    const r = await fetch('/api/config', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(cfgIn) });
+    $('#cfg-import-hint').textContent = r.ok ? `„${f.name}“ eingespielt.` : 'Datei abgelehnt.';
+  } catch { $('#cfg-import-hint').textContent = 'Keine gültige Kanal-Datei (JSON).'; }
+  e.target.value = '';
+});
+
 const alarmLabels = {
   signal_loss_s: 'Kein Signal länger als (s)', no_peer_s: 'Keine Gegenstelle länger als (s)', min_bitrate_kbps: 'Bitrate unter (kbit/s)',
   max_lost_per_min: 'Verluste je Minute über', max_restarts: 'Neustarts in 10 min ab', cpu_percent: 'CPU über (%)',
   memory_percent: 'Speicher über (%)', disk_free_gb: 'Freier Platz unter (GB)',
   loudness_target: 'Ziel-Lautheit (LUFS)', loudness_tolerance_lu: 'Erlaubte Abweichung (LU)', silence_s: 'Spur still länger als (s)',
-  true_peak_max_dbtp: 'True Peak über (dBTP)'
+  true_peak_max_dbtp: 'True Peak über (dBTP)', gpu_percent: 'GPU über (%)', min_fps_percent: 'Bildrate unter (% der eingestellten)'
 };
 function renderAlarmFields() {
   const host = $('#alarm-fields'); host.innerHTML = '';
@@ -554,6 +564,7 @@ function renderOps(st) {
   $('#system').innerHTML = [
     tile('CPU', fmt0.format(s.cpu_percent || 0), '%', s.cpu_percent > 90 ? 'warn' : ''),
     tile('Arbeitsspeicher', fmt0.format(s.memory_percent || 0), '%'),
+    ...(s.gpu_percent != null ? [tile('GPU', fmt0.format(s.gpu_percent), '%', s.gpu_percent > 90 ? 'warn' : '')] : []),
     tile('Frei für Aufnahmen', fmt.format(s.disk_free_gb || 0), 'GB'),
     tile('Rechner', esc(s.hostname || dash)),
     tile('Läuft seit', dur(s.uptime_s)),

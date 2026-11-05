@@ -24,6 +24,8 @@ pub struct StatPoint {
     pub lost: u64,
     pub retransmitted: u64,
     pub fps: f64,
+    #[serde(default)]
+    pub gpu: Option<f64>,
     pub standby: bool,
     pub connected: bool,
     pub cpu: f64,
@@ -42,6 +44,25 @@ pub struct SystemInfo {
     pub disk_total_gb: f64,
     pub hostname: String,
     pub uptime_s: u64,
+    /// GPU-Auslastung, wenn das System sie meldet (Mac: ioreg, NVIDIA: nvidia-smi)
+    pub gpu_percent: Option<f64>,
+}
+
+/// GPU-Auslastung ohne Administratorrechte: macOS über `ioreg` (IOAccelerator,
+/// „Device Utilization %“), sonst `nvidia-smi`, wenn vorhanden.
+pub fn gpu_percent() -> Option<f64> {
+    let run = |cmd: &str, args: &[&str]| std::process::Command::new(cmd).args(args).output().ok().filter(|o| o.status.success()).map(|o| String::from_utf8_lossy(&o.stdout).into_owned());
+    if cfg!(target_os = "macos") {
+        return run("ioreg", &["-r", "-d", "1", "-c", "IOAccelerator"]).and_then(|t| parse_ioreg_gpu(&t));
+    }
+    run("nvidia-smi", &["--query-gpu=utilization.gpu", "--format=csv,noheader,nounits"]).and_then(|t| t.lines().filter_map(|l| l.trim().parse::<f64>().ok()).reduce(f64::max))
+}
+
+/// höchste „Device Utilization %“ aller Grafikchips
+pub fn parse_ioreg_gpu(t: &str) -> Option<f64> {
+    t.match_indices("\"Device Utilization %\"=")
+        .filter_map(|(i, m)| t[i + m.len()..].split(|c: char| !c.is_ascii_digit()).next()?.parse::<f64>().ok())
+        .reduce(f64::max)
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -89,6 +110,10 @@ impl Ops {
         let (mut standby_for, mut no_peer_for) = (0.0f64, 0.0f64);
         let mut restarts: VecDeque<(u64, u32)> = VecDeque::new();
         let mut last_lost = 0u64;
+        // Eingangsformat: zuletzt gesehen, und der letzte Wechsel (vorher, nachher, Zeitpunkt)
+        let mut last_format: Option<String> = None;
+        let mut format_change: Option<(String, String, u64)> = None;
+        let mut last_uptime = 0.0f64;
         loop {
             tick.tick().await;
             sys.refresh_cpu_usage();
@@ -107,6 +132,7 @@ impl Ops {
                 disk_total_gb: disk.map(|d| d.total_space() as f64 / 1e9).unwrap_or(0.0),
                 hostname: sysinfo::System::host_name().unwrap_or_default(),
                 uptime_s: sysinfo::System::uptime(),
+                gpu_percent: tokio::task::spawn_blocking(gpu_percent).await.ok().flatten(),
             };
 
             // Platz schaffen: älteste Aufnahmen löschen
@@ -140,6 +166,22 @@ impl Ops {
                 (Some(a), Some(b)) => b.1.saturating_sub(a.1),
                 _ => 0,
             };
+            // Kanal neu gestartet (Laufzeit kleiner als zuletzt): neues Format ist kein Wechsel am Eingang
+            let up = st.map(|s| s.uptime_s).unwrap_or(0.0);
+            if up < last_uptime {
+                last_format = None;
+            }
+            last_uptime = up;
+            if let Some(f) = st.and_then(|s| s.input_format.clone()) {
+                if let Some(prev) = last_format.as_ref().filter(|p| **p != f) {
+                    format_change = Some((prev.clone(), f.clone(), now));
+                    sup.log("warn", format!("Eingangsformat gewechselt: {prev} → {f}")).await;
+                }
+                last_format = Some(f);
+            }
+            if !running {
+                last_format = None;
+            }
             let lost = st.map(|s| s.srt.lost).unwrap_or(0);
             let lost_per_min = lost.saturating_sub(last_lost) as f64 * 60.0 / STEP_S as f64;
             last_lost = lost;
@@ -156,6 +198,10 @@ impl Ops {
                 memory_percent: info.memory_percent,
                 disk_free_gb: if info.disk_total_gb > 0.0 { info.disk_free_gb } else { f64::MAX },
                 last_error: snap.last_error.clone(),
+                gpu_percent: info.gpu_percent,
+                // Bildrate erst nach dem Anlauf bewerten
+                fps: st.filter(|s| s.uptime_s >= 10.0 && cfg.role == ChannelRole::Encoder).map(|s| (s.fps, cfg.encoder.video.fps)),
+                format_change: format_change.as_ref().map(|(a, b, t)| (a.clone(), b.clone(), now.saturating_sub(*t) as f64 / 1000.0)),
                 // Short-Term braucht 3 s Anlauf; vorher keine Lautheitsalarme
                 tracks: st
                     .filter(|s| s.uptime_s >= 6.0)
@@ -205,6 +251,7 @@ impl Ops {
                 lost,
                 retransmitted: st.map(|s| s.srt.retransmitted).unwrap_or(0),
                 fps: st.map(|s| s.fps).unwrap_or(0.0),
+                gpu: info.gpu_percent,
                 standby: st.is_some_and(|s| s.standby),
                 connected: st.is_some_and(|s| s.srt.connected),
                 cpu: info.cpu_percent,
@@ -310,6 +357,15 @@ pub fn report_csv(stats: &[StatPoint], events: &[crate::supervisor::Event]) -> S
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ioreg_gpu_parse() {
+        let t = r#"| "PerformanceStatistics" = {"Device Utilization %"=23,"Renderer Utilization %"=20} ... {"Device Utilization %"=41}"#;
+        assert_eq!(parse_ioreg_gpu(t), Some(41.0));
+        assert_eq!(parse_ioreg_gpu("nichts"), None);
+        #[cfg(target_os = "macos")]
+        assert!(gpu_percent().is_some_and(|g| (0.0..=100.0).contains(&g)), "ioreg liefert keine GPU-Last");
+    }
 
     #[test]
     fn csv_has_header_and_rows() {

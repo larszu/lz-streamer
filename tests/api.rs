@@ -288,3 +288,31 @@ async fn control_endpoint() {
     // ohne laufenden Kanal kein Neustart ausgelöst
     assert!(!state["runtime"]["events"].as_array().unwrap().iter().any(|e| e["text"].as_str().unwrap_or("").contains("startet neu")));
 }
+
+/// KB-Überwachung: Diagnose-Paket schwärzt Geheimnisse, Export enthält sie (für ein zweites Gerät).
+#[tokio::test]
+async fn diagnose_and_export() {
+    let (r, _) = app("diag");
+    let mut cfg = Config::default();
+    cfg.encoder.srt.passphrase = "geheim-123456".into();
+    let (st, _, _) = call(&r, "PUT", "/api/config", Some(serde_json::to_value(&cfg).unwrap()), None).await;
+    assert_eq!(st, StatusCode::OK);
+    let get = |uri: &'static str| {
+        let r = r.clone();
+        async move {
+            let resp = r.oneshot(Request::get(uri).body(Body::empty()).unwrap()).await.unwrap();
+            let cd = resp.headers()[header::CONTENT_DISPOSITION].to_str().unwrap().to_string();
+            (cd, String::from_utf8(resp.into_body().collect().await.unwrap().to_bytes().to_vec()).unwrap())
+        }
+    };
+    let (cd, diag) = get("/api/diagnose.json").await;
+    assert!(cd.contains("attachment") && cd.contains("diagnose"), "{cd}");
+    assert!(!diag.contains("geheim-123456"), "Passwort im Diagnose-Paket");
+    let v: Value = serde_json::from_str(&diag).unwrap();
+    for k in ["version", "gstreamer", "system", "konfiguration", "laufzeit", "statistik_letzte_stunde"] {
+        assert!(v.get(k).is_some(), "{k} fehlt");
+    }
+    let (_, exp) = get("/api/config/export").await;
+    let back: Config = serde_json::from_str(&exp).unwrap();
+    assert_eq!(back.encoder.srt.passphrase, "geheim-123456");
+}

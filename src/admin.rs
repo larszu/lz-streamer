@@ -228,6 +228,23 @@ pub struct AlarmSettings {
     pub silence_s: u32,
     /// True Peak über n dBTP (z. B. −1)
     pub true_peak_max_dbtp: f64,
+    /// GPU-Last über n % (0 = aus)
+    #[serde(default)]
+    pub gpu_percent: u32,
+    /// Bildrate unter n % der eingestellten (0 = aus)
+    #[serde(default = "default_min_fps_percent")]
+    pub min_fps_percent: u32,
+    /// Formatwechsel am Eingang melden (Alarm für 60 s)
+    #[serde(default = "yes")]
+    pub format_change: bool,
+}
+
+fn default_min_fps_percent() -> u32 {
+    90
+}
+
+fn yes() -> bool {
+    true
 }
 
 impl Default for AlarmSettings {
@@ -245,6 +262,9 @@ impl Default for AlarmSettings {
             loudness_tolerance_lu: 5.0,
             silence_s: 10,
             true_peak_max_dbtp: -1.0,
+            gpu_percent: 0,
+            min_fps_percent: 90,
+            format_change: true,
         }
     }
 }
@@ -265,6 +285,11 @@ pub struct AlarmInput {
     pub last_error: Option<String>,
     /// je Tonspur: Name, Short-Term-Lautheit, True Peak, Stille in s, eigenes Ziel
     pub tracks: Vec<(String, Option<f64>, Option<f64>, f64, Option<f64>)>,
+    pub gpu_percent: Option<f64>,
+    /// (gemessen, eingestellt) Bilder/s
+    pub fps: Option<(f64, u32)>,
+    /// letzter Formatwechsel am Eingang: (vorher, nachher, vor n s)
+    pub format_change: Option<(String, String, f64)>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -313,6 +338,23 @@ pub fn evaluate_alarms(s: &AlarmSettings, i: &AlarmInput) -> Vec<Alarm> {
                     add(&format!("peak:{n}"), "warn", format!("Tonspur „{name}“ übersteuert: {p:.1} dBTP"));
                 }
             }
+        }
+    }
+    if i.running {
+        if let Some((fps, want)) = i.fps {
+            if s.min_fps_percent > 0 && want > 0 && fps < want as f64 * s.min_fps_percent as f64 / 100.0 {
+                add("fps", "warn", format!("Bildrate {fps:.1} statt {want} Bilder/s"));
+            }
+        }
+        if let Some((a, b, ago)) = &i.format_change {
+            if s.format_change && *ago < 60.0 {
+                add("format", "warn", format!("Eingangsformat gewechselt: {a} → {b}"));
+            }
+        }
+    }
+    if let Some(g) = i.gpu_percent {
+        if s.gpu_percent > 0 && g > s.gpu_percent as f64 {
+            add("gpu", "warn", format!("GPU {g:.0} %"));
         }
     }
     if s.cpu_percent > 0 && i.cpu_percent > s.cpu_percent as f64 {
@@ -457,6 +499,22 @@ mod tests {
 
     fn at(s: &str) -> NaiveDateTime {
         NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M").unwrap()
+    }
+
+    #[test]
+    fn fps_format_and_gpu_alarms() {
+        let s = AlarmSettings { gpu_percent: 80, ..Default::default() };
+        let base = AlarmInput { running: true, encoder: true, disk_free_gb: 100.0, ..Default::default() };
+        let ids = |i: &AlarmInput| evaluate_alarms(&s, i).into_iter().map(|a| a.id).collect::<Vec<_>>();
+        assert!(ids(&AlarmInput { fps: Some((44.0, 50)), ..base.clone() }).contains(&"fps".to_string()));
+        assert!(!ids(&AlarmInput { fps: Some((49.0, 50)), ..base.clone() }).contains(&"fps".to_string()));
+        let fc = Some(("1920×1080i50".to_string(), "1280×720p50".to_string(), 10.0));
+        assert!(ids(&AlarmInput { format_change: fc.clone(), ..base.clone() }).contains(&"format".to_string()));
+        assert!(!ids(&AlarmInput { format_change: Some(("a".into(), "b".into(), 61.0)), ..base.clone() }).contains(&"format".to_string()), "nach 60 s vorbei");
+        assert!(ids(&AlarmInput { gpu_percent: Some(95.0), ..base.clone() }).contains(&"gpu".to_string()));
+        assert!(!ids(&AlarmInput { gpu_percent: Some(95.0), ..base.clone() }).is_empty());
+        let off = AlarmSettings { min_fps_percent: 0, format_change: false, ..Default::default() };
+        assert!(evaluate_alarms(&off, &AlarmInput { fps: Some((1.0, 50)), format_change: fc, ..base }).iter().all(|a| a.id != "fps" && a.id != "format"));
     }
 
     #[test]

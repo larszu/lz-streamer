@@ -351,6 +351,12 @@
     <section class="card" aria-labelledby="sy-title">
       <h2 id="sy-title">System</h2>
       <div class="tiles" id="system"></div>
+      <div class="actions">
+        <a class="btn btn--soft" href="/api/diagnose.json" download>Diagnose-Paket herunterladen</a>
+        <a class="btn btn--soft" href="/api/config/export" download>Kanal exportieren</a>
+        <label class="btn btn--soft">Kanal importieren<input type="file" accept="application/json,.json" id="cfg-import" hidden></label>
+      </div>
+      <p class="hint" id="cfg-import-hint">Der Export enthält Passwörter und Stream-Schlüssel, das Diagnose-Paket nicht.</p>
     </section>
     <section class="card" aria-labelledby="us-title">
       <h2 id="us-title">Benutzer <small id="me"></small></h2>

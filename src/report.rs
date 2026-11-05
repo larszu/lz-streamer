@@ -239,6 +239,7 @@ mod tests {
                 lost: i / 10,
                 retransmitted: i / 5,
                 fps: 50.0,
+                gpu: None,
                 standby: (40..44).contains(&i),
                 connected: !(60..64).contains(&i),
                 cpu: 20.0,
