@@ -483,20 +483,38 @@ fn record_dir(app: &App, cfg: &Config) -> std::path::PathBuf {
 
 async fn recordings(State(app): S) -> impl IntoResponse {
     let cfg = app.sup.config().await;
-    Json(admin::list_files(&record_dir(&app, &cfg), &[".ts", ".mp4"]))
+    let dir = record_dir(&app, &cfg);
+    let list: Vec<serde_json::Value> = admin::list_files(&dir, &[".ts", ".mp4"])
+        .into_iter()
+        .map(|f| {
+            let subs = admin::subtitle_files(&dir, &f.name);
+            let mut v = serde_json::to_value(&f).unwrap_or_default();
+            v["subtitles"] = json!(subs);
+            v
+        })
+        .collect();
+    Json(list)
 }
 
 async fn recording_get(State(app): S, Path(name): Path<String>) -> Response {
     let Some(n) = admin::safe_name(&name) else { return err(StatusCode::BAD_REQUEST, "Ungültiger Name") };
     let cfg = app.sup.config().await;
-    let ct = if n.ends_with(".mp4") { "video/mp4" } else { "video/mp2t" };
+    let ct = if n.ends_with(".mp4") {
+        "video/mp4"
+    } else if n.ends_with(".vtt") {
+        "text/vtt; charset=utf-8"
+    } else if n.ends_with(".srt") {
+        "application/x-subrip; charset=utf-8"
+    } else {
+        "video/mp2t"
+    };
     send_file(record_dir(&app, &cfg).join(n), ct, true).await
 }
 
 async fn recording_delete(State(app): S, Path(name): Path<String>) -> Response {
     let Some(n) = admin::safe_name(&name) else { return err(StatusCode::BAD_REQUEST, "Ungültiger Name") };
     let cfg = app.sup.config().await;
-    match std::fs::remove_file(record_dir(&app, &cfg).join(&n)) {
+    match admin::remove_recording(&record_dir(&app, &cfg), &n) {
         Ok(()) => {
             app.sup.log("info", format!("Aufnahme {n} gelöscht")).await;
             ok()

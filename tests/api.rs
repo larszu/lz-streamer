@@ -125,7 +125,16 @@ async fn schedule_alarms_report_recordings() {
     let resp = r.clone().oneshot(Request::get("/api/recordings/lz-test_000.ts").body(Body::empty()).unwrap()).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     assert_eq!(resp.into_body().collect().await.unwrap().to_bytes().len(), 188);
+    // Untertiteldateien gehören zur Aufnahme: gelistet, ladbar, mitgelöscht
+    std::fs::write(root.join("aufnahmen").join("lz-test_000.vtt"), "WEBVTT\n\n").unwrap();
+    std::fs::write(root.join("aufnahmen").join("lz-test_000.srt"), "1\n").unwrap();
+    let (_, list, _) = call(&r, "GET", "/api/recordings", None, None).await;
+    assert_eq!(list.as_array().unwrap().len(), 1, "Untertitel nicht als eigene Aufnahme");
+    assert_eq!(list[0]["subtitles"], json!(["lz-test_000.srt", "lz-test_000.vtt"]));
+    let resp = r.clone().oneshot(Request::get("/api/recordings/lz-test_000.vtt").body(Body::empty()).unwrap()).await.unwrap();
+    assert!(resp.headers()[header::CONTENT_TYPE].to_str().unwrap().starts_with("text/vtt"));
     assert_eq!(call(&r, "DELETE", "/api/recordings/lz-test_000.ts", None, None).await.0, StatusCode::OK);
+    assert!(!root.join("aufnahmen").join("lz-test_000.vtt").exists(), "Untertitel blieben liegen");
     assert_eq!(call(&r, "GET", "/api/recordings/..%2Fconfig.json", None, None).await.0, StatusCode::BAD_REQUEST);
 }
 

@@ -118,7 +118,7 @@ impl Ops {
                 let need = ((min_free - info.disk_free_gb) * 1e9) as u64;
                 let files = admin::list_files(&rec_dir, &[".ts", ".mp4"]);
                 for name in admin::recordings_to_delete(&files, need) {
-                    if std::fs::remove_file(rec_dir.join(&name)).is_ok() {
+                    if admin::remove_recording(&rec_dir, &name).is_ok() {
                         sup.log("warn", format!("Platz knapp – älteste Aufnahme gelöscht: {name}")).await;
                     }
                 }

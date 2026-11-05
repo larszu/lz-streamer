@@ -355,9 +355,20 @@ pub fn cc_extractor(codec: Codec) -> &'static str {
 /// Bei SDI hängt die Meta schon am Bild (`output-cc=true`), dann kein Zweig.
 pub fn caption_branch(cfg: &EncoderConfig) -> Option<String> {
     let c = &cfg.captions;
+    // Mit Aufnahme: den fertigen 608-Strom zurücklesen; seine Anzeigezeiten ergeben die Untertiteldateien
+    let (rec_tap, rec_side) = if cfg.record.enabled {
+        (
+            "tee name=ccrt ! ",
+            "  ccrt. ! queue leaky=downstream max-size-buffers=0 max-size-bytes=0 max-size-time=2000000000 \
+             ! ccconverter ! closedcaption/x-cea-608,format=raw ! cea608tojson name=encjson unbuffered=true \
+             ! appsink name=enccc sync=false async=false",
+        )
+    } else {
+        ("", "")
+    };
     let tail = format!(
         "tttocea608 name=cc608 mode={} ! ccconverter ! closedcaption/x-cea-708,format=cc_data,framerate={}/1 \
-         ! queue max-size-buffers=0 max-size-bytes=0 max-size-time=2000000000 ! ccc.caption",
+         ! {rec_tap}queue max-size-buffers=0 max-size-bytes=0 max-size-time=2000000000 ! ccc.caption{rec_side}",
         c.mode.gst_nick(),
         cfg.video.fps
     );
@@ -476,6 +487,17 @@ mod tests {
 
     fn parts<'a>(input: &'a ResolvedInput) -> EncoderParts<'a> {
         EncoderParts { input, encoder: "x264enc", aac: Some("avenc_aac"), image_ok: false, rtmp: false, record: None }
+    }
+
+    #[test]
+    fn recording_reads_back_608_for_subtitle_files() {
+        let mut cfg = EncoderConfig::default();
+        cfg.captions.source = CaptionSource::Live;
+        assert!(!encoder_description(&cfg, &parts(&ResolvedInput::Test)).contains("encjson"));
+        cfg.record.enabled = true;
+        let d = encoder_description(&cfg, &parts(&ResolvedInput::Test));
+        assert!(d.contains("tee name=ccrt ! queue") && d.contains("ccrt. ! queue leaky=downstream"), "{d}");
+        assert!(d.contains("cea608tojson name=encjson unbuffered=true ! appsink name=enccc"));
     }
 
     #[test]

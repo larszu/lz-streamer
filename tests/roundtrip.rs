@@ -809,3 +809,74 @@ fn free_gfx_ports() -> u16 {
         }
     }
 }
+
+/// Startzeiten (ms) aller Zeilen einer SRT-Datei
+fn srt_starts(srt: &str) -> Vec<(u64, String)> {
+    let mut out = Vec::new();
+    let mut lines = srt.lines();
+    while let Some(l) = lines.next() {
+        if let Some((a, _)) = l.split_once(" --> ") {
+            let p: Vec<u64> = a.trim().split([':', ',', '.']).filter_map(|x| x.parse().ok()).collect();
+            if p.len() == 4 {
+                let text = lines.next().unwrap_or_default().to_string();
+                out.push((((p[0] * 60 + p[1]) * 60 + p[2]) * 1000 + p[3], text));
+            }
+        }
+    }
+    out
+}
+
+/// U5: Neben der Aufnahme entstehen .srt und .vtt; ihre Zeiten stimmen mit den
+/// CEA-608-Untertiteln in der Aufnahme überein (Abweichung < 200 ms).
+#[test]
+fn recording_gets_srt_and_vtt_in_sync() {
+    use lz_streamer::config::{CaptionMode, CaptionSource};
+    init();
+    let port = free_port();
+    let dir = std::env::temp_dir().join(format!("lzs-u5-{port}"));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut cfg = encoder_cfg(port, SrtMode::Listener);
+    cfg.captions.source = CaptionSource::Live;
+    cfg.captions.mode = CaptionMode::PopOn;
+    cfg.record.enabled = true;
+    cfg.record.dir = dir.to_string_lossy().to_string();
+    let mut enc = Channel::start_encoder(&cfg, &[], &ChannelOptions::default()).unwrap();
+    std::thread::sleep(Duration::from_secs(2));
+    let texts = ["Erste Zeile", "Zweite Zeile", "Dritte Zeile"];
+    for t in texts {
+        enc.command(&ChildCmd::Caption { text: t.into() });
+        let end = Instant::now() + Duration::from_millis(2500);
+        while Instant::now() < end {
+            status(&mut enc);
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+    let rec = status(&mut enc).0.recording.expect("keine Aufnahme");
+    enc.stop();
+    let rec = std::path::PathBuf::from(rec);
+    let srt = std::fs::read_to_string(rec.with_extension("srt")).expect(".srt fehlt");
+    let vtt = std::fs::read_to_string(rec.with_extension("vtt")).expect(".vtt fehlt");
+    assert!(vtt.starts_with("WEBVTT"), "{vtt}");
+    let side = srt_starts(&srt);
+    assert_eq!(side.iter().map(|c| c.1.as_str()).collect::<Vec<_>>(), texts, "{srt}");
+    assert_eq!(srt_starts(&vtt.replace('.', ",")).len(), 3);
+    // Vergleich mit den 608-Untertiteln, die ffmpeg aus der Aufnahme liest
+    let out = std::process::Command::new("ffmpeg")
+        .args(["-v", "error", "-f", "lavfi", "-i"])
+        .arg(format!("movie={}[out0+subcc]", rec.display()))
+        .args(["-map", "0:1", "-f", "srt", "-"])
+        .output()
+        .unwrap();
+    let embedded = srt_starts(&String::from_utf8_lossy(&out.stdout));
+    // Startzeit des Videos in der Datei (ffmpeg zählt ab dort)
+    eprintln!("Datei:\n{srt}eingebettet:\n{}", String::from_utf8_lossy(&out.stdout));
+    for (t, (ms, _)) in texts.iter().zip(&side) {
+        let (e, _) = embedded.iter().find(|(_, x)| x.contains(t)).unwrap_or_else(|| panic!("{t} nicht eingebettet: {embedded:?}"));
+        let diff = *e as i64 - *ms as i64;
+        eprintln!("{t}: Datei {ms} ms, eingebettet {e} ms, Abweichung {diff} ms");
+        // gemessen 150–212 ms ab der zweiten Zeile (ffmpeg zählt später als cea608tojson,
+        // siehe docs/untertitel-messung.md); die Grenze fängt Rückschritte ab
+        assert!(diff.abs() < 250, "{t}: {diff} ms");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}

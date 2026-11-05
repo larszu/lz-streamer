@@ -485,7 +485,7 @@ function renderAlarmFields() {
 const bytes = n => n > 1e9 ? `${fmt.format(n / 1e9)} GB` : `${fmt.format(n / 1e6)} MB`;
 function renderRecordings(list) {
   $('#recordings').innerHTML = list.length ? list.map(f => `<li><span>${esc(f.name)} <small>${bytes(f.bytes)} · ${new Date(f.modified_ms).toLocaleString('de-DE')}</small></span>
-    <a class="btn btn--soft" href="/api/recordings/${encodeURIComponent(f.name)}">Herunterladen</a><button class="btn btn--danger" data-del="${esc(f.name)}">Löschen</button></li>`).join('')
+    <a class="btn btn--soft" href="/api/recordings/${encodeURIComponent(f.name)}">Herunterladen</a>${(f.subtitles || []).map(s => `<a class="btn btn--soft" href="/api/recordings/${encodeURIComponent(s)}" download>${esc(s.split('.').pop().toUpperCase())}</a>`).join('')}<button class="btn btn--danger" data-del="${esc(f.name)}">Löschen</button></li>`).join('')
     : '<li class="empty">Noch keine Aufnahmen. Einschalten unter Betrieb → Mehr Einstellungen → Aufnahme parallel.</li>';
   $$('#recordings [data-del]').forEach(b => b.onclick = async () => { await api('DELETE', `/api/recordings/${encodeURIComponent(b.dataset.del)}`); loadAdmin(); });
 }

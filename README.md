@@ -29,7 +29,7 @@ Eigener Video-Encoder und -Decoder: **Eingang → Encoder → SRT** (dazu option
 - **Klare Sprache:** Eine zusätzliche Tonspur, in der DeepFilterNet3 Musik, Geräusch und Hall um einen einstellbaren Wert absenkt (Vorgabe −9 dB). Bei erkanntem Gesang wird nicht abgesenkt. Die Spur ist 30 ms verzögert und bleibt über die Zeitstempel lippensynchron; die Hauptspur bleibt unverändert. Messung: [docs/klare-sprache.md](docs/klare-sprache.md).
 - **VST3-Plugins je Tonspur** (z. B. LZ Defeedback): Das Plugin läuft in einem eigenen Hilfsprozess. Stürzt es ab oder antwortet es nicht innerhalb einer halben Blockdauer, geht der Ton unbearbeitet weiter, ohne Lücke und ohne Neustart des Kanals; der Hilfsprozess startet von selbst neu. Die Anzeige je Spur zeigt „aktiv“ oder „Bypass“. Gefunden werden die Plugins in den üblichen VST3-Ordnern.
 - **Mehrere Ausgänge** aus demselben Strom: weitere SRT-Ziele (auch Rendezvous), TS über UDP/RTP (auch Multicast), dazu RTMP.
-- **Aufnahme parallel** zum Stream: TS oder fragmentiertes MP4, Segmente, alle Tonspuren. Aufnahmen-Liste mit Download; älteste löschen, wenn die Platte voll wird.
+- **Aufnahme parallel** zum Stream: TS oder fragmentiertes MP4, Segmente, alle Tonspuren. Mit Untertiteln liegen neben jedem Segment `.srt` und `.vtt`, deren Zeiten aus dem gesendeten 608-Strom stammen. Aufnahmen-Liste mit Download; älteste löschen, wenn die Platte voll wird.
 - **Verwaltung:**
   - Profile (mitgelieferte und eigene)
   - Zeitplan: wöchentlich oder einmalig, mit Profilwahl

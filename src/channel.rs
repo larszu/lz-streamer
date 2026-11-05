@@ -86,6 +86,10 @@ struct CaptionCounter {
     frames: AtomicU64,
     last: Mutex<Option<Instant>>,
     text: Mutex<Option<String>>,
+    /// Untertitelzeilen mit Laufzeit, für die Dateien neben der Aufnahme
+    cues: Mutex<Vec<crate::subtitles::Cue>>,
+    /// Anzeigedauer je eingespeistem Text (tttocea608 löscht danach)
+    durations: Mutex<std::collections::HashMap<String, u64>>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -251,7 +255,10 @@ pub struct Channel {
     asr: Option<crate::asr::AsrRunner>,
     gfx: Option<crate::gfx::FrameReceiver>,
     caption_seen: Option<(String, Instant)>,
-    srt_count: u32,
+    /// Laufzeit, zu der das aktuelle Aufnahme-Segment begann
+    rec_start_ns: u64,
+    /// so viele Zeilen stehen schon in den Untertiteldateien (None = neu schreiben)
+    cues_written: Option<usize>,
 }
 
 /// Text in die Live-Untertitelquelle `ccin` schieben (etwas in die Zukunft
@@ -277,8 +284,69 @@ fn push_caption_at(pipeline: &gst::Pipeline, cc: &CaptionCounter, text: &str, at
     b.set_pts(pts);
     b.set_duration(gst::ClockTime::from_mseconds(ms));
     let _ = src.push_buffer(buf);
+    {
+        let mut d = cc.durations.lock().unwrap();
+        if d.len() > 64 {
+            d.clear();
+        }
+        d.insert(text.to_string(), ms * 1_000_000);
+    }
     *cc.text.lock().unwrap() = Some(text.to_string());
     true
+}
+
+/// Encoder mit Aufnahme: den erzeugten 608-Strom zurücklesen. Jede sichtbare
+/// Zeile wird mit ihrer Anzeigezeit (Laufzeit) für die Untertiteldateien gemerkt,
+/// ein Löschen beendet die Zeile.
+fn hook_recording_cues(pipeline: &gst::Pipeline, cc: &Arc<CaptionCounter>) {
+    if let Some(pad) = pipeline.by_name("encjson").and_then(|e| e.static_pad("sink")) {
+        pad.add_probe(gst::PadProbeType::BUFFER, |_, info| {
+            if let Some(gst::PadProbeData::Buffer(b)) = info.data.as_mut() {
+                if b.duration().is_none() {
+                    b.make_mut().set_duration(gst::ClockTime::from_mseconds(20));
+                }
+            }
+            gst::PadProbeReturn::Ok
+        });
+    }
+    let Some(sink) = pipeline.by_name("enccc").and_then(|s| s.downcast::<gst_app::AppSink>().ok()) else { return };
+    let cc = cc.clone();
+    let last: Arc<Mutex<Option<String>>> = Arc::default();
+    sink.set_callbacks(
+        gst_app::AppSinkCallbacks::builder()
+            .new_sample(move |s| {
+                let sample = s.pull_sample().map_err(|_| gst::FlowError::Eos)?;
+                let (Some(buf), Some(seg)) = (sample.buffer(), sample.segment().and_then(|s| s.downcast_ref::<gst::ClockTime>().cloned())) else {
+                    return Ok(gst::FlowSuccess::Ok);
+                };
+                let Some(rt) = buf.pts().and_then(|p| seg.to_running_time(p)) else { return Ok(gst::FlowSuccess::Ok) };
+                let Ok(map) = buf.map_readable() else { return Ok(gst::FlowSuccess::Ok) };
+                let raw = String::from_utf8_lossy(map.as_slice()).to_string();
+                if std::env::var("LZS_CC_DEBUG").is_ok() {
+                    eprintln!("ENCJSON {} {raw}", rt.mseconds());
+                }
+                let text = caption_json_text(&raw);
+                let mut last = last.lock().unwrap();
+                if *last != text {
+                    let mut cues = cc.cues.lock().unwrap();
+                    match &text {
+                        // neue Zeile: so lange wie eingespeist (sonst 6 s), die nächste kürzt sie
+                        Some(t) => {
+                            let dur = cc.durations.lock().unwrap().get(t).copied().unwrap_or(6_000_000_000);
+                            crate::subtitles::push(&mut cues, rt.nseconds(), dur, t)
+                        }
+                        None => {
+                            if let Some(c) = cues.last_mut() {
+                                c.end_ns = c.end_ns.min(rt.nseconds()).max(c.start_ns + 1);
+                            }
+                        }
+                    }
+                    *last = text;
+                }
+                Ok(gst::FlowSuccess::Ok)
+            })
+            .build(),
+    );
 }
 
 /// Bilder mit Untertitel-Meta zählen (Encoder: vor dem Encoder).
@@ -575,6 +643,7 @@ impl Channel {
             configure_audio(&pipeline, cfg);
             let cc: Arc<CaptionCounter> = Arc::default();
             count_captions(&venc.static_pad("sink").unwrap(), &cc);
+            hook_recording_cues(&pipeline, &cc);
             if let Some(v2) = pipeline.by_name("venc2") {
                 set_props(&v2, &caps::encoder_props(enc.factory, cfg.video.bitrate_kbps, cfg.video.gop_frames()), &events);
             }
@@ -664,7 +733,8 @@ impl Channel {
                         asr,
                         gfx,
                         caption_seen: None,
-                        srt_count: 0,
+                        rec_start_ns: 0,
+                        cues_written: None,
                         cc,
                         outputs: cfg
                             .outputs
@@ -905,7 +975,8 @@ impl Channel {
             asr: None,
             gfx: None,
             caption_seen: None,
-            srt_count: 0,
+            rec_start_ns: 0,
+                        cues_written: None,
         })
     }
 
@@ -920,26 +991,25 @@ impl Channel {
         t.loudness = Some(l);
     }
 
-    /// Untertiteldatei (.srt) neben der Aufnahme fortschreiben: jede Zeile von
-    /// ihrem Erscheinen bis zur nächsten (höchstens 6 s).
-    fn write_sidecar(&mut self, next: Option<&str>) {
+    /// `.srt` und `.vtt` neben dem aktuellen Aufnahme-Segment nachführen.
+    fn update_sidecars(&mut self) {
+        if self.pipeline.by_name("rec").is_none() {
+            // ohne Aufnahme braucht niemand die Zeilen
+            self.cc.cues.lock().unwrap().clear();
+            return;
+        }
+        let mut cues = self.cc.cues.lock().unwrap();
+        // Zeilen vor dem Segment gehören zu früheren Dateien
+        let start = self.rec_start_ns;
+        cues.retain(|c| c.end_ns > start);
+        if self.cues_written == Some(cues.len()) || cues.is_empty() && self.cues_written.is_some() {
+            return;
+        }
         let Some(rec) = self.recording.clone().or_else(|| self.newest_recording()) else { return };
         self.recording.get_or_insert(rec.clone());
-        let path = std::path::Path::new(&rec).with_extension("srt");
-        let now_ms = self.pipeline.current_running_time().map(|t| t.mseconds()).unwrap_or(0);
-        if let Some((text, at)) = &self.caption_seen {
-            let start = now_ms.saturating_sub(at.elapsed().as_millis() as u64);
-            let end = now_ms.min(start + 6000);
-            let n = self.srt_count + 1;
-            let ts = |ms: u64| format!("{:02}:{:02}:{:02},{:03}", ms / 3_600_000, ms / 60_000 % 60, ms / 1000 % 60, ms % 1000);
-            let entry = format!("{n}\n{} --> {}\n{text}\n\n", ts(start), ts(end.max(start + 500)));
-            use std::io::Write;
-            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
-                let _ = f.write_all(entry.as_bytes());
-                self.srt_count = n;
-            }
+        if crate::subtitles::write(std::path::Path::new(&rec), &cues, start).is_ok() {
+            self.cues_written = Some(cues.len());
         }
-        let _ = next;
     }
 
     /// Neueste Datei zum Aufnahme-Muster (falls die Startmeldung beim
@@ -1032,7 +1102,7 @@ impl Channel {
             a.stop();
         }
         if self.pipeline.by_name("rec").is_some() {
-            self.write_sidecar(None);
+            self.update_sidecars();
         }
         if let Some(rec) = self.pipeline.by_name("rec") {
             // Aufnahme sauber abschließen: EOS nur in den Mitschnitt schicken
@@ -1085,7 +1155,11 @@ impl Channel {
                         if st.name() == "splitmuxsink-fragment-opened" {
                             if let Ok(loc) = st.get::<String>("location") {
                                 event(&self.events, "info", format!("Aufnahme: {loc}"));
+                                // altes Segment fertig schreiben, dann neu beginnen
+                                self.update_sidecars();
                                 self.recording = Some(loc);
+                                self.rec_start_ns = st.get::<u64>("running-time").unwrap_or(0);
+                                self.cues_written = None;
                             }
                         }
                     }
@@ -1102,10 +1176,10 @@ impl Channel {
         if let Some(t) = cur {
             if self.caption_seen.as_ref().is_none_or(|(s, _)| *s != t) {
                 out.push(ChildMsg::Caption { text: t.clone() });
-                self.write_sidecar(Some(&t));
                 self.caption_seen = Some((t, Instant::now()));
             }
         }
+        self.update_sidecars();
         let mut text_fallback = false;
         if let Some(ov) = self.pipeline.by_name("cctxt") {
             let graphic = self.gfx.as_ref().is_some_and(|g| g.has_graphic());
