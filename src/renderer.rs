@@ -260,8 +260,28 @@ pub fn osc_gfx(packet: &rosc::OscPacket) -> Option<GfxCommand> {
     }
 }
 
-/// OSC-Empfang für Untertitel (z. B. aus dem Intercom) und Grafikbefehle.
-pub async fn osc_listener(addr: String, sup: Arc<Supervisor>, hub: Arc<RendererHub>) {
+/// OSC `/lzs/set/<pfad mit / statt .>` mit einem Wert (T/F, Zahl, Text) →
+/// schaltbare Eigenschaft, z. B. `/lzs/set/captions/enabled F`.
+pub fn osc_control(packet: &rosc::OscPacket) -> Option<(String, Value)> {
+    match packet {
+        rosc::OscPacket::Message(m) => {
+            let path = m.addr.strip_prefix("/lzs/set/")?.replace('/', ".");
+            let v = match m.args.first()? {
+                rosc::OscType::Bool(b) => json!(b),
+                rosc::OscType::Int(i) => json!(i),
+                rosc::OscType::Float(f) => json!(f),
+                rosc::OscType::String(s) => json!(s),
+                _ => return None,
+            };
+            Some((path, v))
+        }
+        rosc::OscPacket::Bundle(b) => b.content.iter().find_map(osc_control),
+    }
+}
+
+/// OSC-Empfang für Untertitel (z. B. aus dem Intercom), Grafikbefehle und Schalter.
+pub async fn osc_listener(addr: String, app: Arc<crate::server::App>) {
+    let (sup, hub) = (app.sup.clone(), app.renderer.clone());
     let Ok(sock) = tokio::net::UdpSocket::bind(&addr).await else {
         sup.log("warn", format!("OSC-Port {addr} belegt – keine Untertitel per OSC")).await;
         return;
@@ -272,6 +292,10 @@ pub async fn osc_listener(addr: String, sup: Arc<Supervisor>, hub: Arc<RendererH
         if let Ok((_, p)) = rosc::decoder::decode_udp(&buf[..n]) {
             if let Some(text) = osc_caption(&p) {
                 sup.command(&ChildCmd::Caption { text }).await;
+            } else if let Some((path, v)) = osc_control(&p) {
+                if let Err(e) = crate::server::set_control(&app, &path, &v).await {
+                    sup.log("warn", format!("OSC {path}: {e}")).await;
+                }
             } else if let Some(c) = osc_gfx(&p) {
                 if let Err(e) = gfx_command(&hub, &c).await {
                     sup.log("warn", format!("OSC-Grafikbefehl: {e}")).await;
@@ -349,6 +373,14 @@ mod tests {
         assert_eq!(st.restore().len(), 1, "nur geladen");
         st.apply(&c("clear"));
         assert!(st.restore().is_empty());
+    }
+
+    #[test]
+    fn osc_control_addresses() {
+        let m = |addr: &str, a: rosc::OscType| rosc::OscPacket::Message(rosc::OscMessage { addr: addr.into(), args: vec![a] });
+        assert_eq!(osc_control(&m("/lzs/set/captions/enabled", rosc::OscType::Bool(false))), Some(("captions.enabled".into(), json!(false))));
+        assert_eq!(osc_control(&m("/lzs/set/audio/tracks/0/leveler/preset", rosc::OscType::String("hard".into()))).unwrap().0, "audio.tracks.0.leveler.preset");
+        assert_eq!(osc_control(&m("/lzs/gfx/next", rosc::OscType::Int(1))), None);
     }
 
     #[test]

@@ -267,3 +267,24 @@ async fn graphics_layer2_commands_and_restore() {
     assert_eq!(state["gfx"]["graphic_id"], "lz-lower-third");
     assert_eq!(state["gfx"]["playing"], true);
 }
+
+/// I1: `/api/control` prüft Pfad und Wert, speichert ohne Neustart, `/api/state` zeigt die Werte.
+#[tokio::test]
+async fn control_endpoint() {
+    let (r, _) = app("control");
+    let (st, body, _) = call(&r, "POST", "/api/control", Some(json!({"path": "audio.tracks.0.leveler.preset", "value": "soft"})), None).await;
+    assert_eq!(st, StatusCode::OK, "{body}");
+    let (st, _, _) = call(&r, "POST", "/api/control", Some(json!({"path": "audio.tracks.0.leveler.preset", "value": "laut"})), None).await;
+    assert_eq!(st, StatusCode::BAD_REQUEST);
+    assert_eq!(call(&r, "POST", "/api/control", Some(json!({"path": "video.width", "value": 1})), None).await.0, StatusCode::BAD_REQUEST);
+    call(&r, "POST", "/api/control", Some(json!({"path": "captions.enabled", "value": false})), None).await;
+    let (_, state, _) = call(&r, "GET", "/api/state", None, None).await;
+    let c = state["controls"].as_array().unwrap();
+    let v = |p: &str| c.iter().find(|x| x["path"] == p).map(|x| x["value"].clone());
+    assert_eq!(v("captions.enabled"), Some(json!(false)));
+    assert_eq!(v("audio.tracks.0.leveler.preset"), Some(json!("soft")));
+    assert_eq!(v("graphics.layer2.visible"), Some(json!(false)));
+    assert_eq!(state["config"]["encoder"]["captions"]["muted"], true);
+    // ohne laufenden Kanal kein Neustart ausgelöst
+    assert!(!state["runtime"]["events"].as_array().unwrap().iter().any(|e| e["text"].as_str().unwrap_or("").contains("startet neu")));
+}

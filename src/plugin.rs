@@ -29,8 +29,10 @@ use serde::{Deserialize, Serialize};
 #[serde(default)]
 pub struct PluginConfig {
     pub enabled: bool,
-    /// Pfad zum .vst3-Bündel
+    /// Pfad zum .vst3-Bündel oder `au:…`
     pub path: String,
+    /// Ton unbearbeitet durchlassen (Plugin bleibt geladen)
+    pub bypass: bool,
 }
 
 pub const RATE: f64 = 48_000.0;
@@ -342,6 +344,7 @@ mod imp {
     #[derive(Default)]
     pub struct LzPlugin {
         pub path: Mutex<String>,
+        pub bypass: std::sync::atomic::AtomicBool,
         pub state: Mutex<State>,
     }
 
@@ -421,6 +424,10 @@ mod imp {
 
         fn transform_ip(&self, buf: &mut gst::BufferRef) -> Result<gst::FlowSuccess, gst::FlowError> {
             let mut st = self.state.lock().unwrap();
+            if self.bypass.load(std::sync::atomic::Ordering::Relaxed) {
+                st.bypassed_blocks += 1;
+                return Ok(gst::FlowSuccess::Ok);
+            }
             if st.helper.is_none() {
                 // Aufpasser: im Hintergrund neu starten, bis dahin Bypass
                 if let Some(rx) = &st.spawning {
@@ -518,6 +525,9 @@ glib::wrapper! {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct PluginStatus {
     pub name: String,
+    /// von Hand auf Bypass geschaltet
+    #[serde(default)]
+    pub bypass: bool,
     pub running: bool,
     pub latency_samples: u32,
     pub processed_blocks: u64,
@@ -527,6 +537,9 @@ pub struct PluginStatus {
 }
 
 impl LzPlugin {
+    pub fn set_bypass(&self, b: bool) {
+        self.imp().bypass.store(b, std::sync::atomic::Ordering::Relaxed);
+    }
     pub fn set_path(&self, p: &str) {
         *self.imp().path.lock().unwrap() = p.to_string();
     }
@@ -534,6 +547,7 @@ impl LzPlugin {
         let st = self.imp().state.lock().unwrap();
         PluginStatus {
             name: display_name(&self.imp().path.lock().unwrap()),
+            bypass: self.imp().bypass.load(std::sync::atomic::Ordering::Relaxed),
             running: st.helper.is_some(),
             latency_samples: st.helper.as_ref().map(|h| h.latency).unwrap_or(0),
             processed_blocks: st.processed_blocks,

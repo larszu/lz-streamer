@@ -93,7 +93,7 @@ impl ClearSpeech {
     }
 
     fn target_g(&self) -> f64 {
-        if self.cfg.keep_singing && self.status.singing { 1.0 } else { 10f64.powf(self.cfg.residual_db.min(0.0) / 20.0) }
+        if !self.cfg.enabled || self.cfg.keep_singing && self.status.singing { 1.0 } else { 10f64.powf(self.cfg.residual_db.min(0.0) / 20.0) }
     }
 
     fn hop_frame(&mut self, frame: &[f32]) -> Vec<f32> {

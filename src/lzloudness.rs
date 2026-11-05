@@ -98,7 +98,16 @@ mod imp {
                 return Err(gst::FlowError::Error);
             }
             if let Some(l) = self.lev.lock().unwrap().as_mut() {
-                l.process(samples, false);
+                if l.cfg.enabled {
+                    l.process(samples, false);
+                } else {
+                    // live ausgeschaltet: Regelung gleitet auf 0 dB (≈ 0,5 s) und steht,
+                    // Vorausschau und Spitzenbegrenzer bleiben – Latenz unverändert, kein Sprung
+                    let k = (samples.len() as f64 / l.channels() as f64 / (0.15 * RATE)).min(1.0);
+                    l.agc_db -= l.agc_db * k;
+                    l.fast_db -= l.fast_db * k;
+                    l.process(samples, true);
+                }
             }
             Ok(gst::FlowSuccess::Ok)
         }

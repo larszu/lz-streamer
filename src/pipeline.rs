@@ -561,9 +561,9 @@ mod tests {
         let mut t = crate::audio::AudioTrack::default();
         t.leveler.enabled = true;
         t.plugins = vec![
-            crate::plugin::PluginConfig { enabled: true, path: "/a.vst3".into() },
-            crate::plugin::PluginConfig { enabled: false, path: "/b.vst3".into() },
-            crate::plugin::PluginConfig { enabled: true, path: "/c.vst3".into() },
+            crate::plugin::PluginConfig { enabled: true, path: "/a.vst3".into(), ..Default::default() },
+            crate::plugin::PluginConfig { enabled: false, path: "/b.vst3".into(), ..Default::default() },
+            crate::plugin::PluginConfig { enabled: true, path: "/c.vst3".into(), ..Default::default() },
         ];
         cfg.audio.tracks = vec![t];
         let d = encoder_description(&cfg, &parts(&ResolvedInput::Test));
