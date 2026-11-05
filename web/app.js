@@ -599,3 +599,13 @@ function renderGfx(st) {
 }
 const _render5 = render;
 render = function (st) { _render5(st); renderGfx(st); };
+
+// ---------------- PDF-Bericht mit Zeitraum
+function repLink() {
+  const q = new URLSearchParams();
+  if ($('#rep-from').value) q.set('from', $('#rep-from').value);
+  if ($('#rep-to').value) q.set('to', $('#rep-to').value);
+  $('#rep-pdf').href = '/api/report.pdf' + (q.toString() ? '?' + q : '');
+}
+$('#rep-from').addEventListener('change', repLink);
+$('#rep-to').addEventListener('change', repLink);

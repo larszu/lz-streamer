@@ -14,6 +14,7 @@ pub mod loudness;
 pub mod ops;
 pub mod pipeline;
 pub mod renderer;
+pub mod report;
 pub mod server;
 pub mod stats;
 pub mod supervisor;

@@ -94,6 +94,8 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/api/stats", get(stats))
         .route("/api/system", get(system))
         .route("/api/report.csv", get(report))
+        .route("/api/report.pdf", get(report_pdf))
+        .route("/api/report.html", get(report_html))
         .route("/api/standby", get(standby_list).post(standby_upload))
         .route("/api/standby/{name}", get(standby_get).delete(standby_delete))
         .route("/api/standby/{name}/use", post(standby_use))
@@ -555,4 +557,53 @@ async fn model_delete(State(app): S, Path(name): Path<String>) -> Response {
     let Some(n) = admin::safe_name(&name) else { return err(StatusCode::BAD_REQUEST, "Ungültiger Name") };
     let _ = std::fs::remove_file(app.sup.models_dir().join(format!("ggml-{n}.bin")));
     ok()
+}
+
+// ------------------------------------------------------------ PDF-Bericht
+
+#[derive(Deserialize)]
+struct RangeQ {
+    from: Option<String>,
+    to: Option<String>,
+}
+
+/// Zeitpunkt als ms seit 1970 oder „JJJJ-MM-TTTHH:MM“ (Ortszeit).
+fn parse_time(s: &str) -> Option<u64> {
+    if let Ok(n) = s.parse::<u64>() {
+        return Some(n);
+    }
+    let dt = chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M").ok()?;
+    dt.and_local_timezone(chrono::Local).single().map(|d| d.timestamp_millis() as u64)
+}
+
+async fn report_data(app: &App, q: &RangeQ) -> (String, String) {
+    let all: Vec<_> = app.ops.stats.lock().await.iter().cloned().collect();
+    let to = q.to.as_deref().and_then(parse_time).unwrap_or_else(|| all.last().map(|p| p.at_ms).unwrap_or(0));
+    let from = q.from.as_deref().and_then(parse_time).unwrap_or_else(|| all.first().map(|p| p.at_ms).unwrap_or(0));
+    let pts: Vec<_> = all.into_iter().filter(|p| p.at_ms >= from && p.at_ms <= to).collect();
+    let events = app.sup.snapshot().await.events;
+    let host = app.ops.system.lock().await.hostname.clone();
+    let name = format!("lz-streamer-bericht-{}", chrono::Local::now().format("%Y-%m-%d_%H-%M"));
+    (crate::report::html(&pts, &events, from, to, &host), name)
+}
+
+async fn report_html(State(app): S, Query(q): Query<RangeQ>) -> Response {
+    let (html, _) = report_data(&app, &q).await;
+    asset("text/html; charset=utf-8", html)
+}
+
+async fn report_pdf(State(app): S, Query(q): Query<RangeQ>) -> Response {
+    let (html, name) = report_data(&app, &q).await;
+    match crate::report::to_pdf(&html, &std::env::temp_dir()).await {
+        Ok(pdf) => (
+            [
+                (header::CONTENT_TYPE, "application/pdf".to_string()),
+                (header::CONTENT_DISPOSITION, format!("attachment; filename=\"{name}.pdf\"")),
+            ],
+            pdf,
+        )
+            .into_response(),
+        // ohne Chrome: druckfertiges HTML (im Browser „Als PDF sichern“)
+        Err(_) => asset("text/html; charset=utf-8", html),
+    }
 }

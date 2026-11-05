@@ -15,6 +15,7 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow = "1.0.104"
+base64 = "0.22"
 argon2 = { version = "0.5", features = ["std"] }
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 axum = { version = "0.8.9", features = ["ws"] }

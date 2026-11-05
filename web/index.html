@@ -273,7 +273,11 @@
     <section class="card" aria-labelledby="st-title">
       <h2 id="st-title">Statistik <small>letzte Stunde</small></h2>
       <div id="chart" class="chart"></div>
-      <a class="btn btn--soft" href="/api/report.csv">Bericht herunterladen (CSV)</a>
+      <div class="row2 inline">
+        <label class="field"><span>Von</span><input class="input" type="datetime-local" id="rep-from"></label>
+        <label class="field"><span>Bis</span><input class="input" type="datetime-local" id="rep-to"></label>
+      </div>
+      <div class="actions"><a class="btn btn--soft" id="rep-pdf" href="/api/report.pdf">Bericht als PDF</a><a class="btn" href="/api/report.csv">CSV</a></div>
     </section>
     <section class="card" aria-labelledby="rec-title">
       <h2 id="rec-title">Aufnahmen <small id="rec-free"></small></h2>

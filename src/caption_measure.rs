@@ -228,12 +228,24 @@ pub fn run(m: &LiveMeasure) -> Result<Report> {
             .collect()
     };
     let asr_text = phrases.iter().map(|p| p.text.as_str()).collect::<Vec<_>>().join(" ");
-    let mut dec_texts: Vec<String> = Vec::new();
+    // Roll-up zeigt frühere Zeilen erneut: nur die neu hinzugekommenen Wörter zählen
+    let mut dec_words: Vec<String> = Vec::new();
+    let mut prev: Vec<String> = Vec::new();
     for (_, t) in &shown {
-        if dec_texts.last() != Some(t) {
-            dec_texts.push(t.clone());
+        let cur = words(t);
+        let mut keep = 0;
+        for k in (1..=prev.len().min(cur.len())).rev() {
+            if prev[prev.len() - k..] == cur[..k] {
+                keep = k;
+                break;
+            }
         }
+        if cur != prev {
+            dec_words.extend(cur[keep..].iter().cloned());
+        }
+        prev = cur;
     }
+    let dec_texts = vec![dec_words.join(" ")];
     Ok(Report {
         video: m.video.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default(),
         language: m.language.clone(),

@@ -171,3 +171,26 @@ async fn renderer_websocket_protocol() {
     drop(next);
     ws.send(tokio_tungstenite::tungstenite::Message::Text(r#"{"type":"library","graphics":[{"id":"lz-captions"}]}"#.into())).await.unwrap();
 }
+
+/// PDF-Bericht: entsteht mit erwarteten Abschnitten (braucht Chrome; sonst HTML).
+#[tokio::test]
+async fn report_pdf_has_sections() {
+    let (r, _) = app("pdf");
+    let resp = r.clone().oneshot(Request::get("/api/report.pdf").body(Body::empty()).unwrap()).await.unwrap();
+    let ct = resp.headers()[header::CONTENT_TYPE].to_str().unwrap().to_string();
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    if lz_streamer::report::find_browser().is_none() {
+        assert!(ct.starts_with("text/html"));
+        return;
+    }
+    assert_eq!(ct, "application/pdf");
+    assert!(bytes.starts_with(b"%PDF"), "kein PDF");
+    let f = std::env::temp_dir().join(format!("lzs-bericht-{}.pdf", std::process::id()));
+    std::fs::write(&f, &bytes).unwrap();
+    if let Ok(o) = std::process::Command::new("pdftotext").arg(&f).arg("-").output() {
+        let t = String::from_utf8_lossy(&o.stdout);
+        for s in ["Betriebsbericht", "Kennzahlen", "Verlauf", "Ereignisse und Alarme"] {
+            assert!(t.contains(s), "Abschnitt {s} fehlt im PDF");
+        }
+    }
+}

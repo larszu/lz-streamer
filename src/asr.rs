@@ -490,6 +490,8 @@ pub fn measure_file(audio: &std::path::Path, cfg: &AsrConfig, reference: Option<
         if !cfg.language.is_empty() {
             asr.set_property("language", cfg.language.as_str());
         }
+        let n = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).clamp(1, 8) as i32;
+        asr.set_property("n-threads", n);
     }
     let sink = p.by_name("t").unwrap().downcast::<gst_app::AppSink>().unwrap();
     p.set_state(gst::State::Playing)?;

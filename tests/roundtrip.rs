@@ -511,9 +511,9 @@ fn speech_captions_with_whisper_model() {
     };
     let reference = "Guten Abend und herzlich willkommen zum Gottesdienst. Heute hören wir die Predigt über den barmherzigen Samariter. \
                      Bitte schalten Sie Ihre Mobiltelefone aus. Wir beginnen mit dem ersten Lied.";
-    let wav = std::env::temp_dir().join("lzs-asr-probe.aiff");
+    let wav = std::env::temp_dir().join("lzs-asr-probe.wav");
     if !wav.is_file() {
-        let ok = std::process::Command::new("say").args(["-v", "Anna", "-o"]).arg(&wav).arg(reference).status().map(|s| s.success()).unwrap_or(false);
+        let ok = std::process::Command::new("say").args(["-v", "Anna", "--file-format=WAVE", "--data-format=LEI16@16000", "-o"]).arg(&wav).arg(reference).status().map(|s| s.success()).unwrap_or(false);
         if !ok {
             eprintln!("keine Sprachausgabe – Test übersprungen");
             return;
@@ -618,4 +618,45 @@ fn caption_text_fallback_burned_without_renderer() {
     });
     eprintln!("Luma ohne Text {dark:.1}, mit Text {:.1}", d.luma.unwrap());
     assert!(e.graphics.unwrap().text_fallback);
+}
+
+/// 1080p50 mit eingebrannter Grafik: keine Bildverluste (Encoder hält 50 fps).
+#[test]
+fn graphics_burn_in_1080p50_keeps_frame_rate() {
+    use lz_streamer::config::BurnTarget;
+    use std::io::Write;
+    init();
+    let port = free_port();
+    let gport = {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        l.local_addr().unwrap().port()
+    };
+    let mut cfg = encoder_cfg(port, SrtMode::Listener);
+    cfg.video.width = 1920;
+    cfg.video.height = 1080;
+    cfg.video.fps = 50;
+    cfg.video.bitrate_kbps = 8000;
+    cfg.graphics.burn = BurnTarget::All;
+    cfg.graphics.frame_port = gport;
+    let mut enc = Channel::start_encoder(&cfg, &[], &ChannelOptions::default()).unwrap();
+    let mut dec = Channel::start_decoder(&decoder_cfg(port, SrtMode::Caller), &ChannelOptions::default()).unwrap();
+    // Untertitelbalken unten (wie lz-captions): 1920×200 halbtransparent
+    let (w, h) = (1920usize, 1080usize);
+    let mut frame = vec![0u8; w * h * 4];
+    for y in 860..1060 {
+        for x in 160..1760 {
+            frame[(y * w + x) * 4..(y * w + x) * 4 + 4].copy_from_slice(&[40, 40, 40, 200]);
+        }
+    }
+    let mut sock = std::net::TcpStream::connect(("127.0.0.1", gport)).unwrap();
+    sock.write_all(&frame).unwrap();
+    run_until(&mut enc, &mut dec, Duration::from_secs(10), |e, d| e.graphics.as_ref().is_some_and(|g| g.graphic_visible) && d.frames > 50);
+    let f0 = status(&mut enc).0.frames;
+    let t0 = Instant::now();
+    std::thread::sleep(Duration::from_secs(4));
+    let (e, _) = status(&mut enc);
+    let fps = (e.frames - f0) as f64 / t0.elapsed().as_secs_f64();
+    eprintln!("1080p50 mit Grafik: {fps:.1} fps");
+    assert!(fps >= 48.5, "Bildverlust: {fps:.1} fps");
+    drop(sock);
 }
