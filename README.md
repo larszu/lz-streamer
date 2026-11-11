@@ -1,6 +1,6 @@
 # lz-streamer
 
-*English summary: a single-channel SRT video encoder/decoder in Rust + GStreamer with a one-screen web UI. Hardware encoders first (VideoToolbox, NVENC, VA-API/QSV), x264/x265 as fallback, standby picture on signal loss without dropping the output, and a supervisor that restarts the channel process. Decoder role uses the same binary.*
+A single-channel SRT video encoder/decoder in Rust + GStreamer with a one-screen web UI. Hardware encoders first (VideoToolbox, NVENC, VA-API/QSV), x264/x265 as fallback, standby picture on signal loss without dropping the output, and a supervisor that restarts the channel process. Decoder role uses the same binary.*
 
 Eigener Video-Encoder und -Decoder: **Eingang → Encoder → SRT** (dazu optional RTMP), bedient über eine Weboberfläche auf einem Bildschirm. Dieselbe Software empfängt auch: **SRT → Decoder → DeckLink-Ausgang oder Fenster**.
 
