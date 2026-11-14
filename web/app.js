@@ -440,6 +440,7 @@ async function loadAdmin() {
     $('#auto-delete').checked = !!s.delete_oldest_recordings;
     renderPresets(presets); renderSchedule(presets); renderAlarmFields(); renderMail(); renderRecordings(recs);
     renderStandby(imgs); renderUsers(users, me); renderChart(stats);
+    renderTls(await api('GET', '/api/tls'));
   } catch {}
 }
 
@@ -636,6 +637,21 @@ const _render = render;
 render = function (st) { _render(st); renderOps(st); };
 
 $('#auto-delete').onchange = e => { settings.delete_oldest_recordings = e.target.checked; saveSettings(); };
+
+// ---------------- HTTPS
+function renderTls(t) {
+  $('#tls-on').checked = !!t.enabled;
+  $('#tls-state').textContent = t.active ? 'aktiv' : t.enabled ? 'nach Neustart' : 'aus';
+  const c = t.cert || {};
+  $('#tls-info').textContent = !c.sha256 ? 'Noch kein Zertifikat – entsteht beim ersten Start mit HTTPS.'
+    : (c.self_signed ? `Selbst signiert für ${c.names.join(', ')} · gültig bis ${c.not_after}` : `Eigenes Zertifikat · ${c.chain} in der Kette`) + ` · SHA-256 ${c.sha256}`;
+}
+$('#tls-on').onchange = e => { settings.https = e.target.checked; saveSettings(); };
+$('#tls-install').onclick = async () => {
+  const r = await api('POST', '/api/tls', { cert: $('#tls-cert').value, key: $('#tls-key').value });
+  $('#tls-key').value = ''; $('#tls-cert').value = ''; toast('Zertifikat übernommen'); renderTls({ ...(await api('GET', '/api/tls')), cert: r.cert });
+};
+$('#tls-self').onclick = async () => { await api('POST', '/api/tls/self-signed'); toast('Neues Zertifikat erzeugt'); loadAdmin(); };
 
 // ---------------- Lautheit je Spur
 function renderMeters(st) {

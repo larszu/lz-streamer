@@ -32,11 +32,16 @@ pub struct App {
     pub renderer: Arc<crate::renderer::RendererHub>,
     /// Plugin-Scan läuft gerade
     pub plugin_scanning: Arc<std::sync::atomic::AtomicBool>,
+    /// Zertifikat für HTTPS
+    pub certs: Arc<crate::tls::CertStore>,
+    /// Oberfläche läuft über HTTPS (Sitzungs-Cookie nur verschlüsselt)
+    pub https: std::sync::atomic::AtomicBool,
 }
 
 impl App {
     pub fn new(sup: Arc<Supervisor>, ops: Arc<Ops>, caps: Capabilities, devices: Vec<CaptureDevice>) -> Arc<Self> {
         let users: Vec<User> = admin::load_json(&ops.data.users());
+        let certs = crate::tls::CertStore::new(ops.data.tls());
         Arc::new(Self {
             sup,
             ops,
@@ -46,6 +51,8 @@ impl App {
             sessions: Mutex::new(HashMap::new()),
             renderer: Arc::default(),
             plugin_scanning: Arc::default(),
+            certs,
+            https: Default::default(),
         })
     }
 }
@@ -125,6 +132,8 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/api/me", get(me))
         .route("/api/users", get(users).post(add_user))
         .route("/api/users/{name}", delete(delete_user))
+        .route("/api/tls", get(tls_info).post(tls_install))
+        .route("/api/tls/self-signed", post(tls_self_signed))
         .layer(DefaultBodyLimit::max(25 * 1024 * 1024))
         .layer(middleware::from_fn_with_state(app.clone(), auth))
         .with_state(app)
@@ -211,7 +220,8 @@ async fn login(State(app): S, Json(r): Json<LoginReq>) -> Response {
     };
     let token = admin::new_token();
     app.sessions.lock().await.insert(token.clone(), (u.name.clone(), u.role));
-    let cookie = format!("{COOKIE}={token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=604800");
+    let secure = if app.https.load(std::sync::atomic::Ordering::Relaxed) { "; Secure" } else { "" };
+    let cookie = format!("{COOKIE}={token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=604800{secure}");
     ([(header::SET_COOKIE, cookie)], Json(json!({"ok": true, "name": u.name, "role": u.role}))).into_response()
 }
 
@@ -274,6 +284,43 @@ async fn delete_user(State(app): S, Path(name): Path<String>) -> Response {
     ok()
 }
 
+// ------------------------------------------------------------ HTTPS
+
+async fn tls_info(State(app): S) -> impl IntoResponse {
+    let https = app.https.load(std::sync::atomic::Ordering::Relaxed);
+    let wanted = app.ops.settings.lock().await.https;
+    Json(json!({"active": https, "enabled": wanted, "cert": app.certs.info()}))
+}
+
+#[derive(Deserialize)]
+struct TlsUpload {
+    cert: String,
+    key: String,
+}
+
+/// Eigenes Zertifikat (PEM) übernehmen – gilt sofort für neue Verbindungen
+async fn tls_install(State(app): S, Json(r): Json<TlsUpload>) -> Response {
+    let certs = app.certs.clone();
+    match tokio::task::spawn_blocking(move || certs.install(r.cert.as_bytes(), r.key.as_bytes())).await {
+        Ok(Ok(())) => {
+            app.sup.log("info", "Eigenes HTTPS-Zertifikat übernommen").await;
+            Json(json!({"ok": true, "cert": app.certs.info()})).into_response()
+        }
+        Ok(Err(e)) => err(StatusCode::BAD_REQUEST, e.to_string()),
+        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    }
+}
+
+/// Zurück zum selbst signierten Zertifikat (neu erzeugt)
+async fn tls_self_signed(State(app): S) -> Response {
+    let certs = app.certs.clone();
+    match tokio::task::spawn_blocking(move || certs.create_self_signed(crate::tls::own_names())).await {
+        Ok(Ok(())) => Json(json!({"ok": true, "cert": app.certs.info()})).into_response(),
+        Ok(Err(e)) => err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    }
+}
+
 // ------------------------------------------------------------ Grafik-Renderer
 
 async fn renderer_ws(
@@ -311,6 +358,7 @@ async fn state(State(app): S, headers: HeaderMap) -> impl IntoResponse {
         "renderer": app.renderer.state.lock().await.clone(),
         "controls": control_list(&app).await,
         "user": {"open": open, "name": me.as_ref().map(|m| m.0.clone()), "role": me.map(|m| m.1).unwrap_or(Role::Admin)},
+        "https": app.https.load(std::sync::atomic::Ordering::Relaxed),
         "version": env!("CARGO_PKG_VERSION"),
     }))
 }
@@ -889,4 +937,22 @@ async fn report_pdf(State(app): S, Query(q): Query<RangeQ>) -> Response {
         // ohne Chrome: druckfertiges HTML (im Browser „Als PDF sichern“)
         Err(_) => asset("text/html; charset=utf-8", html),
     }
+}
+
+/// Oberfläche ausliefern, mit HTTPS über rustls (Zertifikat aus `app.certs`)
+/// oder im Klartext. Die Gegenstelle bleibt in beiden Fällen sichtbar.
+pub async fn run(listener: tokio::net::TcpListener, app: Arc<App>, https: bool, shutdown: impl std::future::Future<Output = ()> + Send + 'static) -> anyhow::Result<()> {
+    use axum::serve::ListenerExt;
+    let svc = router(app.clone()).into_make_service_with_connect_info::<std::net::SocketAddr>();
+    if !https {
+        axum::serve(listener, svc).with_graceful_shutdown(shutdown).await?;
+        return Ok(());
+    }
+    let certs = app.certs.clone();
+    tokio::task::spawn_blocking(move || certs.load_or_create()).await??;
+    app.https.store(true, std::sync::atomic::Ordering::Relaxed);
+    let tls = crate::tls::TlsListener::new(listener, app.certs.server_config()?)?;
+    // tap_io: so liefert axum die echte Gegenstelle als ConnectInfo<SocketAddr>
+    axum::serve(tls.tap_io(|_| {}), svc).with_graceful_shutdown(shutdown).await?;
+    Ok(())
 }
