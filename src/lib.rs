@@ -16,6 +16,8 @@ pub mod gfx;
 pub mod hls;
 pub mod relay;
 pub mod rsp;
+pub mod hlsplaylist;
+pub mod hlsupload;
 pub mod latency;
 pub mod leveler;
 pub mod loudness;
