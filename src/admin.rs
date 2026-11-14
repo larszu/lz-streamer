@@ -99,6 +99,10 @@ impl DataDir {
     pub fn settings(&self) -> PathBuf {
         self.root.join("verwaltung.json")
     }
+    /// Zertifikat und Schlüssel für HTTPS
+    pub fn tls(&self) -> PathBuf {
+        self.root.join("tls")
+    }
 }
 
 // ------------------------------------------------------------ Profile
@@ -382,6 +386,8 @@ pub struct Settings {
     pub mail: crate::mail::MailSettings,
     /// `/metrics` und Influx-Push
     pub metrics: crate::metrics::MetricsSettings,
+    /// Weboberfläche über HTTPS (gilt nach Neustart)
+    pub https: bool,
 }
 
 impl Settings {

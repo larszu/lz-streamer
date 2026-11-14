@@ -400,6 +400,19 @@
       </div>
       <p class="hint" id="cfg-import-hint">Der Export enthält Passwörter und Stream-Schlüssel, das Diagnose-Paket nicht.</p>
     </section>
+    <section class="card" aria-labelledby="tls-title">
+      <h2 id="tls-title">HTTPS <small id="tls-state"></small></h2>
+      <label class="switch"><input type="checkbox" id="tls-on"> Oberfläche über HTTPS (gilt nach Neustart)</label>
+      <p class="hint" id="tls-info"></p>
+      <details class="more"><summary>Eigenes Zertifikat</summary>
+        <div class="form">
+          <label class="field"><span>Zertifikat (PEM, mit Zwischenzertifikaten)</span><textarea class="input" id="tls-cert" rows="4" placeholder="-----BEGIN CERTIFICATE-----"></textarea></label>
+          <label class="field"><span>Privater Schlüssel (PEM)</span><textarea class="input" id="tls-key" rows="4" placeholder="-----BEGIN PRIVATE KEY-----" autocomplete="off"></textarea></label>
+          <div class="actions"><button type="button" class="btn btn--soft" id="tls-install">Übernehmen</button><button type="button" class="btn" id="tls-self">Selbst signiertes neu erzeugen</button></div>
+        </div>
+      </details>
+      <p class="hint">Ohne eigenes Zertifikat erzeugt lz-streamer beim ersten Start ein selbst signiertes für den Rechnernamen und die eigenen IPv4-Adressen. Klartext von außen wird auf https:// umgeleitet; lokal (127.0.0.1) geht beides.</p>
+    </section>
     <section class="card" aria-labelledby="us-title">
       <h2 id="us-title">Benutzer <small id="me"></small></h2>
       <ol class="rows" id="users"></ol>

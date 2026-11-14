@@ -20,13 +20,13 @@ Hier stehen nur Funktionen, beschrieben in eigenen Worten. Texte, Logos und Asse
 
 | Status | Anzahl |
 |---|---|
-| fertig | 36 |
+| fertig | 37 |
 | Teil | 14 |
-| fehlt | 9 |
+| fehlt | 8 |
 | entfällt | 5 |
 | **gesamt** | **64** |
 
-Ohne die entfallenden Punkte sind 36 von 59 Funktionen fertig (61 %), dazu 14 in Teilen. Die 9 fehlenden sind fast alle Broadcast-Breite oder Mehrkanal; sie stehen in §6 mit Begründung.
+Ohne die entfallenden Punkte sind 37 von 59 Funktionen fertig (63 %), dazu 14 in Teilen. Die 8 fehlenden sind fast alle Broadcast-Breite oder Mehrkanal; sie stehen in §6 mit Begründung.
 
 ## 1. Kanäle und Bedienung
 
@@ -107,7 +107,7 @@ Ohne die entfallenden Punkte sind 36 von 59 Funktionen fertig (61 %), dazu 14 in
 | 53 | Netzwerk (Hostname, DHCP, DNS, NTP, Bonding) | entfällt | Betriebssystem | – |
 | 54 | WLAN-Zugangspunkt | entfällt | Betriebssystem | – |
 | 55 | Standbilder verwalten (hochladen, wählen) | fertig | PNG/JPEG, Vorschau, „Verwenden“ | – |
-| 56 | HTTPS-Zertifikat | **fehlt** | siehe §6 | S |
+| 56 | HTTPS-Zertifikat | fertig | selbst signiert beim ersten Start (Rechnername, eigene IPv4, localhost) oder eigenes PEM, TLS 1.2/1.3 über rustls; Klartext von außen wird umgeleitet | – |
 | 57 | Software-Update hochladen | entfällt | Release per v-Tag und Paketverwaltung | – |
 | 58 | Benutzer mit Rollen (Verwalten/Bedienen/Ansehen) | fertig | Argon2, Sitzungs-Cookie, Rollenprüfung je Aufruf | – |
 | 59 | Info-Dialog (Version) | fertig | `version` in `/api/state` | – |
@@ -124,7 +124,7 @@ Ohne die entfallenden Punkte sind 36 von 59 Funktionen fertig (61 %), dazu 14 in
 
 ## Was offen bleibt und warum
 
-Gezählt sind die 9 fehlenden Funktionen und die drei Teilfunktionen mit dem größten Abstand. Für den Abschluss dieser Runde war entscheidend, dass jeder umgesetzte Punkt mit einem Test belegt ist. Alles, was hier steht, hätte in dieser Runde keinen sauberen Test bekommen.
+Gezählt sind die 8 fehlenden Funktionen und die drei Teilfunktionen mit dem größten Abstand. Für den Abschluss dieser Runde war entscheidend, dass jeder umgesetzte Punkt mit einem Test belegt ist. Alles, was hier steht, hätte in dieser Runde keinen sauberen Test bekommen.
 
 | Punkt | Warum noch nicht |
 |---|---|
@@ -132,7 +132,6 @@ Gezählt sind die 9 fehlenden Funktionen und die drei Teilfunktionen mit dem gr�
 | Netz-Eingänge mit Umkodieren (#13) | eigener Eingangszweig (srtsrc/udpsrc → decodebin → Umschalter); braucht Tests mit Formatwechsel |
 | CEA-608/708 (#20), SCTE (#60), Ancillary (#61) | braucht VANC aus dem DeckLink-Eingang; ohne angestecktes Gerät nicht prüfbar |
 | HLS/CMAF (#40) | `hlscmafsink` vorhanden; Speicherort, Auslieferung und Aufräumen fehlen noch |
-| HTTPS (#56) | selbstsigniertes Zertifikat oder Tunnel; Entscheidung bei Lars (Tunnel ist im Haus üblich) |
 | Upload-Ziele (#52) | klein; nach Mehrkanal sinnvoller |
 | Interlaced-Ausgabe (#26), Deinterlacing-Wahl (#17) | erst mit 1080i-Quelle an echter Hardware sinnvoll zu messen |
 

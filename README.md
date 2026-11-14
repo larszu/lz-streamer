@@ -40,6 +40,7 @@ Eigener Video-Encoder und -Decoder: **Eingang → Encoder → SRT** (dazu option
   - Systemlast mit GPU (Mac über ioreg, NVIDIA über nvidia-smi), Alarme für Bildrate und Formatwechsel am Eingang
   - Diagnose-Paket und Kanal-Export/-Import als Datei
   - Benutzer mit Rollen (Verwalten/Bedienen/Ansehen)
+  - HTTPS mit selbst signiertem oder eigenem Zertifikat (PEM), TLS 1.2/1.3
   - Beschnitt
 - **Schalter live:** Untertitel, Klare Sprache, Lautheitsregelung samt Profil, Plugin-Umgehung und Grafik lassen sich während der Sendung umschalten, ohne dass der Kanal neu startet. Das geht in der Karte „Schalter“, über `/api/control` oder per OSC, etwa aus Companion.
 - **Keine Pflichtfelder:** Ein leerer Start ergibt einen SRT-Listener auf Port 9000 mit Testbild. Fehlt etwas, erscheint ein Hinweis, gesperrt wird nichts.
@@ -94,12 +95,14 @@ cargo build --release
 ./target/release/lz-streamer info          # was ist da: Encoder, DeckLink, fehlende Bausteine
 ./target/release/lz-streamer               # Oberfläche auf http://127.0.0.1:4200
 ./target/release/lz-streamer serve --bind 0.0.0.0 --autostart   # im Netz erreichbar, Kanal sofort an
+./target/release/lz-streamer serve --bind 0.0.0.0 --https       # über HTTPS (auch in der Verwaltung einstellbar)
 ./target/release/lz-streamer latenz [--h265] [--srt-latency 40] [--decoder avdec_h265] [--demux 0] [--reserve 20]
 ```
 
 - **Port 4200.** 4181–4198 belegt die AV-Suite, 4199 belegt `lz-nvx-toolbox`.
 - Die Konfiguration liegt unter `~/Library/Application Support/lz-streamer/config.json` (Linux: `~/.config/lz-streamer/`). Dort stehen auch SRT-Passwort und RTMP-Key im Klartext; sie gelangen nie ins Repo.
 - Encoder und Decoder auf einem Rechner: zwei Instanzen mit `--port` und `--config` trennen.
+- **HTTPS:** Beim ersten Start mit HTTPS entsteht ein selbst signiertes Zertifikat (CN = Rechnername, SANs = Rechnername, `localhost`, eigene IPv4-Adressen, 790 Tage gültig) unter `tls/` neben der Konfiguration. Fehlt später eine Adresse, wird es neu erzeugt. Ein eigenes Zertifikat (PEM mit Kette und Schlüssel) lässt sich in der Verwaltung einspielen und gilt sofort. HTTPS und Klartext teilen sich den Port: Klartext von außen bekommt eine Weiterleitung auf `https://`, Klartext von 127.0.0.1 wird weiter bedient (Grafik-Renderer, lokale Werkzeuge). Die Prüfung „nur lokal“ sieht die echte Gegenstelle.
 
 **DeckLink/UltraStudio am Mac:** Blackmagic Desktop Video installieren und die Treibererweiterung freigeben (Systemeinstellungen → Anmeldeobjekte & Erweiterungen). Ohne angestecktes Gerät meldet `lz-streamer info` keine DeckLink-Geräte, und „Automatisch“ nimmt das Testbild. Nach dem Anstecken in der Oberfläche neu laden (`POST /api/devices/refresh`) oder den Dienst neu starten. Ein UltraStudio Recorder 3G nimmt höchstens 1080p (3G-SDI). Für 12G/2160p braucht es z. B. ein UltraStudio 4K Mini oder eine DeckLink-4K/8K-Karte; der Weg über `decklinkvideosrc mode=auto` bleibt derselbe.
 
@@ -112,6 +115,7 @@ cargo test
 - **51 Unit-Tests** prüfen Konfiguration, Zielzerlegung, Encoder-Auswahl und Voreinstellungen, Pipeline-Bau, SRT-Statistik und das Kindprozess-Protokoll.
 - **4 API-Tests** (`tests/api.rs`): Anmeldung und Rollen, Profile, Standbilder, Zeitplan, Alarme, Aufnahmen, Bericht.
 - **3 Überwachungstests** (`tests/alarm_mail.rs`): Ein lokaler Mini-SMTP-Server empfängt die Alarm-Mail bei nachgestelltem Signalverlust und die Entwarnung. Passwort und Token tauchen in keiner Antwort auf. `/metrics` prüft Anmeldung, HTTP-Basic und Freigabe.
+- **2 HTTPS-Tests** (`tests/https.rs`): `/api/state` über TLS 1.3 und 1.2 (rustls-Client), Zertifikat für IP und Namen, eigenes Zertifikat gilt ohne Neustart, falscher Schlüssel wird abgelehnt, Renderer von einer Netzadresse abgelehnt, Klartext von außen umgeleitet.
 - **13 Integrationstests** laufen über echte SRT-Verbindungen auf 127.0.0.1:
   - Listener → Caller, Caller → Listener
   - H.265 sowie x264 in Software
@@ -161,6 +165,7 @@ lz-streamer serve ── axum (REST + Weboberfläche, eingebettet) ── Aufpas
 | `GET /api/plugins` · `POST /api/plugins/scan` | geprüfte Plugins und Sperrliste · neu prüfen |
 | `GET/POST /api/control` | schaltbare Eigenschaften lesen bzw. live umstellen, ohne Neustart: `{"path":"captions.enabled","value":false}`; Pfade siehe `src/control.rs`, benannt für NMOS IS-12. Per OSC: `/lzs/set/<pfad mit />` mit Wert, z. B. `/lzs/set/audio/tracks/0/plugins/0/bypass T` |
 | `GET/POST /api/graphics` | Zustand der Grafik-Ebenen; Befehl `{"action":"show","graphicId":"lz-lower-third","data":{…}}` (`load`, `show`, `play`, `next`, `prev`, `update`, `stop`, `clear`, `custom`) |
+| `GET/POST /api/tls`, `POST /api/tls/self-signed` | Zertifikat ansehen (ohne Schlüssel) · eigenes einspielen `{"cert":"PEM","key":"PEM"}` · selbst signiertes neu erzeugen |
 | `POST /api/login` · `/api/logout`, `GET /api/me`, `GET/POST /api/users`, `DELETE /api/users/{name}` | Anmeldung und Benutzer; ohne Benutzer bleibt die Oberfläche offen, der erste wird Administrator |
 
 ### Überwachung: Prometheus, Influx, Mail
