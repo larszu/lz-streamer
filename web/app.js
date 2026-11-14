@@ -438,7 +438,7 @@ async function loadAdmin() {
       api('GET', '/api/standby'), api('GET', '/api/users'), api('GET', '/api/stats?minutes=60'), api('GET', '/api/me')]);
     settings = s;
     $('#auto-delete').checked = !!s.delete_oldest_recordings;
-    renderPresets(presets); renderSchedule(presets); renderAlarmFields(); renderRecordings(recs);
+    renderPresets(presets); renderSchedule(presets); renderAlarmFields(); renderMail(); renderRecordings(recs);
     renderStandby(imgs); renderUsers(users, me); renderChart(stats);
   } catch {}
 }
@@ -523,6 +523,42 @@ function renderAlarmFields() {
     l.append(sp, i); host.append(l);
   }
 }
+
+// ---------------- Alarme per Mail, Messwerte
+// Passwort und Token kommen leer zurück; leer gespeichert heißt unverändert.
+function bindSettings(sel, obj, key) {
+  $$(sel).forEach(i => {
+    const k = i.dataset[key], o = obj();
+    if (i.type === 'checkbox') i.checked = !!o[k];
+    else i.value = o[k] ?? '';
+    if (i.type === 'password') i.placeholder = o[k + '_set'] ? 'gespeichert – leer lassen = unverändert' : '';
+    const num = i.inputMode === 'numeric';
+    i.oninput = i.onchange = () => {
+      o[k] = i.type === 'checkbox' ? i.checked : num ? (parseInt(i.value, 10) || 0) : i.value;
+      mailHint(); saveSettings();
+    };
+  });
+}
+function mailHint() {
+  const m = settings.mail, h = $('#mail-hint');
+  const miss = !m.host?.trim() ? 'Kein Mailserver eingetragen – es geht keine Mail raus.' : !m.to?.trim() ? 'Kein Empfänger eingetragen – es geht keine Mail raus.' : '';
+  h.textContent = m.enabled && miss ? miss : 'Zugangsdaten bleiben auf diesem Rechner; das Passwort zeigt die Oberfläche nie wieder an.';
+}
+function renderMail() {
+  bindSettings('[data-mail]', () => settings.mail, 'mail');
+  bindSettings('[data-metrics]', () => settings.metrics, 'metrics');
+  bindSettings('[data-influx]', () => settings.metrics.influx, 'influx');
+  $('#metrics-url').textContent = `${location.origin}/metrics`;
+  mailHint();
+}
+$('#mail-test').onclick = async () => {
+  clearTimeout(settingsTimer);
+  try {
+    await api('PUT', '/api/settings', settings);
+    await api('POST', '/api/mail/test');
+    toast(`Testmail an ${settings.mail.to} verschickt`);
+  } catch {}
+};
 
 const bytes = n => n > 1e9 ? `${fmt.format(n / 1e9)} GB` : `${fmt.format(n / 1e6)} MB`;
 function renderRecordings(list) {

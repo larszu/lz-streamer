@@ -279,6 +279,7 @@ async fn serve(port: u16, bind: String, cfg_path: PathBuf, autostart: bool) -> R
     tokio::spawn(sup.clone().run());
     tokio::spawn(ops.clone().monitor(sup.clone()));
     tokio::spawn(ops.clone().scheduler(sup.clone()));
+    tokio::spawn(ops.clone().influx_push(sup.clone()));
     if autostart {
         sup.start().await;
     }
