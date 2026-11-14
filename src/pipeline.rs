@@ -42,6 +42,11 @@ pub fn quote(s: &str) -> String {
     format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
+/// Halbbild-Ausgabe aktiv (nur H.264)
+pub fn interlaced_output(cfg: &EncoderConfig) -> bool {
+    cfg.video.interlaced && cfg.video.codec == Codec::H264
+}
+
 fn raw_caps(cfg: &EncoderConfig) -> String {
     let v = &cfg.video;
     format!(
@@ -296,7 +301,9 @@ pub fn encoder_description(cfg: &EncoderConfig, parts: &EncoderParts) -> String 
         _ => "vt. ! queue name=vencq max-size-buffers=3 max-size-bytes=0 max-size-time=0",
     };
     let pcaps = crate::caps::profile_caps(&cfg.video);
-    d.push(format!("{enc_src} ! {} name=venc ! {pcaps}{parser} config-interval=-1{inserter} ! tee name=ve", parts.encoder));
+    // Halbbilder: je zwei Vollbilder → ein Bild mit zwei Halbbildern, oberes zuerst
+    let il = if interlaced_output(cfg) { " ! interlace field-pattern=1:1 top-field-first=true ! video/x-raw,interlace-mode=interleaved" } else { "" };
+    d.push(format!("{enc_src}{il} ! {} name=venc ! {pcaps}{parser} config-interval=-1{inserter} ! tee name=ve", parts.encoder));
     // HLS: Bild-Rendition (die Ton-Renditionen folgen bei den Tonspuren)
     d.extend(crate::hls::branches(cfg).into_iter().take(1));
     // ABR-Leiter: weitere Bildstufen aus demselben Rohbild wie der Haupt-Encoder
@@ -714,7 +721,8 @@ mod tests {
         let mut c = crate::config::Config { encoder: cfg, ..Default::default() };
         c.normalize();
         let d = encoder_description(&c.encoder, &parts(&ResolvedInput::File { path: "/x.mp4".into() }));
-        assert!(!d.contains("deinterlace method"), "Halbbild-Ausgabe löst nicht auf: {d}");
+        assert!(d.contains("! interlace field-pattern=1:1 top-field-first=true ! video/x-raw,interlace-mode=interleaved ! "), "{d}");
+        assert_eq!(c.encoder.video.gop_frames(), 25, "GOP in Bildern, nicht Halbbildern");
     }
 
     #[test]

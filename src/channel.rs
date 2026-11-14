@@ -738,7 +738,11 @@ impl Channel {
         if !caps::element_available("fallbackswitch") {
             bail!("fallbackswitch fehlt (gst-plugins-rs) – bitte nachinstallieren");
         }
-        let candidates = caps::encoder_candidates(cfg.video.codec, &cfg.video.encoder);
+        let mut candidates = caps::encoder_candidates(cfg.video.codec, &cfg.video.encoder);
+        if pipeline::interlaced_output(cfg) {
+            // Halbbild-Kodierung kann hier nur x264
+            candidates.retain(|e| e.factory == "x264enc");
+        }
         if candidates.is_empty() {
             bail!("Kein Encoder für {:?} gefunden", cfg.video.codec);
         }
