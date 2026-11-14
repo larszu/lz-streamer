@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>HLS-Testwiedergabe</title>
+<link rel="stylesheet" href="/app.css">
+<style>
+  body{background:var(--surface-0);color:var(--text);margin:0}
+  .wrap{max-inline-size:960px;margin-inline:auto;padding:16px;display:grid;gap:16px}
+  h1{font-size:1.25rem;margin:0;color:var(--text-strong)}
+  video{inline-size:100%;aspect-ratio:16/9;background:#000;border-radius:12px}
+  .ctl{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px}
+  .ctl label{display:grid;gap:4px;font-size:.875rem;color:var(--text-muted)}
+  .ctl select{min-block-size:44px}
+  .facts{display:flex;flex-wrap:wrap;gap:8px 20px;font-size:.875rem;color:var(--text-muted);margin:0;padding:0;list-style:none}
+  .facts b{color:var(--text-strong);font-weight:600}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>HLS-Testwiedergabe</h1>
+  <video id="v" controls muted playsinline autoplay></video>
+  <div class="ctl">
+    <label>Bildstufe<select class="input" id="level"><option value="-1">Automatisch</option></select></label>
+    <label>Tonspur<select class="input" id="audio"></select></label>
+    <label>Untertitel<select class="input" id="cc"><option value="">Aus</option></select></label>
+  </div>
+  <ul class="facts">
+    <li>Wiedergabe: <b id="engine">–</b></li>
+    <li>Stufe: <b id="now">–</b></li>
+    <li>Ton: <b id="now-audio">–</b></li>
+    <li>Verzug: <b id="lat">–</b></li>
+    <li id="err" hidden>Fehler: <b></b></li>
+  </ul>
+  <p class="hint">Quelle <code id="src"></code>. <code>?nativ</code> erzwingt die eingebaute Wiedergabe (Safari), <code>?src=…</code> eine andere Playlist.</p>
+</div>
+<script src="/vendor/hls.min.js"></script>
+<script>
+const $ = s => document.querySelector(s);
+const q = new URLSearchParams(location.search);
+const src = q.get('src') || '/hls/index.m3u8';
+const v = $('#v');
+$('#src').textContent = src;
+// Zustand für automatische Prüfungen
+const state = window.hlsTestState = { engine: '', levels: [], audio: [], cc: [], level: null, audioTrack: null, error: null, playing: false };
+
+function fill(sel, items, keep) {
+  const cur = sel.value;
+  sel.replaceChildren(...keep.map(o => new Option(o[1], o[0])), ...items.map(([val, text]) => new Option(text, val)));
+  if ([...sel.options].some(o => o.value === cur)) sel.value = cur;
+}
+// Untertitel: 608 aus dem Bild erscheinen als Textspuren (CC1, CC3) am Video
+function syncCc() {
+  const t = [...v.textTracks].filter(t => t.kind === 'captions' || t.kind === 'subtitles');
+  state.cc = t.map(x => x.label || x.language);
+  fill($('#cc'), t.map((x, i) => [String(i), x.label || x.language || `Spur ${i + 1}`]), [['', 'Aus']]);
+  const on = t.findIndex(x => x.mode === 'showing');
+  $('#cc').value = on < 0 ? '' : String(on);
+}
+v.textTracks.addEventListener?.('addtrack', syncCc);
+$('#cc').onchange = e => {
+  [...v.textTracks].filter(t => t.kind === 'captions' || t.kind === 'subtitles').forEach((t, i) => t.mode = String(i) === e.target.value ? 'showing' : 'disabled');
+};
+v.addEventListener('playing', () => state.playing = true);
+setInterval(() => {
+  const b = v.buffered.length ? v.buffered.end(v.buffered.length - 1) : 0;
+  $('#lat').textContent = b ? `${(b - v.currentTime).toFixed(1)} s Puffer` : '–';
+  state.time = v.currentTime;
+}, 500);
+function fail(text) { state.error = text; $('#err').hidden = false; $('#err b').textContent = text; }
+
+if (Hls.isSupported() && !q.has('nativ')) {
+  state.engine = `hls.js ${Hls.version}`;
+  const hls = window.hls = new Hls({ enableCEA708Captions: true, renderTextTracksNatively: true, lowLatencyMode: false });
+  hls.loadSource(src);
+  hls.attachMedia(v);
+  hls.on(Hls.Events.MANIFEST_PARSED, () => {
+    state.levels = hls.levels.map(l => `${l.width}x${l.height}`);
+    fill($('#level'), hls.levels.map((l, i) => [String(i), `${l.height}p · ${Math.round(l.bitrate / 1000)} kbit/s`]), [['-1', 'Automatisch']]);
+    v.play().catch(() => {});
+  });
+  hls.on(Hls.Events.AUDIO_TRACKS_UPDATED, () => {
+    state.audio = hls.audioTracks.map(t => `${t.lang}:${t.name}`);
+    fill($('#audio'), hls.audioTracks.map((t, i) => [String(i), `${t.name} (${t.lang})`]), []);
+    $('#audio').value = String(hls.audioTrack);
+  });
+  hls.on(Hls.Events.AUDIO_TRACK_SWITCHED, (_, d) => { state.audioTrack = d.id; const t = hls.audioTracks[d.id]; $('#now-audio').textContent = t ? `${t.name} (${t.lang})` : '–'; $('#audio').value = String(d.id); });
+  hls.on(Hls.Events.LEVEL_SWITCHED, (_, d) => { state.level = d.level; const l = hls.levels[d.level]; $('#now').textContent = l ? `${l.width}×${l.height}` : '–'; });
+  hls.on(Hls.Events.SUBTITLE_TRACKS_UPDATED, syncCc);
+  hls.on(Hls.Events.ERROR, (_, d) => { if (d.fatal) fail(`${d.type}: ${d.details}`); });
+  $('#level').onchange = e => { hls.currentLevel = +e.target.value; };
+  $('#audio').onchange = e => { hls.audioTrack = +e.target.value; };
+} else if (v.canPlayType('application/vnd.apple.mpegurl')) {
+  // Safari: eingebaute Wiedergabe; Stufen wählt der Browser selbst
+  state.engine = 'eingebaut (Safari)';
+  $('#level').disabled = true;
+  v.src = src;
+  const at = v.audioTracks;
+  const syncAudio = () => {
+    if (!at) return;
+    const list = [...at];
+    state.audio = list.map(t => `${t.language}:${t.label}`);
+    fill($('#audio'), list.map((t, i) => [String(i), `${t.label} (${t.language})`]), []);
+    const on = list.findIndex(t => t.enabled);
+    $('#audio').value = String(on);
+    state.audioTrack = on;
+    $('#now-audio').textContent = list[on] ? list[on].label : '–';
+  };
+  at?.addEventListener?.('addtrack', syncAudio);
+  at?.addEventListener?.('change', syncAudio);
+  $('#audio').onchange = e => { [...at].forEach((t, i) => t.enabled = String(i) === e.target.value); };
+  v.addEventListener('resize', () => { $('#now').textContent = `${v.videoWidth}×${v.videoHeight}`; state.level = `${v.videoWidth}x${v.videoHeight}`; });
+  v.addEventListener('error', () => fail(v.error?.message || 'Wiedergabe fehlgeschlagen'));
+  v.play().catch(() => {});
+} else {
+  fail('Dieser Browser spielt kein HLS');
+}
+$('#engine').textContent = state.engine || '–';
+</script>
+</body>
+</html>

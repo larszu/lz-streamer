@@ -52,6 +52,7 @@ function fillForm() {
   if (![...sel.options].some(o => o.value === key)) sel.add(new Option(`${v.width}×${v.height} ${v.fps} fps`, key));
   sel.value = key;
   if (document.activeElement !== $('#bitrate')) $('#bitrate').value = fmt.format(v.bitrate_kbps / 1000);
+  if (document.activeElement !== $('#hls-ladder')) $('#hls-ladder').value = (cfg.encoder.hls?.ladder || []).map(r => r.bitrate_kbps ? `${r.height}:${r.bitrate_kbps}` : `${r.height}`).join(', ');
   applyVisibility();
 }
 
@@ -99,6 +100,14 @@ for (const seg of $$('[data-seg]')) {
     changed(seg.dataset.seg, b.dataset.v);
   });
 }
+// ABR-Stufen als „720:4000, 480“ (ohne Bitrate: geschätzt)
+$('#hls-ladder').addEventListener('input', e => {
+  const ladder = e.target.value.split(/[,;\s]+/).filter(Boolean).map(t => {
+    const [h, b] = t.split(':').map(x => parseInt(x, 10));
+    return { height: Number.isFinite(h) ? h : 0, bitrate_kbps: Number.isFinite(b) ? b : 0 };
+  }).filter(r => r.height > 0);
+  changed('encoder.hls.ladder', ladder);
+});
 $('#format').addEventListener('change', e => {
   const [, w, h, f] = e.target.value.match(/(\d+)x(\d+)@(\d+)/);
   Object.assign(cfg.encoder.video, { width: +w, height: +h, fps: +f });
@@ -231,6 +240,10 @@ function render(st) {
     tile('Neustarts', fmt0.format(rt.restarts), '', rt.restarts ? 'warn' : ''),
   ].join('');
 
+  // ABR-Stufen und Hochladen
+  const abr = (s?.abr || []).map(r => `${esc(r.resolution)} ${fmt.format(r.fps)} Bilder/s`).join(' · ');
+  const up = s?.hls_upload;
+  $('#hls-state').textContent = [abr && `Stufen: ${abr}`, up && `Hochgeladen: ${fmt0.format(up.uploaded)} Dateien${up.last_error ? ` – Fehler: ${up.last_error}` : ''}`].filter(Boolean).join(' – ');
 
   // Ereignisse (neueste oben)
   $('#ev-restarts').textContent = rt.restarts ? `${rt.restarts} Neustart${rt.restarts > 1 ? 's' : ''}` : '';

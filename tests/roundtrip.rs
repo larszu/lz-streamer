@@ -1057,3 +1057,78 @@ fn hls_output_with_two_languages() {
     assert!(probe.contains("audio,de") && probe.contains("audio,en"), "Sprachen fehlen: {probe}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Keyframe-Zeiten (PTS in 90 kHz) aller Segmente einer Medien-Playlist
+fn hls_keyframes(dir: &std::path::Path, playlist: &str) -> Vec<i64> {
+    let text = std::fs::read_to_string(dir.join(playlist)).unwrap();
+    let segs: Vec<String> = text.lines().filter(|l| !l.starts_with('#') && !l.is_empty()).map(|l| dir.join(l).to_string_lossy().to_string()).collect();
+    let out = std::process::Command::new("ffprobe")
+        .args(["-v", "error", "-select_streams", "v:0", "-show_entries", "packet=pts,flags", "-of", "csv=p=0"])
+        .arg(format!("concat:{}", segs.join("|")))
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter(|l| l.contains(",K"))
+        .filter_map(|l| l.split(',').next()?.parse().ok())
+        .collect()
+}
+
+/// KB-30: drei Bildstufen gleichzeitig, Keyframes auf denselben PTS, Master-Playlist mit drei Varianten.
+#[test]
+fn hls_abr_ladder_aligned_keyframes() {
+    init();
+    // Hardware zuerst, dann der Software-Rückfall
+    for enc in ["auto", "x264enc"] {
+        if enc == "auto" || gstreamer::ElementFactory::find(enc).is_some() {
+            abr_ladder_with(enc);
+        }
+    }
+}
+
+fn abr_ladder_with(encoder: &str) {
+    use lz_streamer::config::CaptionSource;
+    let port = free_port();
+    let dir = std::env::temp_dir().join(format!("lzs-abr-{port}"));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut cfg = encoder_cfg(port, SrtMode::Listener);
+    cfg.video.width = 1280;
+    cfg.video.height = 720;
+    cfg.video.bitrate_kbps = 3000;
+    cfg.video.encoder = encoder.into();
+    cfg.captions.source = CaptionSource::Live;
+    cfg.hls.enabled = true;
+    cfg.hls.dir = dir.to_string_lossy().to_string();
+    cfg.hls.segment_s = 1;
+    let mut enc = Channel::start_encoder(&cfg, &[], &ChannelOptions::default()).unwrap();
+    let end = Instant::now() + Duration::from_secs(8);
+    let mut st = None;
+    while Instant::now() < end {
+        st = Some(status(&mut enc).0);
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    let st = st.unwrap();
+    enc.stop();
+    eprintln!("Encoder {:?}, Stufen {:?}", st.encoder, st.abr);
+    assert_eq!(st.abr.len(), 2, "{:?}", st.abr);
+    assert!(st.abr.iter().all(|r| r.fps > 20.0), "{:?}", st.abr);
+    let master = std::fs::read_to_string(dir.join("index.m3u8")).unwrap();
+    assert_eq!(master.matches("#EXT-X-STREAM-INF").count(), 3, "{master}");
+    let k0 = hls_keyframes(&dir, "v.m3u8");
+    let k1 = hls_keyframes(&dir, "v1.m3u8");
+    let k2 = hls_keyframes(&dir, "v2.m3u8");
+    eprintln!("Keyframes v: {k0:?}\nv1: {k1:?}\nv2: {k2:?}");
+    assert!(k0.len() >= 4, "{k0:?}");
+    // gemeinsamer Zeitraum: dort müssen alle Keyframes übereinstimmen
+    let lo = *[k0[0], k1[0], k2[0]].iter().max().unwrap();
+    let hi = *[*k0.last().unwrap(), *k1.last().unwrap(), *k2.last().unwrap()].iter().min().unwrap();
+    let win = |k: &[i64]| k.iter().copied().filter(|&p| p >= lo && p <= hi).collect::<Vec<_>>();
+    assert!(win(&k0).len() >= 3, "zu kurzer gemeinsamer Zeitraum {lo}..{hi}");
+    assert_eq!(win(&k0), win(&k1), "Stufe 1 weicht ab");
+    assert_eq!(win(&k0), win(&k2), "Stufe 2 weicht ab");
+    let v2 = std::fs::read_to_string(dir.join("v2.m3u8")).unwrap();
+    let seg = v2.lines().rfind(|l| l.ends_with(".ts")).unwrap();
+    let out = std::process::Command::new("ffprobe").args(["-v", "error", "-show_entries", "stream=width,height", "-of", "csv=p=0"]).arg(dir.join(seg)).output().unwrap();
+    assert!(String::from_utf8_lossy(&out.stdout).contains("640,360"), "{}", String::from_utf8_lossy(&out.stdout));
+    let _ = std::fs::remove_dir_all(&dir);
+}

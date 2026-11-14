@@ -232,6 +232,12 @@ pub fn encoder_description(cfg: &EncoderConfig, parts: &EncoderParts) -> String 
     d.push(format!("{enc_src} ! {} name=venc ! {pcaps}{parser} config-interval=-1{inserter} ! tee name=ve", parts.encoder));
     // HLS: Bild-Rendition (die Ton-Renditionen folgen bei den Tonspuren)
     d.extend(crate::hls::branches(cfg).into_iter().take(1));
+    // ABR-Leiter: weitere Bildstufen aus demselben Rohbild wie der Haupt-Encoder
+    let rung_src = if burn == BurnTarget::All { "vb" } else { "vt" };
+    let rung_tail = |i: usize| {
+        if cfg.captions.source != CaptionSource::Off { format!(" ! {} name=ccins_r{i}", cc_inserter(cfg.video.codec)) } else { String::new() }
+    };
+    d.extend(crate::hls::rung_branches(cfg, rung_src, parts.encoder, &rung_tail));
     if let Some(b) = caption_branch(cfg) {
         d.push(b);
     }

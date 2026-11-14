@@ -56,6 +56,7 @@ const INDEX: &str = include_str!("../web/index.html");
 const CSS: &str = include_str!("../web/app.css");
 const JS: &str = include_str!("../web/app.js");
 const HLS_JS: &str = include_str!("../web/vendor/hls.min.js");
+const HLS_TEST: &str = include_str!("../web/hls-test.html");
 const FONT: &[u8] = include_bytes!("../web/fonts/public-sans-latin-wght-normal.woff2");
 const FONT_EXT: &[u8] = include_bytes!("../web/fonts/public-sans-latin-ext-wght-normal.woff2");
 const COOKIE: &str = "lzs_session";
@@ -83,6 +84,7 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/renderer", get(renderer_ws))
         .route("/hls/{name}", get(hls_file))
         .route("/metrics", get(metrics))
+        .route("/hls-test", get(|| async { asset("text/html; charset=utf-8", HLS_TEST) }))
         .route("/api/state", get(state))
         .route("/api/config", get(get_config).put(put_config))
         .route("/api/start", post(start))

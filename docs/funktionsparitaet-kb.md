@@ -71,7 +71,7 @@ Ohne die entfallenden Punkte sind 36 von 59 Funktionen fertig (61 %), dazu 14 in
 | 27 | Framing IP/IBP/IBBP/IBBBP | Teil | nur IP, bewusst für Latenz; B-Frames wählbar machen | S |
 | 28 | Profil, Level, Entropie, Performance-Stufe | Teil | Encoder-Vorgaben latenzarm, nicht einzeln wählbar | S |
 | 29 | GOP-Modus und -Dauer | fertig | Dauer in ms | – |
-| 30 | Mehrere Video-Encoder je Kanal (ABR-Leiter) | **fehlt** | siehe §6 | L |
+| 30 | Mehrere Video-Encoder je Kanal (ABR-Leiter) | fertig | eigene Encoder je Stufe aus demselben Rohbild, Keyframes auf gemeinsamem Raster; Last in `abr-leiter.md` | – |
 | 31 | AAC mit Sprache und Bitrate | fertig | je Spur | – |
 | 32 | Hochskalieren | fertig (mehr) | HD → UHD in Echtzeit, Lanczos e3; gemessen in `skalierung.md` | – |
 
@@ -86,7 +86,7 @@ Ohne die entfallenden Punkte sind 36 von 59 Funktionen fertig (61 %), dazu 14 in
 | 37 | SRT Overhead-Bandbreite | Teil | libsrt-Vorgabe, nicht einstellbar | S |
 | 38 | TS über UDP/RTP (auch Multicast) | fertig | als weitere Ausgänge | – |
 | 39 | Mehrere Ausgänge je Kanal | fertig | beliebig viele SRT/UDP/RTP + RTMP | – |
-| 40 | HLS/DASH/CMAF | **fehlt** | siehe §6 | M |
+| 40 | HLS/DASH/CMAF | Teil | HLS (TS oder CMAF) mit ABR-Stufen, allen Tonspuren, 608 als CC, Upload per HTTP PUT; geprüft mit hls.js in Chrome. Offen: Safari-Abnahme, DASH (`abr-leiter.md`) | S |
 | 41 | Aufnahme (Archiv) | fertig | parallel, TS oder fragmentiertes MP4, Segmente, alle Tonspuren | – |
 | 42 | Aufnahmen-Seite (Liste, Download) | fertig | Liste, Download, Löschen | – |
 
@@ -118,7 +118,7 @@ Ohne die entfallenden Punkte sind 36 von 59 Funktionen fertig (61 %), dazu 14 in
 |---|---|---|---|---|
 | 60 | SCTE-35/104, Werbe-Cue-Punkte | **fehlt** | Übersetzer SCTE-104 → 35 mit IDR am Splice-Punkt | L |
 | 61 | Ancillary: AFD, Timecode, Durchreichen | **fehlt** | VANC-Parser aus lz-scopes übernehmen, ST 2038 | M |
-| 62 | Diskontinuität als Ereignis durch die Pipeline | Teil | Ereignis im Protokoll; kein In-band-Signal für HLS/RTMP | M |
+| 62 | Diskontinuität als Ereignis durch die Pipeline | fertig | HLS: `#EXT-X-DISCONTINUITY` nach Kanal-Neustart, Sequenz läuft weiter; Standbild hält Zeitachse und Format, braucht keine Marke (`abr-leiter.md`) | – |
 | 63 | Cloud-Anbindung (Geräteregistrierung, CDN-Logins) | entfällt bewusst | Fernzugriff per Tunnel; Geräteseite in lz-camera-bridge | – |
 | 64 | Metriken in Zeitreihen-DB | fertig | `/metrics` im Prometheus-Format (Bitrate, SRT-RTT, Verluste, Wiederholungen, Lautheit je Spur, CPU/GPU, Bilder/s, Neustarts, Signal, Alarme); Influx-Line-Protocol per HTTP-Push | – |
 
@@ -128,10 +128,10 @@ Gezählt sind die 9 fehlenden Funktionen und die drei Teilfunktionen mit dem gr�
 
 | Punkt | Warum noch nicht |
 |---|---|
-| Mehrkanal (#2), ABR-Leiter (#30) | Umbau von Aufpasser, Statusmodell und Oberfläche auf Kanallisten; eigener PR |
+| Mehrkanal (#2) | Umbau von Aufpasser, Statusmodell und Oberfläche auf Kanallisten; eigener PR |
 | Netz-Eingänge mit Umkodieren (#13) | eigener Eingangszweig (srtsrc/udpsrc → decodebin → Umschalter); braucht Tests mit Formatwechsel |
 | CEA-608/708 (#20), SCTE (#60), Ancillary (#61) | braucht VANC aus dem DeckLink-Eingang; ohne angestecktes Gerät nicht prüfbar |
-| HLS/CMAF (#40) | `hlscmafsink` vorhanden; Speicherort, Auslieferung und Aufräumen fehlen noch |
+| DASH (#40) | `dashsink` legt jede Stufe als eigenes AdaptationSet ohne Sprachkennung an; sinnvoll ist ein eigenes MPD über die CMAF-Segmente |
 | HTTPS (#56) | selbstsigniertes Zertifikat oder Tunnel; Entscheidung bei Lars (Tunnel ist im Haus üblich) |
 | Upload-Ziele (#52) | klein; nach Mehrkanal sinnvoller |
 | Interlaced-Ausgabe (#26), Deinterlacing-Wahl (#17) | erst mit 1080i-Quelle an echter Hardware sinnvoll zu messen |

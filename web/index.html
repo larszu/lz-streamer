@@ -193,7 +193,14 @@
               <label class="field"><span>Segmente in der Playlist</span><input class="input" data-path="encoder.hls.playlist_length" data-num inputmode="numeric"></label>
               <label class="field"><span>Segmentformat</span><select class="input" data-path="encoder.hls.format"><option value="ts">MPEG-TS (Chrome, Safari, hls.js)</option><option value="cmaf">CMAF/fMP4</option></select></label>
             </div>
-            <p class="hint">Abspielen über <code id="hls-url">/hls/index.m3u8</code> (Safari, hls.js). Die Latenz liegt bei etwa drei Segmenten.</p>
+            <label class="switch"><input type="checkbox" data-path="encoder.hls.abr"> ABR-Leiter: weitere Bildstufen mit eigenem Encoder</label>
+            <label class="field"><span>Stufen (Höhe:kbit/s, leer = Vorschlag)</span><input class="input" id="hls-ladder" placeholder="z. B. 720:4000, 480:2000"></label>
+            <div class="row2">
+              <label class="field"><span>Hochladen per HTTP PUT (leer = nur lokal)</span><input class="input" data-path="encoder.hls.upload_url" placeholder="https://ingest.example/live" spellcheck="false"></label>
+              <label class="field"><span>Kopfzeile beim Hochladen</span><input class="input" data-path="encoder.hls.upload_header" placeholder="Authorization: Bearer …" spellcheck="false"></label>
+            </div>
+            <label class="switch"><input type="checkbox" data-path="encoder.hls.upload_delete"> Alte Segmente am Ziel löschen (HTTP DELETE)</label>
+            <p class="hint">Abspielen über <code id="hls-url">/hls/index.m3u8</code> (Safari, hls.js) oder in der <a href="/hls-test" target="_blank" rel="noopener">Testwiedergabe</a> mit Stufen-, Ton- und Untertitelwahl. Die Latenz liegt bei etwa drei Segmenten. <span id="hls-state"></span></p>
             <p class="group-title">Aufnahme parallel</p>
             <label class="switch"><input type="checkbox" data-path="encoder.record.enabled"> Mitschneiden, solange gesendet wird</label>
             <div class="row2">

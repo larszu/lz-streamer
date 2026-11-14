@@ -44,6 +44,15 @@ Eigener Video-Encoder und -Decoder: **Eingang → Encoder → SRT** (dazu option
 - **Schalter live:** Untertitel, Klare Sprache, Lautheitsregelung samt Profil, Plugin-Umgehung und Grafik lassen sich während der Sendung umschalten, ohne dass der Kanal neu startet. Das geht in der Karte „Schalter“, über `/api/control` oder per OSC, etwa aus Companion.
 - **Keine Pflichtfelder:** Ein leerer Start ergibt einen SRT-Listener auf Port 9000 mit Testbild. Fehlt etwas, erscheint ein Hinweis, gesperrt wird nichts.
 
+## HLS und ABR-Leiter
+
+- HLS als MPEG-TS (Vorgabe) oder CMAF unter `/hls/index.m3u8`, alle Tonspuren als wählbare Sprachen, Untertitel als CEA-608 (CC1/CC3).
+- ABR-Leiter: weitere Bildstufen mit eigenem Encoder (Vorschlag 1080p → 720p/480p, 2160p → 1080p/720p, frei wählbar). Die Keyframes aller Stufen liegen auf denselben Bildern, Segmente sind darum umschaltbar.
+- Hochladen per HTTP PUT an ein Ziel (Segmente vor der Playlist, mit Wiederholung, wahlweise Löschen per DELETE).
+- Nach einem Kanal-Neustart läuft die Playlist mit `#EXT-X-DISCONTINUITY` weiter, laufende Player bleiben dran.
+- Testwiedergabe unter `/hls-test` mit Stufen-, Ton- und Untertitelwahl; Prüfung in Chrome: `node scripts/hls/wiedergabe-pruefen.mjs http://127.0.0.1:<Port>/hls-test --neustart`.
+- Last und Grenzen: [docs/abr-leiter.md](docs/abr-leiter.md).
+
 ## Gemessen (MacBook Pro M1 Pro, 05.11.2026)
 
 `lz-streamer latenz` misst ohne Kamera. Encoder und Decoder laufen im selben Prozess, über SRT auf 127.0.0.1. Das Testbild springt von Schwarz auf Weiß, und die Zeit läuft, bis der Decoder-Ausgang hell wird. Nicht enthalten sind Kamera, Capture, Netz und Bildschirm.
@@ -200,7 +209,7 @@ Reihenfolge nach `haivision-kb-analyse/docs/nachbau-konzept.md` §5–§7:
 2. **A/V-Sync über Tage:** DeckLink-Uhr als Pipeline-Uhr, Ton-PTS aus dem Samplezähler, adaptives Resampling, 72-h-Dauertest.
 3. **Ancillary:** CEA-608/708 aus VANC nach SEI, ST 2038, **SCTE-104 → SCTE-35** mit IDR am Splice-Punkt.
 4. **Redundanz:** SRT Socket Groups (broadcast/backup) über zwei Netze, FEC/RIST, SMPTE 2022-7 – Voraussetzung für Ziele wie 120 ms interkontinental (§5.8).
-5. **Mehrkanal**, ABR-Leiter, HLS/CMAF.
+5. **Mehrkanal**, DASH.
 6. **4:2:2 10-bit** (NVENC Blackwell / VideoToolbox), HDR-Kennzeichnung (PQ/HLG).
 7. **Decoder:**
    - Latenzarmer UHD-HEVC-Decode am Mac, denn `vtdec_hw` puffert, siehe Messung

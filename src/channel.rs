@@ -50,6 +50,12 @@ pub struct ChannelStatus {
     pub graphics: Option<GfxStatus>,
     pub luma: Option<f64>,
     pub uptime_s: f64,
+    /// weitere Bildstufen der ABR-Leiter
+    #[serde(default)]
+    pub abr: Vec<AbrStatus>,
+    /// HLS-Hochladen per HTTP PUT
+    #[serde(default)]
+    pub hls_upload: Option<crate::hlsupload::UploadStatus>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -271,6 +277,9 @@ pub struct Channel {
     rec_start_ns: u64,
     /// so viele Zeilen stehen schon in den Untertiteldateien (None = neu schreiben)
     cues_written: Option<usize>,
+    abr: Vec<AbrRung>,
+    publisher: Option<crate::hlsplaylist::Publisher>,
+    uploader: Option<crate::hlsupload::Uploader>,
 }
 
 /// Text in die Live-Untertitelquelle `ccin` schieben (etwas in die Zukunft
@@ -546,6 +555,78 @@ fn set_props(el: &gst::Element, props: &[(&str, String)], events: &Events) {
     }
 }
 
+/// Eine laufende Stufe der ABR-Leiter mit Bildzähler
+struct AbrRung {
+    resolution: String,
+    bitrate_kbps: u32,
+    frames: Arc<AtomicU64>,
+    last: (Instant, u64),
+    fps: f64,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct AbrStatus {
+    pub resolution: String,
+    pub bitrate_kbps: u32,
+    /// codierte Bilder je Sekunde
+    pub fps: f64,
+}
+
+const KEY_ALIGN: &str = "lz-keyalign";
+
+/// ABR-Leiter einrichten: Encoder der Stufen wie den Haupt-Encoder einstellen,
+/// Keyframes aller Bild-Encoder auf ein gemeinsames Raster legen und die
+/// Segmentierer keine eigenen Keyframes anfordern lassen.
+fn setup_abr(pipeline: &gst::Pipeline, cfg: &EncoderConfig, factory: &str, events: &Events) -> Vec<AbrRung> {
+    let rungs = crate::hls::rungs(cfg);
+    if rungs.is_empty() || pipeline.by_name("venc_r1").is_none() {
+        return Vec::new();
+    }
+    let align = Arc::new(crate::hls::KeyAlign::new(cfg.video.gop_frames(), cfg.video.fps));
+    let mut out = Vec::new();
+    let encoders = std::iter::once(("venc".to_string(), None)).chain(rungs.iter().map(|r| (format!("venc_r{}", r.index), Some(r))));
+    for (name, rung) in encoders {
+        let Some(enc) = pipeline.by_name(&name) else { continue };
+        if let Some(r) = rung {
+            set_props(&enc, &caps::encoder_props(factory, r.bitrate_kbps, cfg.video.gop_frames()), events);
+            set_props(&enc, &caps::option_props(factory, &cfg.video), events);
+            let frames = Arc::new(AtomicU64::new(0));
+            let f = frames.clone();
+            enc.static_pad("src").unwrap().add_probe(gst::PadProbeType::BUFFER, move |_, _| {
+                f.fetch_add(1, Ordering::Relaxed);
+                gst::PadProbeReturn::Ok
+            });
+            out.push(AbrRung { resolution: format!("{}×{}", r.width, r.height), bitrate_kbps: r.bitrate_kbps, frames, last: (Instant::now(), 0), fps: 0.0 });
+        }
+        // x264 setzt sonst bei Szenenwechseln eigene Keyframes
+        if factory == "x264enc" {
+            let s: String = enc.property("option-string");
+            enc.set_property("option-string", format!("{s}:scenecut=0").trim_start_matches(':'));
+        }
+        let a = align.clone();
+        let st = Mutex::new(crate::hls::KeyState::default());
+        enc.static_pad("sink").unwrap().add_probe(gst::PadProbeType::BUFFER, move |pad, info| {
+            if let Some(pts) = info.buffer().and_then(|b| b.pts())
+                && a.should_force(&mut st.lock().unwrap(), pts.nseconds())
+            {
+                let ev = gstreamer_video::DownstreamForceKeyUnitEvent::builder().all_headers(true).build();
+                pad.send_event(ev);
+            }
+            gst::PadProbeReturn::Ok
+        });
+    }
+    for i in 0..=rungs.len() {
+        let name = if i == 0 { "hlsv".to_string() } else { format!("hlsv{i}") };
+        if let Some(s) = pipeline.by_name(&name).filter(|s| s.find_property("send-keyframe-requests").is_some()) {
+            s.set_property("send-keyframe-requests", false);
+        }
+    }
+    // SAFETY: Der Wert wird nur unter diesem Schlüssel und nur als Arc<KeyAlign> gelesen (force_keyframe).
+    unsafe { pipeline.set_data(KEY_ALIGN, align) };
+    event(events, "info", format!("ABR-Leiter: {} weitere Stufen", out.len()));
+    out
+}
+
 struct StartError {
     source: String,
     text: String,
@@ -602,9 +683,21 @@ impl Channel {
     }
 
     pub fn start_encoder(cfg: &EncoderConfig, devices: &[CaptureDevice], opts: &ChannelOptions) -> Result<Self> {
+        let mut cfg_run = cfg.clone();
+        let mut publisher = None;
         if cfg.hls.enabled && !cfg.hls.dir.trim().is_empty() {
-            crate::hls::prepare_dir(cfg).with_context(|| format!("HLS-Ordner {}", cfg.hls.dir))?;
+            // eindeutige Kennung je Start: Segmente überschreiben nichts, was ein Player noch lädt
+            let ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
+            cfg_run.hls.generation = format!("{:x}", ms % 0xff_ffff_ffff);
+            let resume = crate::hls::prepare_dir(&cfg_run).with_context(|| format!("HLS-Ordner {}", cfg.hls.dir))?;
+            publisher = Some(crate::hlsplaylist::Publisher::start(
+                PathBuf::from(cfg.hls.dir.trim()),
+                crate::hls::rendition_names(&cfg_run),
+                cfg.hls.playlist_length.max(3) as usize,
+                resume,
+            ));
         }
+        let cfg = &cfg_run;
         crate::lzloudness::register();
         crate::plugin::register();
         crate::clearspeech::register();
@@ -694,6 +787,7 @@ impl Channel {
                     pad.set_property("priority", 0u32);
                 }
             }
+            let abr = setup_abr(&pipeline, cfg, enc.factory, &events);
             hook_preview(&pipeline, opts.preview_path.clone());
             configure_audio(&pipeline, cfg);
             let cc: Arc<CaptionCounter> = Arc::default();
@@ -825,6 +919,16 @@ impl Channel {
                         caption_seen: None,
                         rec_start_ns: 0,
                         cues_written: None,
+                        abr,
+                        publisher: publisher.take(),
+                        uploader: (cfg.hls.enabled && !cfg.hls.upload_url.trim().is_empty() && !cfg.hls.dir.trim().is_empty()).then(|| {
+                            crate::hlsupload::Uploader::start(
+                                PathBuf::from(cfg.hls.dir.trim()),
+                                cfg.hls.upload_url.trim().to_string(),
+                                cfg.hls.upload_header.clone(),
+                                cfg.hls.upload_delete,
+                            )
+                        }),
                         cc,
                         outputs: cfg
                             .outputs
@@ -1067,7 +1171,10 @@ impl Channel {
             gfx: None,
             caption_seen: None,
             rec_start_ns: 0,
-                        cues_written: None,
+            cues_written: None,
+            abr: Vec::new(),
+            publisher: None,
+            uploader: None,
         })
     }
 
@@ -1208,6 +1315,9 @@ impl Channel {
             return;
         }
         self.stopped = true;
+        if let Some(u) = self.uploader.as_mut() {
+            u.stop();
+        }
         if let Some(r) = self.rtmp.as_mut() {
             r.stop();
         }
@@ -1254,6 +1364,9 @@ impl Channel {
         let _ = self.pipeline.set_state(gst::State::Null);
         if std::env::var("LZS_STOP_DEBUG").is_ok() {
             eprintln!("Null nach {:?}", t.elapsed());
+        }
+        if let Some(p) = self.publisher.as_mut() {
+            p.stop();
         }
     }
 
@@ -1388,6 +1501,14 @@ impl Channel {
             );
             self.last_tick = (now, bytes, frames);
         }
+        for r in &mut self.abr {
+            let n = r.frames.load(Ordering::Relaxed);
+            let dt = now.duration_since(r.last.0).as_secs_f64();
+            if dt >= 0.9 {
+                r.fps = (n - r.last.1) as f64 / dt;
+                r.last = (now, n);
+            }
+        }
         let signal = match (deck_signal, standby, self.role) {
             (Some(true), Some(false), _) => "ok",
             (Some(false), _, _) | (_, Some(true), _) => "lost",
@@ -1471,6 +1592,8 @@ impl Channel {
             },
             luma: self.counters.luma(),
             uptime_s: self.started.elapsed().as_secs_f64().round(),
+            abr: self.abr.iter().map(|r| AbrStatus { resolution: r.resolution.clone(), bitrate_kbps: r.bitrate_kbps, fps: (r.fps * 10.0).round() / 10.0 }).collect(),
+            hls_upload: self.uploader.as_ref().map(|u| u.status()),
         };
         out.splice(0..0, self.events.lock().unwrap().drain(..));
         out.push(ChildMsg::Status(status));
@@ -1495,6 +1618,12 @@ impl Drop for Channel {
 }
 
 fn force_keyframe(pipeline: &gst::Pipeline) {
+    // Mit ABR-Leiter alle Stufen auf demselben Bild, sonst nur den Haupt-Encoder
+    // SAFETY: unter KEY_ALIGN liegt nur ein Arc<KeyAlign> (setup_abr).
+    if let Some(a) = unsafe { pipeline.data::<Arc<crate::hls::KeyAlign>>(KEY_ALIGN) } {
+        unsafe { a.as_ref() }.request_now();
+        return;
+    }
     if let Some(src) = pipeline.by_name("venc").and_then(|e| e.static_pad("src")) {
         let ev = gstreamer_video::UpstreamForceKeyUnitEvent::builder().all_headers(true).build();
         src.send_event(ev);
