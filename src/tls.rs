@@ -197,7 +197,7 @@ impl CertStore {
 }
 
 /// Datei nur für den Eigentümer lesbar schreiben
-fn write_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
+pub fn write_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let tmp = path.with_extension("tmp");
     {
         let mut o = std::fs::OpenOptions::new();

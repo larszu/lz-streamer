@@ -126,6 +126,10 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/api/models/{name}", delete(model_delete))
         .route("/api/recordings", get(recordings))
         .route("/api/recordings/{name}", get(recording_get).delete(recording_delete))
+        .route("/api/recordings/{name}/upload", post(recording_upload))
+        .route("/api/uploads", get(uploads_get).put(uploads_put))
+        .route("/api/uploads/retry", post(uploads_retry))
+        .route("/api/uploads/clear", post(uploads_clear))
         // Anmeldung
         .route("/api/login", post(login))
         .route("/api/logout", post(logout))
@@ -359,6 +363,7 @@ async fn state(State(app): S, headers: HeaderMap) -> impl IntoResponse {
         "controls": control_list(&app).await,
         "user": {"open": open, "name": me.as_ref().map(|m| m.0.clone()), "role": me.map(|m| m.1).unwrap_or(Role::Admin)},
         "https": app.https.load(std::sync::atomic::Ordering::Relaxed),
+        "uploads": app.ops.uploads.status().await,
         "version": env!("CARGO_PKG_VERSION"),
     }))
 }
@@ -780,6 +785,53 @@ async fn recording_delete(State(app): S, Path(name): Path<String>) -> Response {
         }
         Err(e) => err(StatusCode::NOT_FOUND, e.to_string()),
     }
+}
+
+/// Aufnahme (samt Untertiteln) von Hand für alle eingeschalteten Ziele einreihen
+async fn recording_upload(State(app): S, Path(name): Path<String>) -> Response {
+    let Some(n) = admin::safe_name(&name) else { return err(StatusCode::BAD_REQUEST, "Ungültiger Name") };
+    let cfg = app.sup.config().await;
+    let path = record_dir(&app, &cfg).join(&n);
+    if !path.is_file() {
+        return err(StatusCode::NOT_FOUND, "Aufnahme nicht gefunden");
+    }
+    let jobs = app.ops.uploads.enqueue(&path, std::time::Duration::ZERO).await;
+    if jobs == 0 {
+        return err(StatusCode::BAD_REQUEST, "Kein Upload-Ziel eingeschaltet");
+    }
+    Json(json!({"ok": true, "jobs": jobs})).into_response()
+}
+
+// ------------------------------------------------------------ Upload-Ziele
+
+/// Einstellungen ohne Geheimnisse (`has_secret` zeigt, ob eines gesetzt ist)
+async fn uploads_get(State(app): S) -> impl IntoResponse {
+    Json(app.ops.uploads.settings.lock().await.redacted())
+}
+
+/// Speichern; leeres Geheimnis = bisheriges behalten, `clear_secret: true` löscht es
+async fn uploads_put(State(app): S, Json(v): Json<serde_json::Value>) -> Response {
+    let clear: Vec<bool> = v["targets"].as_array().map(|a| a.iter().map(|t| t["clear_secret"].as_bool().unwrap_or(false)).collect()).unwrap_or_default();
+    let mut s: crate::upload::UploadSettings = match serde_json::from_value(v) {
+        Ok(s) => s,
+        Err(e) => return err(StatusCode::BAD_REQUEST, e.to_string()),
+    };
+    let old = app.ops.uploads.settings.lock().await.clone();
+    s.merge_secrets(&old, &clear);
+    match app.ops.uploads.save_settings(s).await {
+        Ok(()) => ok(),
+        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    }
+}
+
+async fn uploads_retry(State(app): S) -> Response {
+    app.ops.uploads.retry_now().await;
+    ok()
+}
+
+async fn uploads_clear(State(app): S) -> Response {
+    app.ops.uploads.clear_queue().await;
+    ok()
 }
 
 // ------------------------------------------------------------ Whisper-Modelle

@@ -30,6 +30,7 @@ Eigener Video-Encoder und -Decoder: **Eingang → Encoder → SRT** (dazu option
 - **Plugins je Tonspur, VST3 und am Mac Audio Units** (z. B. LZ Defeedback, Apples AU-Effekte): Das Plugin läuft in einem eigenen Hilfsprozess. Stürzt es ab oder antwortet es nicht innerhalb einer halben Blockdauer, geht der Ton unbearbeitet weiter, ohne Lücke und ohne Neustart des Kanals; der Hilfsprozess startet von selbst neu. Die Anzeige je Spur zeigt „aktiv“ oder „Bypass“. Gefunden werden die Plugins in den üblichen VST3-Ordnern und über die AU-Registrierung des Mac. Jedes wird beim ersten Mal in einem eigenen Prozess geprüft. Wer dabei abstürzt oder hängt, kommt auf eine Sperrliste. Das Ergebnis bleibt zwischengespeichert, „Plugins neu suchen“ prüft erneut.
 - **Mehrere Ausgänge** aus demselben Strom: weitere SRT-Ziele (auch Rendezvous), TS über UDP/RTP (auch Multicast), dazu RTMP.
 - **Aufnahme parallel** zum Stream: TS oder fragmentiertes MP4, Segmente, alle Tonspuren. Mit Untertiteln liegen neben jedem Segment `.srt` und `.vtt`, deren Zeiten aus dem gesendeten 608-Strom stammen. Eine zweite Untertitelsprache liegt auf CC3. Mit Spracherkennung übersetzt Whisper ins Englische, bei Live-Text kommt sie aus einem eigenen Eingabefeld. Der Decoder wählt CC1 oder CC3 ([Messung](docs/untertitel-messung.md)). Aufnahmen-Liste mit Download; älteste löschen, wenn die Platte voll wird.
+- **Upload fertiger Segmente** zu WebDAV, S3 oder SFTP, samt `.srt`/`.vtt`: Bandbreite in kbit/s begrenzbar (Token-Bucket für alle Uploads zusammen), Warteschlange auf Platte, nach einem Abbruch neuer Versuch mit wachsender Pause (5 s bis 10 min). WebDAV und S3 laden dann vollständig neu, SFTP setzt per `reput` fort. Auf Wunsch wird lokal gelöscht, sobald alle Ziele die Datei haben. S3 signiert selbst (SigV4, Nutzlast unsigniert) und nimmt höchstens 5 GB je Datei. Passwörter und Secret Keys liegen nur in `upload.json` (Rechte 0600) und kommen nie über API, Oberfläche, Diagnose oder Export zurück.
 - **Verwaltung:**
   - Profile (mitgelieferte und eigene)
   - Zeitplan: wöchentlich oder einmalig, mit Profilwahl
@@ -116,6 +117,7 @@ cargo test
 - **4 API-Tests** (`tests/api.rs`): Anmeldung und Rollen, Profile, Standbilder, Zeitplan, Alarme, Aufnahmen, Bericht.
 - **3 Überwachungstests** (`tests/alarm_mail.rs`): Ein lokaler Mini-SMTP-Server empfängt die Alarm-Mail bei nachgestelltem Signalverlust und die Entwarnung. Passwort und Token tauchen in keiner Antwort auf. `/metrics` prüft Anmeldung, HTTP-Basic und Freigabe.
 - **2 HTTPS-Tests** (`tests/https.rs`): `/api/state` über TLS 1.3 und 1.2 (rustls-Client), Zertifikat für IP und Namen, eigenes Zertifikat gilt ohne Neustart, falscher Schlüssel wird abgelehnt, Renderer von einer Netzadresse abgelehnt, Klartext von außen umgeleitet.
+- **5 Upload-Tests** (`tests/upload.rs`): WebDAV-Ersatz (axum) mit Basic-Auth, Abbruch mitten im PUT und Neuversuch, gemessene Drosselung (4000 kbit/s eingestellt, ≈ 4040 gemessen); Warteschlange übersteht Neustart; S3-PUT mit vom Ersatz nachgerechneter Signatur; SFTP gegen eigenen `sshd` (Drosselung, `reput`); 4 MB Upload neben laufendem SRT-Durchlauf ohne Verluste, danach folgt das beendete Segment automatisch. SigV4 zusätzlich gegen zwei Beispielvektoren aus der AWS-Dokumentation.
 - **13 Integrationstests** laufen über echte SRT-Verbindungen auf 127.0.0.1:
   - Listener → Caller, Caller → Listener
   - H.265 sowie x264 in Software
@@ -162,7 +164,8 @@ lz-streamer serve ── axum (REST + Weboberfläche, eingebettet) ── Aufpas
 | `GET /metrics` | Messwerte im Prometheus-Textformat (siehe unten) |
 | `GET /api/diagnose.json` · `GET /api/config/export` | Diagnose-Paket (Passwörter geschwärzt) · Kanal als Datei (vollständig; einspielen mit `PUT /api/config`) |
 | `GET/POST /api/standby`, `GET/DELETE /api/standby/{name}`, `POST …/use` | Standbilder |
-| `GET /api/recordings`, `GET/DELETE /api/recordings/{name}` | Aufnahmen |
+| `GET /api/recordings`, `GET/DELETE /api/recordings/{name}`, `POST …/upload` | Aufnahmen; von Hand hochladen |
+| `GET/PUT /api/uploads`, `POST /api/uploads/retry` · `/clear` | Upload-Ziele (ohne Geheimnisse; leeres Feld = unverändert, `clear_secret: true` löscht) · sofort neu versuchen · Warteschlange leeren. Status steht in `/api/state` unter `uploads` |
 | `GET /api/plugins` · `POST /api/plugins/scan` | geprüfte Plugins und Sperrliste · neu prüfen |
 | `GET/POST /api/control` | schaltbare Eigenschaften lesen bzw. live umstellen, ohne Neustart: `{"path":"captions.enabled","value":false}`; Pfade siehe `src/control.rs`, benannt für NMOS IS-12. Per OSC: `/lzs/set/<pfad mit />` mit Wert, z. B. `/lzs/set/audio/tracks/0/plugins/0/bypass T` |
 | `GET/POST /api/graphics` | Zustand der Grafik-Ebenen; Befehl `{"action":"show","graphicId":"lz-lower-third","data":{…}}` (`load`, `show`, `play`, `next`, `prev`, `update`, `stop`, `clear`, `custom`) |
