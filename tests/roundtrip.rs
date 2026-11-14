@@ -1320,3 +1320,44 @@ fn abr_ladder_with(encoder: &str) {
     assert!(String::from_utf8_lossy(&out.stdout).contains("640,360"), "{}", String::from_utf8_lossy(&out.stdout));
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// KB-26: Halbbild-Ausgabe – 50 Halbbilder/s werden zu 25 Bildern mit oberem Halbbild zuerst,
+/// auch wenn „automatisch“ sonst VideoToolbox nähme.
+#[test]
+fn interlaced_output_tff() {
+    init();
+    if !lz_streamer::caps::element_available("x264enc") {
+        return;
+    }
+    let port = free_port();
+    let dir = std::env::temp_dir().join(format!("lzs-il-{port}"));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut cfg = encoder_cfg(port, SrtMode::Listener);
+    cfg.video.fps = 50;
+    cfg.video.interlaced = true;
+    cfg.record.enabled = true;
+    cfg.record.dir = dir.to_string_lossy().to_string();
+    let mut enc = Channel::start_encoder(&cfg, &[], &ChannelOptions::default()).unwrap();
+    let end = Instant::now() + Duration::from_secs(4);
+    let mut rec = None;
+    let mut encoder = None;
+    while Instant::now() < end {
+        let s = status(&mut enc).0;
+        rec = rec.or(s.recording);
+        encoder = encoder.or(s.encoder);
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    enc.stop();
+    assert_eq!(encoder.as_deref(), Some("x264enc"));
+    let rec = rec.unwrap();
+    let out = std::process::Command::new("ffprobe")
+        .args(["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=field_order,r_frame_rate,avg_frame_rate", "-of", "default=nw=1"])
+        .arg(&rec)
+        .output()
+        .unwrap();
+    let info = String::from_utf8_lossy(&out.stdout);
+    eprintln!("{info}");
+    assert!(info.contains("field_order=tt") || info.contains("field_order=tb"), "keine Halbbilder: {info}");
+    assert!(info.contains("avg_frame_rate=25/1") || info.contains("r_frame_rate=25/1") || info.contains("r_frame_rate=50/1"), "{info}");
+    let _ = std::fs::remove_dir_all(&dir);
+}

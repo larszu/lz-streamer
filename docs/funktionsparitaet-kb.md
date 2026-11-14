@@ -67,7 +67,7 @@ Ohne die entfallenden Punkte sind 38 von 59 Funktionen fertig (64 %), dazu 14 in
 | 23 | Bitrate | fertig | CBR | – |
 | 24 | Ausgabeauflösungen inkl. eigener | Teil | Liste 720p–2160p in der Oberfläche, beliebige über API; kleine Stufen (≤ 540p) nicht in der Liste | S |
 | 25 | Bildraten-Klassen | fertig | frei einstellbar 1–120 fps | – |
-| 26 | Bildstruktur progressiv/interlaced | Teil | nur progressiv | M |
+| 26 | Bildstruktur progressiv/interlaced | fertig | Halbbilder (oberes zuerst) aus progressiver Kette, x264; Test `interlaced_output_tff` | – |
 | 27 | Framing IP/IBP/IBBP/IBBBP | Teil | nur IP, bewusst für Latenz; B-Frames wählbar machen | S |
 | 28 | Profil, Level, Entropie, Performance-Stufe | Teil | Encoder-Vorgaben latenzarm, nicht einzeln wählbar | S |
 | 29 | GOP-Modus und -Dauer | fertig | Dauer in ms | – |
@@ -131,7 +131,7 @@ Gezählt sind die 7 fehlenden Funktionen und die drei Teilfunktionen mit dem gr�
 | Mehrkanal (#2) | Umbau von Aufpasser, Statusmodell und Oberfläche auf Kanallisten; eigener PR |
 | CEA-608/708 (#20), SCTE (#60), Ancillary (#61) | braucht VANC aus dem DeckLink-Eingang; ohne angestecktes Gerät nicht prüfbar |
 | DASH (#40) | `dashsink` legt jede Stufe als eigenes AdaptationSet ohne Sprachkennung an; sinnvoll ist ein eigenes MPD über die CMAF-Segmente |
-| Interlaced-Ausgabe (#26), Deinterlacing-Wahl (#17) | erst mit 1080i-Quelle an echter Hardware sinnvoll zu messen |
+| 1080i-Quelle an echter Hardware (Deinterlacing #17, Halbbild-Ausgabe #26) | Messung mit echtem SDI-Eingang steht aus |
 
 ## Netz-Eingänge (#13)
 

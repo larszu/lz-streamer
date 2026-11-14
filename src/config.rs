@@ -302,7 +302,8 @@ pub struct VideoConfig {
     pub level: String,
     #[serde(default)]
     pub entropy: Entropy,
-    /// Halbbilder ausgeben (x264), statt aufzulösen
+    /// Halbbilder ausgeben (nur H.264, x264): `fps` ist dann die Halbbildrate, 50 → 1080i50.
+    /// Der Eingang wird wie sonst aufgelöst und vor dem Encoder wieder in Halbbilder geteilt.
     #[serde(default)]
     pub interlaced: bool,
     /// freie Zusatzparameter für den Encoder: `name=wert name=wert`
@@ -368,7 +369,9 @@ impl Default for VideoConfig {
 
 impl VideoConfig {
     pub fn gop_frames(&self) -> u32 {
-        ((self.gop_ms as u64 * self.fps.max(1) as u64) / 1000).max(1) as u32
+        // Halbbilder: `fps` zählt Halbbilder (1080i50 = 25 Bilder/s)
+        let rate = if self.interlaced { (self.fps / 2).max(1) } else { self.fps.max(1) };
+        ((self.gop_ms as u64 * rate as u64) / 1000).max(1) as u32
     }
 }
 
@@ -840,9 +843,6 @@ impl Config {
         v.bitrate_kbps = v.bitrate_kbps.clamp(100, 200_000);
         v.gop_ms = v.gop_ms.clamp(40, 10_000);
         v.bframes = v.bframes.min(4);
-        if v.interlaced {
-            v.deinterlace = Deinterlace::Off;
-        }
         v.profile = v.profile.trim().to_lowercase();
         v.level = v.level.trim().to_string();
         if v.encoder.trim().is_empty() {
@@ -907,6 +907,11 @@ impl Config {
                 }
                 if e.rsp.enabled && (e.rsp.url.trim().is_empty() || e.rsp.token.is_empty()) {
                     h.push(warn("Gesicherte Übertragung ist an, aber das Gerät ist mit keiner Empfangsstelle gekoppelt."));
+                }
+                if e.video.interlaced && e.video.codec == Codec::H265 {
+                    h.push(warn("Halbbilder gibt es hier nur mit H.264 – mit H.265 bleibt das Bild progressiv."));
+                } else if e.video.interlaced {
+                    h.push(info(&format!("Halbbilder: {}i{} = {} Bilder/s, oberes Halbbild zuerst. Kodiert wird mit x264 (VideoToolbox kann keine Halbbilder).", e.video.height, e.video.fps, e.video.fps / 2)));
                 }
                 if e.srt.latency_ms < 80 {
                     h.push(info("SRT-Latenz unter 80 ms: Verluste lassen sich kaum noch reparieren (Faustregel 3–4 × RTT)."));
