@@ -767,6 +767,7 @@ impl Channel {
                     rec.set_property("muxer-properties", gst::Structure::builder("p").field("fragment-duration", 1000u32).build());
                 }
             }
+            crate::rsp::attach_spool(&pipeline, &cfg.rsp);
             let rtmp_sender = rtmp.then(|| RtmpSender::new(&pipeline, &cfg.rtmp.url, cfg.audio.enabled && aac.is_some()));
 
             let e2 = encoded.clone();
@@ -1532,19 +1533,24 @@ impl Channel {
             },
             luma: self.counters.luma(),
             uptime_s: self.started.elapsed().as_secs_f64().round(),
-            playout: self.pull.as_ref().map(|p| crate::rsp::PlayoutStatus {
-                feed: p.feed.lock().unwrap().clone(),
-                destinations: vec![crate::rsp::DestStatus {
-                    name: "Empfangsstelle".into(),
-                    target: p.fetch.lock().unwrap().session.clone().unwrap_or_default(),
-                    state: match (p.fetch.lock().unwrap().connected, p.fetch.lock().unwrap().last_error.clone()) {
-                        (true, _) => "verbunden".into(),
-                        (false, Some(e)) => format!("Fehler: {e}"),
-                        (false, None) => "verbindet".into(),
-                    },
-                    bytes: p.fetch.lock().unwrap().fetched,
-                    delay_s: p.feed.lock().unwrap().current_delay_s,
-                }],
+            playout: self.pull.as_ref().map(|p| {
+                // je einmal sperren (std-Mutex ist nicht wiedereintrittsfähig)
+                let feed = p.feed.lock().unwrap().clone();
+                let fetch = p.fetch.lock().unwrap().clone();
+                crate::rsp::PlayoutStatus {
+                    destinations: vec![crate::rsp::DestStatus {
+                        name: "Empfangsstelle".into(),
+                        target: fetch.session.clone().unwrap_or_default(),
+                        state: match (fetch.connected, fetch.last_error) {
+                            (true, _) => "verbunden".into(),
+                            (false, Some(e)) => format!("Fehler: {e}"),
+                            (false, None) => "verbindet".into(),
+                        },
+                        bytes: fetch.fetched,
+                        delay_s: feed.current_delay_s,
+                    }],
+                    feed,
+                }
             }),
         };
         out.splice(0..0, self.events.lock().unwrap().drain(..));

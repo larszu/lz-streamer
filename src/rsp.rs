@@ -274,26 +274,179 @@ pub fn hash_hex(data: &[u8]) -> String {
     h.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// Encoder-Zweig: Bild aus `ve`, Ton aus `ae<i>` in einen eigenen Segmentierer
-pub fn encoder_branches(cfg: &crate::config::EncoderConfig, tracks: usize, run: &str) -> Vec<String> {
+/// Encoder-Zweig: derselbe TS-Strom, der per SRT hinausgeht, geht an einen Segmentierer.
+/// Geschnitten wird an Keyframes; aneinandergereiht ergeben die Segmente wieder genau den Strom
+/// (ein eigener Mux je Segment würde den Demuxer an jeder Grenze neu beginnen lassen).
+pub fn encoder_branches(cfg: &crate::config::EncoderConfig) -> Vec<String> {
     let s = &cfg.rsp;
     if !s.enabled || s.spool_dir.trim().is_empty() || s.session.is_empty() {
         return vec![];
     }
-    let parser = crate::caps::parser_for(cfg.video.codec);
-    let q = "queue max-size-buffers=0 max-size-bytes=0 max-size-time=3000000000";
-    let mut d = vec![
-        format!("ve. ! {q} ! {parser} ! rsp.video"),
-        format!(
-            "splitmuxsink name=rsp location={} muxer-factory=mpegtsmux max-size-time={} send-keyframe-requests=true async-handling=true",
-            crate::pipeline::quote(&spool_pattern(s, run)),
-            s.segment_s.clamp(1, 10) as u64 * 1_000_000_000
-        ),
-    ];
-    for i in 0..tracks {
-        d.push(format!("ae{i}. ! {q} ! rsp.audio_{i}"));
+    vec!["tsout. ! queue max-size-buffers=0 max-size-bytes=0 max-size-time=3000000000 ! appsink name=rsp_tap sync=false async=false max-buffers=0 drop=false".into()]
+}
+
+/// Beginnt im Paket ein Keyframe (Random-Access-Kennung und PES-Anfang)?
+fn random_access(p: &[u8]) -> bool {
+    p.len() >= 6 && p[0] == 0x47 && p[1] & 0x40 != 0 && (p[3] >> 4) & 0x2 != 0 && p[4] >= 1 && p[5] & 0x40 != 0
+}
+
+fn pid(p: &[u8]) -> u16 {
+    (((p[1] & 0x1f) as u16) << 8) | p[2] as u16
+}
+
+/// Beginn der PSI-Tabelle in einem Paket (nach Anpassungsfeld und Pointer-Feld)
+fn psi_start(p: &[u8]) -> Option<usize> {
+    let mut o = 4;
+    if (p[3] >> 4) & 0x2 != 0 {
+        o += 1 + p[4] as usize;
     }
-    d
+    let pointer = *p.get(o)? as usize;
+    let t = o + 1 + pointer;
+    (t + 3 <= p.len()).then_some(t)
+}
+
+/// PMT-PID des ersten Programms aus einer PAT
+pub fn pat_pmt_pid(p: &[u8]) -> Option<u16> {
+    let t = psi_start(p)?;
+    let len = (((p[t + 1] & 0x0f) as usize) << 8) | p[t + 2] as usize;
+    let mut i = t + 8;
+    while i + 4 <= (t + 3 + len).saturating_sub(4).min(p.len()) {
+        let prog = ((p[i] as u16) << 8) | p[i + 1] as u16;
+        let pm = (((p[i + 2] & 0x1f) as u16) << 8) | p[i + 3] as u16;
+        if prog != 0 {
+            return Some(pm);
+        }
+        i += 4;
+    }
+    None
+}
+
+/// Bild-PID (H.264/H.265) aus einer PMT
+pub fn pmt_video_pid(p: &[u8]) -> Option<u16> {
+    let t = psi_start(p)?;
+    let len = (((p[t + 1] & 0x0f) as usize) << 8) | p[t + 2] as usize;
+    let end = (t + 3 + len).saturating_sub(4).min(p.len());
+    let pil = (((p.get(t + 10)? & 0x0f) as usize) << 8) | *p.get(t + 11)? as usize;
+    let mut i = t + 12 + pil;
+    while i + 5 <= end {
+        let st = p[i];
+        let es = (((p[i + 1] & 0x1f) as u16) << 8) | p[i + 2] as u16;
+        if matches!(st, 0x1b | 0x24 | 0x02) {
+            return Some(es);
+        }
+        i += 5 + ((((p[i + 3] & 0x0f) as usize) << 8) | p[i + 4] as usize);
+    }
+    None
+}
+
+/// Schneidet einen TS-Bytestrom in Spool-Dateien
+pub struct Segmenter {
+    pattern_dir: PathBuf,
+    prefix: String,
+    seg_ms: u64,
+    index: u32,
+    file: Option<(std::fs::File, Instant)>,
+    pat: Option<[u8; 188]>,
+    pmt: Option<[u8; 188]>,
+    pmt_pid: Option<u16>,
+    video_pid: Option<u16>,
+    rest: Vec<u8>,
+}
+
+impl Segmenter {
+    pub fn new(cfg: &SendConfig, run: &str) -> Self {
+        Segmenter {
+            pattern_dir: PathBuf::from(&cfg.spool_dir),
+            prefix: format!("{}_{run}", cfg.session),
+            seg_ms: cfg.segment_s.clamp(1, 10) as u64 * 1000,
+            index: 0,
+            file: None,
+            pat: None,
+            pmt: None,
+            pmt_pid: None,
+            video_pid: None,
+            rest: Vec::new(),
+        }
+    }
+
+    fn open(&mut self) {
+        use std::io::Write;
+        let path = self.pattern_dir.join(format!("{}_{:06}.ts", self.prefix, self.index));
+        self.index += 1;
+        if let Ok(mut f) = std::fs::File::create(&path) {
+            // Tabellen voran, damit jedes Segment für sich abspielbar ist
+            for t in [self.pat, self.pmt].into_iter().flatten() {
+                let _ = f.write_all(&t);
+            }
+            self.file = Some((f, Instant::now()));
+        }
+    }
+
+    pub fn push(&mut self, data: &[u8]) {
+        use std::io::Write;
+        self.rest.extend_from_slice(data);
+        let mut i = 0;
+        // auf Paketanfang ausrichten
+        while i < self.rest.len() && self.rest[i] != 0x47 {
+            i += 1;
+        }
+        let mut out_from = i;
+        while i + 188 <= self.rest.len() {
+            let p: [u8; 188] = self.rest[i..i + 188].try_into().unwrap();
+            let id = pid(&p);
+            if id == 0 && p[1] & 0x40 != 0 {
+                self.pat = Some(p);
+                if let Some(pm) = pat_pmt_pid(&p) {
+                    self.pmt_pid = Some(pm);
+                }
+            } else if Some(id) == self.pmt_pid && p[1] & 0x40 != 0 {
+                self.pmt = Some(p);
+                if let Some(v) = pmt_video_pid(&p) {
+                    self.video_pid = Some(v);
+                }
+            }
+            // ohne Bild (nur Ton) darf an jedem Ton-Frame geschnitten werden
+            let key = random_access(&p) && self.video_pid.is_none_or(|v| v == id) && (self.video_pid.is_some() || self.pmt.is_some());
+            let cut = key && self.file.as_ref().is_none_or(|(_, t)| t.elapsed().as_millis() as u64 >= self.seg_ms.saturating_sub(100));
+            let long = self.file.as_ref().is_some_and(|(_, t)| t.elapsed().as_millis() as u64 >= self.seg_ms * 3);
+            // vor dem ersten Keyframe nichts schreiben: ein Segment ohne PAT/PMT und Keyframe
+            // am Anfang bringt den Demuxer beim Aneinanderreihen aus dem Tritt
+            if self.file.is_none() && !key {
+                out_from = i + 188;
+            } else if cut || (long && key) || (long && self.file.as_ref().is_some_and(|(_, t)| t.elapsed().as_millis() as u64 >= self.seg_ms * 10)) {
+                if let Some((f, _)) = self.file.as_mut() {
+                    let _ = f.write_all(&self.rest[out_from..i]);
+                }
+                out_from = i;
+                self.open();
+            }
+            i += 188;
+        }
+        if let Some((f, _)) = self.file.as_mut() {
+            let _ = f.write_all(&self.rest[out_from..i]);
+        }
+        self.rest.drain(..i);
+    }
+}
+
+/// Segmentierer an das appsink `rsp_tap` hängen
+pub fn attach_spool(pipeline: &gst::Pipeline, cfg: &SendConfig) {
+    let Some(sink) = pipeline.by_name("rsp_tap").and_then(|s| s.downcast::<gst_app::AppSink>().ok()) else { return };
+    let _ = std::fs::create_dir_all(&cfg.spool_dir);
+    let seg = Arc::new(Mutex::new(Segmenter::new(cfg, &now_ms().to_string())));
+    sink.set_callbacks(
+        gst_app::AppSinkCallbacks::builder()
+            .new_sample(move |s| {
+                let sample = s.pull_sample().map_err(|_| gst::FlowError::Eos)?;
+                if let Some(buf) = sample.buffer() {
+                    if let Ok(map) = buf.map_readable() {
+                        seg.lock().unwrap().push(&map);
+                    }
+                }
+                Ok(gst::FlowSuccess::Ok)
+            })
+            .build(),
+    );
 }
 
 // ------------------------------------------------------------------ Uploader (Encoder)
@@ -700,6 +853,9 @@ pub fn spawn_feeder(mut src: impl SegmentSource, delay_ms: u64, ctl: Arc<FeedCon
             status.lock().unwrap().delay_s = delay_ms as f64 / 1000.0;
             // Abstand Wanduhr → Ausgabe; wächst nach Wartezeiten
             let mut offset = delay_ms;
+            // Taktanker: (Zeitpunkt, PCR in 27 MHz)
+            let mut anchor: Option<(Instant, u64)> = None;
+            let mut seg_t0: Option<Instant> = None;
             while !ctl.stop.load(Ordering::Relaxed) {
                 let Some((sid, segs)) = src.list() else {
                     std::thread::sleep(Duration::from_millis(250));
@@ -712,6 +868,7 @@ pub fn spawn_feeder(mut src: impl SegmentSource, delay_ms: u64, ctl: Arc<FeedCon
                     let pick = segs.iter().rev().find(|s| s.wall_ms <= target).or(segs.first());
                     next = pick.map(|s| s.name.clone());
                     offset = delay_ms;
+                    anchor = None;
                     if session.as_deref() != Some(&sid) {
                         prev_run = None;
                     } else {
@@ -761,21 +918,39 @@ pub fn spawn_feeder(mut src: impl SegmentSource, delay_ms: u64, ctl: Arc<FeedCon
                     s.current_delay_s = offset as f64 / 1000.0;
                     s.buffered_s = segs[pos + 1..].iter().map(|x| x.dur_ms).sum::<u64>() as f64 / 1000.0;
                 }
-                // gleichmäßig über die Segmentdauer verteilen
-                let t0 = Instant::now();
-                let chunks = (seg.dur_ms / 20).max(1) as usize;
-                let size = data.len().div_ceil(chunks).max(188).next_multiple_of(188);
-                for (k, part) in data.chunks(size).enumerate() {
+                // im Takt der PCR senden, wie der Mux es live täte (gleichmäßig verteilt käme der
+                // große Keyframe am Segmentanfang zu spät und alle Bilder bis zum nächsten wären verloren)
+                let groups = pcr_groups(&data);
+                if new_run {
+                    anchor = None;
+                }
+                for (k, (pcr, range)) in groups.iter().enumerate() {
                     if ctl.stop.load(Ordering::Relaxed) {
                         return;
                     }
+                    let due = match (pcr, anchor) {
+                        (Some(p), Some((t, p0))) if *p >= p0 => t + Duration::from_nanos((*p - p0) * 1000 / 27),
+                        // ohne PCR: gleichmäßig über die Segmentdauer
+                        (None, _) => seg_t0.get_or_insert_with(Instant::now).to_owned() + Duration::from_millis(seg.dur_ms * k as u64 / groups.len().max(1) as u64),
+                        (Some(p), _) => {
+                            anchor = Some((Instant::now(), *p));
+                            Instant::now()
+                        }
+                    };
+                    let now_i = Instant::now();
+                    if due + Duration::from_millis(250) < now_i {
+                        // zu spät (z. B. nach dem Warten auf ein Segment): neu verankern, Verzögerung wächst
+                        if let Some(p) = pcr {
+                            anchor = Some((now_i, *p));
+                        }
+                    } else if let Some(w) = due.checked_duration_since(now_i) {
+                        std::thread::sleep(w.min(Duration::from_secs(2)));
+                    }
+                    let part = &data[range.clone()];
                     sink(part, k == 0, k == 0 && new_run);
                     status.lock().unwrap().bytes += part.len() as u64;
-                    let due = Duration::from_millis(seg.dur_ms * (k as u64 + 1) / chunks as u64);
-                    if let Some(w) = due.checked_sub(t0.elapsed()) {
-                        std::thread::sleep(w);
-                    }
                 }
+                seg_t0 = None;
                 next = segs.get(pos + 1).map(|s| s.name.clone()).or_else(|| {
                     // Nachfolger noch unbekannt: aus dem Namen erraten (gleicher Lauf, Nummer + 1)
                     parse_name(&seg.name).map(|(s, r, i)| format!("{s}_{r}_{:06}.ts", i + 1))
@@ -783,6 +958,44 @@ pub fn spawn_feeder(mut src: impl SegmentSource, delay_ms: u64, ctl: Arc<FeedCon
             }
         })
         .expect("Thread")
+}
+
+/// PCR eines TS-Pakets (27 MHz), falls es eine trägt
+pub fn packet_pcr(p: &[u8]) -> Option<u64> {
+    if p.len() < 12 || p[0] != 0x47 || (p[3] >> 4) & 0x2 == 0 || p[4] < 7 || p[5] & 0x10 == 0 {
+        return None;
+    }
+    let base = ((p[6] as u64) << 25) | ((p[7] as u64) << 17) | ((p[8] as u64) << 9) | ((p[9] as u64) << 1) | ((p[10] as u64) >> 7);
+    let ext = (((p[10] & 1) as u64) << 8) | p[11] as u64;
+    Some(base * 300 + ext)
+}
+
+/// Segment in Gruppen teilen, die jeweils mit einem PCR-Paket beginnen (erste Gruppe: alles davor dazu)
+pub fn pcr_groups(data: &[u8]) -> Vec<(Option<u64>, std::ops::Range<usize>)> {
+    let mut out: Vec<(Option<u64>, std::ops::Range<usize>)> = Vec::new();
+    let mut start = 0;
+    let mut cur: Option<u64> = None;
+    let mut i = 0;
+    while i + 188 <= data.len() {
+        if let Some(p) = packet_pcr(&data[i..i + 188]) {
+            if i > start && cur.is_some() {
+                out.push((cur, start..i));
+                start = i;
+            }
+            cur = Some(p);
+        }
+        i += 188;
+    }
+    if start < data.len() {
+        out.push((cur, start..data.len()));
+    }
+    if cur.is_none() {
+        // keine PCR: in 20-ms-Stücke teilen (Zeit kommt dann aus der Segmentdauer)
+        let n = (data.len() / (188 * 20)).max(1);
+        let size = data.len().div_ceil(n).next_multiple_of(188);
+        return (0..data.len()).step_by(size).map(|a| (None, a..(a + size).min(data.len()))).collect();
+    }
+    out
 }
 
 // ------------------------------------------------------------------ Abruf am Standort
@@ -1247,6 +1460,46 @@ mod tests {
         assert!(safe_id("../etc").is_none() && safe_id("a/b").is_none());
         assert_eq!(safe_id("dev1-2026_11").as_deref(), Some("dev1-2026_11"));
         assert_eq!(urldecode(&urlencode("Gottesdienst – 10 Uhr")), "Gottesdienst – 10 Uhr");
+    }
+
+    #[test]
+    fn pcr_from_packets() {
+        let mut p = [0xffu8; 188];
+        p[0] = 0x47;
+        p[3] = 0x30; // Anpassungsfeld + Nutzdaten
+        p[4] = 7;
+        p[5] = 0x10;
+        // Basis 90000 (1 s) → 27 000 000
+        let base: u64 = 90_000;
+        p[6] = (base >> 25) as u8;
+        p[7] = (base >> 17) as u8;
+        p[8] = (base >> 9) as u8;
+        p[9] = (base >> 1) as u8;
+        p[10] = ((base & 1) << 7) as u8 | 0x7e;
+        p[11] = 0;
+        assert_eq!(packet_pcr(&p), Some(27_000_000));
+        let mut data = vec![0u8; 188 * 3];
+        data[188..376].copy_from_slice(&p);
+        let g = pcr_groups(&data);
+        assert_eq!(g.len(), 1, "alles vor der ersten PCR gehört zur ersten Gruppe");
+    }
+
+    #[test]
+    fn pat_and_pmt() {
+        // PAT mit Anpassungsfeld-Füllung wie von mpegtsmux: Programm 1 → PMT-PID 0x20
+        let mut pat = [0xffu8; 188];
+        pat[..4].copy_from_slice(&[0x47, 0x40, 0x00, 0x30]);
+        pat[4] = 166; // Anpassungsfeld bis Byte 170
+        pat[5] = 0;
+        let t = 5 + 166;
+        pat[t..t + 17].copy_from_slice(&[0x00, 0x00, 0xb0, 0x0d, 0x00, 0x01, 0xc1, 0x00, 0x00, 0x00, 0x01, 0xe0, 0x20, 0, 0, 0, 0]);
+        assert_eq!(pat_pmt_pid(&pat), Some(0x20));
+        let mut pmt = [0xffu8; 188];
+        pmt[..4].copy_from_slice(&[0x47, 0x40, 0x20, 0x10]);
+        // pointer, table 0x02, len, prog 1, ver, sec, last, PCR-PID 0x41, pil 0, AAC 0x0f/0x42, H.264 0x1b/0x41
+        let body = [0x00, 0x02, 0xb0, 0x17, 0x00, 0x01, 0xc1, 0x00, 0x00, 0xe0, 0x41, 0xf0, 0x00, 0x0f, 0xe0, 0x42, 0xf0, 0x00, 0x1b, 0xe0, 0x41, 0xf0, 0x00, 0, 0, 0, 0];
+        pmt[4..4 + body.len()].copy_from_slice(&body);
+        assert_eq!(pmt_video_pid(&pmt), Some(0x41));
     }
 
     #[test]

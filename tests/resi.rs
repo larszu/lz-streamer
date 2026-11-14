@@ -177,6 +177,7 @@ fn resilient_transfer_survives_outage_shorter_than_delay() {
     }
     let up_status = up.status.lock().unwrap().clone();
     eprintln!("erstes Bild am Standort nach {first_frames:?}, Upload {up_status:?}, Ziel-Decoder {dec2_frames} Bilder");
+    if let Ok(k) = std::env::var("LZS_KEEP") { let _ = std::fs::write(k, root.to_string_lossy().as_bytes()); }
     let first = first_frames.expect("Standort-Decoder zeigt kein Bild");
     assert!(first >= Duration::from_secs(delay as u64 - 1), "Bild vor Ablauf der Verzögerung: {first:?}");
     assert!(frames_after_outage > 25 * 12, "nach dem Ausfall kamen nur {frames_after_outage} Bilder");
