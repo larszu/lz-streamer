@@ -123,6 +123,7 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/api/me", get(me))
         .route("/api/users", get(users).post(add_user))
         .route("/api/users/{name}", delete(delete_user))
+        .merge(crate::relay::routes().layer(DefaultBodyLimit::max(256 * 1024 * 1024)))
         .layer(DefaultBodyLimit::max(25 * 1024 * 1024))
         .layer(middleware::from_fn_with_state(app.clone(), auth))
         .with_state(app)
@@ -146,7 +147,7 @@ async fn current_user(app: &App, headers: &HeaderMap) -> Option<(String, Role)> 
 async fn auth(State(app): S, req: Request, next: Next) -> Response {
     let path = req.uri().path().to_string();
     // /renderer ist kein /api-Pfad und nimmt nur Verbindungen von 127.0.0.1 an (siehe renderer_ws)
-    if !path.starts_with("/api/") || path == "/api/login" || path == "/api/me" {
+    if !path.starts_with("/api/") || path == "/api/login" || path == "/api/me" || crate::relay::public_path(&path) {
         return next.run(req).await;
     }
     if app.users.read().await.is_empty() {
@@ -256,7 +257,9 @@ async fn renderer_ws(
 // ------------------------------------------------------------ Kanal
 
 async fn state(State(app): S, headers: HeaderMap) -> impl IntoResponse {
-    let cfg = app.sup.config().await;
+    let mut cfg = app.sup.config().await;
+    let hints = cfg.hints();
+    crate::relay::mask_config(&mut cfg);
     let snap = app.sup.snapshot().await;
     let devices = app.devices.read().await.clone();
     let alarms = app.ops.alarms.lock().await.clone();
@@ -264,7 +267,8 @@ async fn state(State(app): S, headers: HeaderMap) -> impl IntoResponse {
     let me = current_user(&app, &headers).await;
     Json(json!({
         "config": cfg,
-        "hints": cfg.hints(),
+        "hints": hints,
+        "rsp": crate::relay::send_status(),
         "caps": app.caps,
         "missing": app.caps.missing(),
         "devices": devices,
@@ -281,10 +285,13 @@ async fn state(State(app): S, headers: HeaderMap) -> impl IntoResponse {
 }
 
 async fn get_config(State(app): S) -> impl IntoResponse {
-    Json(app.sup.config().await)
+    let mut cfg = app.sup.config().await;
+    crate::relay::mask_config(&mut cfg);
+    Json(cfg)
 }
 
-async fn put_config(State(app): S, Json(cfg): Json<Config>) -> Response {
+async fn put_config(State(app): S, Json(mut cfg): Json<Config>) -> Response {
+    crate::relay::keep_secrets(&mut cfg, &app.sup.config().await);
     match app.sup.set_config(cfg).await {
         Ok(()) => ok(),
         Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),

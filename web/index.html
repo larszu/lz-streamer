@@ -19,6 +19,7 @@
   <div class="seg" role="group" aria-label="Rolle" id="role-seg">
     <button type="button" data-role="encoder" aria-pressed="true">Senden</button>
     <button type="button" data-role="decoder" aria-pressed="false">Empfangen</button>
+    <button type="button" data-role="relay" aria-pressed="false" title="Nimmt gesicherte Übertragungen an, verzögert sie und verteilt sie an Ziele und den Web-Player">Empfangsstelle</button>
   </div>
   <div class="themes" role="group" aria-label="Darstellung">
     <button type="button" data-t="auto" aria-label="Wie System" title="Wie System"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg></button>
@@ -194,6 +195,27 @@
               <label class="field"><span>Segmentformat</span><select class="input" data-path="encoder.hls.format"><option value="ts">MPEG-TS (Chrome, Safari, hls.js)</option><option value="cmaf">CMAF/fMP4</option></select></label>
             </div>
             <p class="hint">Abspielen über <code id="hls-url">/hls/index.m3u8</code> (Safari, hls.js). Die Latenz liegt bei etwa drei Segmenten.</p>
+            <p class="group-title">Gesicherte Übertragung (Empfangsstelle)</p>
+            <label class="switch"><input type="checkbox" data-path="encoder.rsp.enabled"> Zusätzlich gepuffert an eine Empfangsstelle senden</label>
+            <p class="hint" id="rsp-status">Segmente werden hier zwischengespeichert und erst nach Quittung gelöscht. Fällt das Netz aus, wird nachgeschickt; Zuschauer merken nichts, solange der Ausfall kürzer ist als die Verzögerung der Empfangsstelle.</p>
+            <div class="row2 inline" id="rsp-pair">
+              <label class="field"><span>Adresse der Empfangsstelle</span><input class="input" id="rsp-url" placeholder="https://empfang.example.org:4200" autocomplete="off" spellcheck="false"></label>
+              <label class="field"><span>Kopplungscode</span><input class="input" id="rsp-code" inputmode="numeric" placeholder="6 Ziffern" autocomplete="off"></label>
+              <button type="button" class="btn btn--soft" id="rsp-pair-btn">Koppeln</button>
+            </div>
+            <div class="row2">
+              <label class="field"><span>Titel der Sendung</span><input class="input" data-path="encoder.rsp.title" placeholder="z. B. Gottesdienst"></label>
+              <label class="field"><span>Marke (Kapitel) setzen</span><span class="inline"><input class="input" id="rsp-mark-label" placeholder="z. B. Predigt"><button type="button" class="btn btn--soft" id="rsp-mark">Setzen</button></span></label>
+            </div>
+            <details class="more">
+              <summary>Puffer und Upload</summary>
+              <div class="row2">
+                <label class="field"><span>Segmentdauer (s)</span><input class="input" data-path="encoder.rsp.segment_s" data-num inputmode="numeric"></label>
+                <label class="field"><span>Gleichzeitige Uploads</span><input class="input" data-path="encoder.rsp.parallel" data-num inputmode="numeric"></label>
+                <label class="field"><span>Puffer höchstens (min)</span><input class="input" data-path="encoder.rsp.spool_minutes" data-num inputmode="numeric"></label>
+              </div>
+              <button type="button" class="btn btn--soft" id="rsp-unpair">Kopplung lösen</button>
+            </details>
             <p class="group-title">Aufnahme parallel</p>
             <label class="switch"><input type="checkbox" data-path="encoder.record.enabled"> Mitschneiden, solange gesendet wird</label>
             <div class="row2">
@@ -260,7 +282,24 @@
     <section class="card appear" style="--i:3" id="dec-form" aria-labelledby="dec-title" hidden>
       <h2 id="dec-title">Empfangen</h2>
       <div class="form">
-        <p class="group-title">Quelle (SRT)</p>
+        <p class="group-title">Quelle</p>
+        <div class="seg" role="group" aria-label="Quelle" data-seg="decoder.source">
+          <button type="button" data-v="srt">SRT direkt</button>
+          <button type="button" data-v="relay">Empfangsstelle (gepuffert)</button>
+        </div>
+        <div class="form" data-show-mode="decoder.source=relay">
+          <div class="row2 inline">
+            <label class="field"><span>Adresse der Empfangsstelle</span><input class="input" id="dec-rsp-url" placeholder="https://empfang.example.org:4200" autocomplete="off" spellcheck="false"></label>
+            <label class="field"><span>Kopplungscode</span><input class="input" id="dec-rsp-code" inputmode="numeric" placeholder="6 Ziffern" autocomplete="off"></label>
+            <button type="button" class="btn btn--soft" id="dec-rsp-pair">Koppeln</button>
+          </div>
+          <div class="row2">
+            <label class="field"><span>Ausgabe zur Aufnahmezeit plus (s)</span><input class="input" data-path="decoder.relay.delay_s" data-num inputmode="numeric"></label>
+            <label class="field"><span>Sendung (leer = jeweils die neueste)</span><input class="input" data-path="decoder.relay.session" placeholder="z. B. für zeitversetzte Wiedergabe"></label>
+          </div>
+          <p class="hint" id="dec-rsp-status">Alle Standorte mit derselben Verzögerung zeigen dasselbe Bild zur selben Zeit (Rechneruhr per NTP). Bricht die Verbindung kurz ab, läuft das Bild aus dem lokalen Puffer weiter.</p>
+        </div>
+        <div class="form" data-show-mode="decoder.source=srt">
         <div class="seg" role="group" aria-label="SRT-Modus" data-seg="decoder.srt.mode">
           <button type="button" data-v="caller">Mit Encoder verbinden</button>
           <button type="button" data-v="listener">Auf Encoder warten</button>
@@ -270,6 +309,7 @@
           <label class="field" data-show-mode="decoder.srt.mode=caller|rendezvous"><span>Encoder-Adresse</span>
             <input class="input" data-path="decoder.srt.host" placeholder="z. B. 192.0.2.10 oder srt://…" autocomplete="off" spellcheck="false"></label>
           <label class="field"><span>Port</span><input class="input" data-path="decoder.srt.port" data-num inputmode="numeric"></label>
+        </div>
         </div>
         <p class="group-title">Ausgabe</p>
         <div class="row2">
@@ -303,6 +343,42 @@
           </div>
         </details>
         <ul class="hints" id="dec-hints"></ul>
+      </div>
+    </section>
+
+    <!-- Empfangsstelle -->
+    <section class="card appear" style="--i:3" id="relay-form" aria-labelledby="relay-title" hidden>
+      <h2 id="relay-title">Empfangsstelle</h2>
+      <div class="form">
+        <div class="row2">
+          <label class="field"><span>Verzögerung (s)</span><input class="input" data-path="relay.delay_s" data-num inputmode="numeric"></label>
+          <label class="field"><span>Sendungen aufheben (Tage, 0 = immer)</span><input class="input" data-path="relay.retention_days" data-num inputmode="numeric"></label>
+        </div>
+        <p class="hint">So lange darf die Verbindung zum Encoder ausfallen, ohne dass Ziele und Zuschauer etwas merken. Danach geht es dort weiter, wo es abriss; die Verzögerung wächst um die Ausfallzeit.</p>
+        <button type="button" class="btn btn--soft" id="relay-catchup">Auf Soll-Verzögerung zurückspringen</button>
+        <p class="group-title">Ziele</p>
+        <div class="list-edit" id="relay-dests"></div>
+        <button type="button" class="btn btn--soft" id="add-dest">Ziel hinzufügen</button>
+        <p class="group-title">Geräte</p>
+        <ol class="rows" id="relay-devices"></ol>
+        <div class="row2 inline">
+          <button type="button" class="btn btn--soft" id="relay-pairing">Kopplungscode erzeugen</button>
+          <p class="hint" id="relay-code">Der Code gilt 10 Minuten und koppelt genau ein Gerät (Encoder oder Standort-Decoder).</p>
+        </div>
+        <p class="group-title">Web-Player</p>
+        <div class="row2">
+          <label class="field"><span>Titel</span><input class="input" data-path="relay.player.title" placeholder="z. B. Gemeinde am Markt – Livestream"></label>
+          <label class="field"><span>Text ohne Sendung</span><input class="input" data-path="relay.player.offline_text"></label>
+        </div>
+        <div class="row2">
+          <label class="field"><span>Knopf unter dem Bild</span><input class="input" data-path="relay.player.action_label" placeholder="z. B. Spenden"></label>
+          <label class="field"><span>Knopf führt zu</span><input class="input" data-path="relay.player.action_url" placeholder="https://…" spellcheck="false"></label>
+        </div>
+        <label class="switch"><input type="checkbox" data-path="relay.player.library"> Mediathek mit vergangenen Sendungen zeigen</label>
+        <p class="hint">Player: <a id="player-link" href="/player" target="_blank" rel="noopener">/player</a> · Einbetten: <code id="player-embed"></code></p>
+        <p class="group-title">Sendungen</p>
+        <ol class="rows" id="relay-sessions"></ol>
+        <ul class="hints" id="relay-hints"></ul>
       </div>
     </section>
 

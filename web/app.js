@@ -766,3 +766,120 @@ function repLink() {
 }
 $('#rep-from').addEventListener('change', repLink);
 $('#rep-to').addEventListener('change', repLink);
+
+// ================================================================ Gesicherte Übertragung / Empfangsstelle
+const _applyVis9 = applyVisibility;
+applyVisibility = function () {
+  _applyVis9();
+  $('#relay-form').hidden = cfg.role !== 'relay';
+};
+
+async function pairWith(urlEl, codeEl) {
+  const url = urlEl.value.trim(), code = codeEl.value.trim();
+  if (!url || !code) { toast('Adresse und Code eintragen'); return; }
+  try {
+    const r = await api('POST', '/api/rsp/pair-with', { url, code });
+    codeEl.value = '';
+    toast(`Mit ${r.relay || url} gekoppelt`);
+    cfg = null; poll();
+  } catch {}
+}
+$('#rsp-pair-btn').onclick = () => pairWith($('#rsp-url'), $('#rsp-code'));
+$('#dec-rsp-pair').onclick = () => pairWith($('#dec-rsp-url'), $('#dec-rsp-code'));
+$('#rsp-unpair').onclick = async () => { await api('POST', '/api/rsp/unpair'); cfg = null; poll(); };
+$('#rsp-mark').onclick = async () => {
+  const r = await api('POST', '/api/rsp/mark', { label: $('#rsp-mark-label').value });
+  $('#rsp-mark-label').value = '';
+  toast(`Marke „${r.label}“ gesetzt`);
+};
+$('#relay-catchup').onclick = () => api('POST', '/api/rsp/catchup').then(() => toast('Springt zurück auf die Soll-Verzögerung'));
+$('#relay-pairing').onclick = async () => {
+  const r = await api('POST', '/api/rsp/pairing');
+  $('#relay-code').innerHTML = `Kopplungscode <strong class="code">${esc(r.code.replace(/(\d{3})(\d{3})/, '$1 $2'))}</strong> · gültig bis ${new Date(r.expires_ms).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })}`;
+};
+
+const destFields = [
+  { key: 'enabled', label: 'An', type: 'check' },
+  { key: 'name', label: 'Name' },
+  { key: 'kind', label: 'Art', type: 'select', options: [['rtmp', 'RTMP/RTMPS'], ['srt', 'SRT'], ['udp', 'UDP (TS)']], rerender: true },
+  { key: 'platform', label: 'Plattform', type: 'select', options: [['custom', 'Eigene Adresse'], ['youtube', 'YouTube'], ['facebook', 'Facebook'], ['twitch', 'Twitch'], ['vimeo', 'Vimeo']], show: d => d.kind === 'rtmp', rerender: true },
+  { key: 'url', label: 'RTMP-Adresse', placeholder: 'rtmp://…/app', show: d => d.kind === 'rtmp' && d.platform === 'custom' },
+  { key: 'key', label: 'Stream-Schlüssel', type: 'password', show: d => d.kind === 'rtmp' },
+  { key: 'smode', label: 'SRT-Modus', type: 'select', options: [['caller', 'An Ziel senden'], ['listener', 'Auf Gegenstelle warten']], show: d => d.kind === 'srt', get: d => d.srt.mode, set: (d, v) => { d.srt.mode = v; } },
+  { key: 'shost', label: 'Ziel', show: d => d.kind === 'srt', get: d => d.srt.host, set: (d, v) => { d.srt.host = v; } },
+  { key: 'sport', label: 'Port', show: d => d.kind === 'srt', get: d => d.srt.port, set: (d, v) => { d.srt.port = parseInt(v, 10) || 0; } },
+  { key: 'host', label: 'Ziel (auch Multicast)', show: d => d.kind === 'udp' },
+  { key: 'port', label: 'Port', num: true, show: d => d.kind === 'udp' },
+  { key: 'extra_delay_s', label: 'Zusätzlich verzögern (s)', num: true },
+];
+function renderDests() {
+  rowEditor($('#relay-dests'), cfg.relay.destinations, destFields, () => changed('relay.destinations', cfg.relay.destinations), 'Entfernen');
+}
+$('#add-dest').onclick = () => {
+  cfg.relay.destinations.push({ enabled: true, name: '', kind: 'rtmp', platform: 'youtube', url: '', key: '', srt: { mode: 'caller', host: '', port: 9000, latency_ms: 500, passphrase: '', streamid: '' }, host: '239.0.0.1', port: 5000, extra_delay_s: 0 });
+  renderDests(); changed('relay.destinations', cfg.relay.destinations);
+};
+const _fill9 = fillForm;
+fillForm = function () { _fill9(); if (!$('#relay-dests').contains(document.activeElement)) renderDests(); };
+
+let relayListAt = 0;
+async function loadRelayLists() {
+  relayListAt = Date.now();
+  const [devs, sessions] = await Promise.all([api('GET', '/api/rsp/devices'), api('GET', '/api/rsp/sessions')]).catch(() => [[], []]);
+  const ago = ms => !ms ? 'nie' : Date.now() - ms < 90000 ? 'gerade aktiv' : new Date(ms).toLocaleString('de-DE', { dateStyle: 'short', timeStyle: 'short' });
+  $('#relay-devices').innerHTML = devs.map(d => `<li><span>${esc(d.name)} <small>${d.kind === 'decoder' ? 'Standort-Decoder' : 'Encoder'} · ${ago(d.last_seen_ms)}</small></span>
+    <button class="btn btn--danger" data-dev="${esc(d.id)}">Entkoppeln</button></li>`).join('') || '<li><span>Noch kein Gerät gekoppelt.</span></li>';
+  $$('#relay-devices [data-dev]').forEach(b => b.onclick = async () => { await api('DELETE', `/api/rsp/devices/${encodeURIComponent(b.dataset.dev)}`); loadRelayLists(); });
+  const mins = s => `${Math.round(s / 60)} min`;
+  $('#relay-sessions').innerHTML = sessions.map(s => `<li><span>${esc(s.title)} <small>${new Date(s.started_ms).toLocaleString('de-DE', { dateStyle: 'short', timeStyle: 'short' })} · ${mins(s.duration_s)} · ${fmt.format(s.bytes / 1e9)} GB${s.airing ? ' · läuft' : ''} · ${s.viewers.unique} Zuschauer, höchstens ${s.viewers.peak} gleichzeitig, ${fmt.format(s.viewers.watch_minutes)} min gesehen${s.cues.length ? ' · ' + s.cues.length + ' Marken' : ''}</small></span>
+    <a class="btn btn--soft" href="/player?session=${encodeURIComponent(s.id)}" target="_blank" rel="noopener">Ansehen</a>
+    <a class="btn btn--soft" href="/api/rsp/sessions/${encodeURIComponent(s.id)}/download">Laden</a>
+    <button class="btn btn--danger" data-ses="${esc(s.id)}">Löschen</button></li>`).join('') || '<li><span>Noch keine Sendung empfangen.</span></li>';
+  $$('#relay-sessions [data-ses]').forEach(b => b.onclick = async () => { await api('DELETE', `/api/rsp/sessions/${encodeURIComponent(b.dataset.ses)}`); loadRelayLists(); });
+}
+
+const _render9 = render;
+render = function (st) {
+  _render9(st);
+  const role = st.config.role, s = st.runtime.status, rt = st.runtime;
+  // Encoder: Zustand des Uploaders
+  const r = st.rsp, rc = st.config.encoder.rsp;
+  const paired = rc.token && rc.token.length > 0;
+  $('#rsp-pair').hidden = !!paired && !!rc.enabled;
+  if ($('#rsp-url') !== document.activeElement && !$('#rsp-url').value) $('#rsp-url').value = rc.url || '';
+  if (rc.enabled && r) {
+    $('#rsp-status').textContent = !paired ? 'Noch nicht gekoppelt: Adresse und Code der Empfangsstelle eintragen.'
+      : r.connected ? `Verbunden mit ${rc.url} · ${r.sent} Segmente quittiert · ${fmt.format(r.rate_kbps / 1000)} Mbit/s${r.pending > 1 ? ` · ${r.pending} im Puffer (${fmt.format(r.backlog_s)} s)` : ''}${r.dropped ? ` · ${r.dropped} verworfen` : ''}`
+      : `Puffert: ${r.pending} Segmente (${fmt.format(r.backlog_s)} s)${r.last_error ? ' · ' + r.last_error : ''}`;
+  }
+  // Decoder: Abruf
+  const dr = st.config.decoder.relay;
+  if ($('#dec-rsp-url') !== document.activeElement && !$('#dec-rsp-url').value) $('#dec-rsp-url').value = dr.url || '';
+  const pf = s?.playout;
+  if (role === 'decoder' && st.config.decoder.source === 'relay' && pf) {
+    const d = pf.destinations[0];
+    $('#dec-rsp-status').textContent = `${d ? d.state : ''} · Verzögerung ${fmt.format(pf.feed.current_delay_s)} s · Puffer ${fmt.format(pf.feed.buffered_s)} s${pf.feed.stalls ? ` · ${pf.feed.stalls}× gewartet` : ''}`;
+  }
+  if (role !== 'relay') return;
+  // Empfangsstelle
+  $('#relay-hints').innerHTML = st.hints.map(h => `<li data-l="${h.level}">${esc(h.text)}</li>`).join('');
+  $('#btn-main').textContent = rt.running ? 'Stoppen' : 'Empfangsstelle starten';
+  $('#chip-live').textContent = 'Empfang';
+  $('#stage-title').textContent = !rt.running ? 'Bereit' : !s ? rt.phase.replace(/^./, c => c.toUpperCase()) : pf?.feed.session ? 'Verteilt' : 'Wartet auf Sendung';
+  $('#stage-sub').textContent = !rt.running ? `Nimmt gesicherte Übertragungen an · Verzögerung ${st.config.relay.delay_s} s`
+    : s ? `${s.input}${pf ? ` · ${pf.destinations.filter(d => d.state === 'sendet').length} von ${pf.destinations.length} Zielen senden` : ''}` : 'Startet …';
+  $('#chip-peer').hidden = true;
+  const f = pf?.feed;
+  $('#tiles').innerHTML = [
+    tile('Verzögerung', f ? fmt.format(f.current_delay_s) : fmt.format(st.config.relay.delay_s), 's', f && f.current_delay_s > f.delay_s + 2 ? 'warn' : ''),
+    tile('Puffer bereit', f ? fmt.format(f.buffered_s) : dash, f ? 's' : '', f?.stalled ? 'warn' : ''),
+    tile('Bitrate', s ? fmt.format(s.bitrate_kbps / 1000) : dash, s ? 'Mbit/s' : ''),
+    ...(pf?.destinations || []).map(d => tile(esc(d.name), esc(d.state), '', d.state === 'sendet' ? '' : 'warn')),
+    tile('Gewartet', f ? fmt0.format(f.stalls) : dash, '', f?.stalls ? 'warn' : ''),
+    tile('Laufzeit', dur(s?.uptime_s)),
+    tile('Neustarts', fmt0.format(rt.restarts), '', rt.restarts ? 'warn' : ''),
+  ].join('');
+  $('#player-embed').textContent = `<iframe src="${location.origin}/player?embed" style="width:100%;aspect-ratio:16/9;border:0" allow="autoplay; fullscreen" allowfullscreen></iframe>`;
+  $('#player-link').textContent = `${location.origin}/player`;
+  if (Date.now() - relayListAt > 15000) loadRelayLists();
+};

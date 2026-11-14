@@ -58,6 +58,12 @@ pub struct Supervisor {
     pub record_dir: PathBuf,
     /// neue Untertiteltexte aus dem Kanal (für den Grafik-Renderer)
     pub captions: tokio::sync::broadcast::Sender<String>,
+    /// Kennung der laufenden Sendung (neu bei jedem Start), für die gesicherte Übertragung
+    pub session: std::sync::Mutex<String>,
+}
+
+pub fn new_session_id() -> String {
+    chrono::Local::now().format("%Y%m%d-%H%M%S").to_string()
 }
 
 fn now_ms() -> u64 {
@@ -93,12 +99,42 @@ impl Supervisor {
             run_dir,
             record_dir,
             captions: tokio::sync::broadcast::channel(32).0,
+            session: std::sync::Mutex::new(new_session_id()),
         })
     }
 
     /// Whisper-Modelle liegen neben den Aufnahmen im Datenverzeichnis.
     pub fn models_dir(&self) -> PathBuf {
         self.record_dir.parent().map(|p| p.join("modelle")).unwrap_or_else(|| PathBuf::from("modelle"))
+    }
+
+    /// Datenverzeichnis (Eltern der Aufnahmen)
+    pub fn data_dir(&self) -> PathBuf {
+        self.record_dir.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| PathBuf::from("."))
+    }
+
+    /// Spool der gesicherten Übertragung, Ablage der Empfangsstelle, Standort-Cache
+    pub fn spool_dir(&self) -> PathBuf {
+        self.data_dir().join("spool")
+    }
+    pub fn relay_dir(&self) -> PathBuf {
+        self.data_dir().join("empfang")
+    }
+    pub fn cache_dir(&self) -> PathBuf {
+        self.data_dir().join("standort-cache")
+    }
+
+    /// Ordner und Sendungskennung eintragen
+    pub fn fill_rsp(&self, cfg: &mut Config) {
+        cfg.encoder.rsp.spool_dir = self.spool_dir().to_string_lossy().to_string();
+        cfg.encoder.rsp.session = self.session.lock().unwrap().clone();
+        let _ = std::fs::create_dir_all(self.spool_dir());
+        if cfg.relay.dir.trim().is_empty() {
+            cfg.relay.dir = self.relay_dir().to_string_lossy().to_string();
+        }
+        if cfg.decoder.relay.cache_dir.trim().is_empty() {
+            cfg.decoder.relay.cache_dir = self.cache_dir().to_string_lossy().to_string();
+        }
     }
 
     /// Ordner der HLS-Ausgabe (neben den Aufnahmen)
@@ -159,6 +195,7 @@ impl Supervisor {
             st.last_error = None;
             st.ever_connected = false;
             st.generation += 1;
+            *self.session.lock().unwrap() = new_session_id();
             Self::push(&mut st, "info", "Start");
         }
         drop(st);
@@ -210,6 +247,7 @@ impl Supervisor {
         if cfg.encoder.hls.dir.trim().is_empty() {
             cfg.encoder.hls.dir = self.hls_dir().to_string_lossy().to_string();
         }
+        self.fill_rsp(&mut cfg);
         let asr = &mut cfg.encoder.captions.asr;
         if asr.model_path.trim().is_empty() {
             asr.model_path = self.models_dir().join(format!("ggml-{}.bin", asr.model)).to_string_lossy().to_string();

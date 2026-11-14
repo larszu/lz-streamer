@@ -480,7 +480,7 @@ pub fn allowed(role: Role, method: &str, path: &str) -> bool {
     if method == "GET" {
         return true;
     }
-    let operator_ok = ["/api/start", "/api/stop", "/api/signal", "/api/keyframe", "/api/caption", "/api/logout"];
+    let operator_ok = ["/api/start", "/api/stop", "/api/signal", "/api/keyframe", "/api/caption", "/api/logout", "/api/rsp/mark", "/api/rsp/catchup"];
     match role {
         Role::Admin => true,
         Role::Operator => operator_ok.contains(&path),

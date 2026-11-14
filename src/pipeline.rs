@@ -322,6 +322,12 @@ pub fn encoder_description(cfg: &EncoderConfig, parts: &EncoderParts) -> String 
         d.push("fsrc. ! audio/x-raw ! fakesink sync=false".into());
     }
 
+    if cfg.audio.enabled && parts.aac.is_some() {
+        d.extend(crate::rsp::encoder_branches(cfg, tracks.len(), &crate::rsp::now_ms().to_string()));
+    } else {
+        d.extend(crate::rsp::encoder_branches(cfg, 0, &crate::rsp::now_ms().to_string()));
+    }
+
     if let Some(location) = parts.record {
         // eigener Parser: MP4 braucht avc-Format, der TS-Weg liefert byte-stream
         d.push(format!("ve. ! queue max-size-buffers=0 max-size-bytes=0 max-size-time=2000000000 ! {parser} ! rec.video"));

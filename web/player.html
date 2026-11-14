@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Livestream</title>
+<style>
+  @font-face { font-family: "Public Sans"; src: url(/fonts/public-sans.woff2) format("woff2"); font-weight: 100 900; font-display: swap; }
+  :root {
+    --bg: #f5f6f8; --surface: #ffffff; --text: #14181f; --muted: #5b6472; --line: #e2e5ea;
+    --accent: #1f5fd6; --accent-text: #ffffff; --live: #d92d20; --radius: 14px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) { --bg: #0e1116; --surface: #171b22; --text: #eef1f5; --muted: #9aa4b2; --line: #262c36; --accent: #5b8cff; }
+  }
+  :root[data-theme="dark"] { --bg: #0e1116; --surface: #171b22; --text: #eef1f5; --muted: #9aa4b2; --line: #262c36; --accent: #5b8cff; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 16px/1.5 "Public Sans", system-ui, sans-serif; }
+  main { max-width: 1100px; margin: 0 auto; padding: 16px; display: grid; gap: 16px; }
+  body.embed main { padding: 0; max-width: none; }
+  body.embed .below, body.embed .lib { display: none; }
+  .stage { position: relative; aspect-ratio: 16 / 9; background: #000; border-radius: var(--radius); overflow: hidden; }
+  body.embed .stage { border-radius: 0; }
+  video { width: 100%; height: 100%; display: block; background: #000; }
+  .offline { position: absolute; inset: 0; display: grid; place-items: center; text-align: center; color: #e9edf3; padding: 24px; background: radial-gradient(circle at 50% 40%, #20262f, #0b0d11); }
+  .offline p { margin: 6px 0 0; color: #a8b1be; }
+  .badge { position: absolute; top: 12px; left: 12px; background: var(--live); color: #fff; font-weight: 700; font-size: 13px; letter-spacing: .04em; padding: 3px 10px; border-radius: 999px; }
+  .below { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between; }
+  h1 { font-size: clamp(20px, 3vw, 28px); margin: 0; line-height: 1.2; }
+  .meta { color: var(--muted); font-size: 14px; }
+  .btn { display: inline-flex; align-items: center; min-height: 44px; padding: 0 20px; border-radius: 999px; background: var(--accent); color: var(--accent-text); font-weight: 600; text-decoration: none; border: 0; cursor: pointer; font: inherit; }
+  .btn--soft { background: var(--surface); color: var(--text); border: 1px solid var(--line); }
+  .controls { display: flex; gap: 8px; flex-wrap: wrap; }
+  select { min-height: 44px; border-radius: 10px; border: 1px solid var(--line); background: var(--surface); color: var(--text); padding: 0 10px; font: inherit; }
+  .lib h2 { font-size: 18px; margin: 8px 0; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px; }
+  .card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px; cursor: pointer; text-align: left; color: inherit; font: inherit; }
+  .card:hover, .card:focus-visible { border-color: var(--accent); outline: none; }
+  .card strong { display: block; }
+  .chapters { display: flex; gap: 6px; flex-wrap: wrap; }
+  .chapters button { min-height: 36px; border-radius: 999px; border: 1px solid var(--line); background: var(--surface); color: var(--text); padding: 0 12px; cursor: pointer; font: inherit; font-size: 14px; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main>
+  <div class="stage">
+    <video id="v" controls playsinline></video>
+    <span class="badge" id="badge" hidden>LIVE</span>
+    <div class="offline" id="offline"><div><strong id="off-title">Livestream</strong><p id="off-text">Gerade läuft keine Sendung.</p></div></div>
+  </div>
+  <div class="below">
+    <div>
+      <h1 id="title">Livestream</h1>
+      <div class="meta" id="meta"></div>
+    </div>
+    <div class="controls">
+      <select id="audio" aria-label="Tonspur" hidden></select>
+      <select id="subs" aria-label="Untertitel" hidden></select>
+      <button type="button" class="btn btn--soft" id="go-live" hidden>Zur Live-Sendung</button>
+      <a class="btn" id="action" hidden target="_blank" rel="noopener"></a>
+    </div>
+  </div>
+  <div class="chapters" id="chapters"></div>
+  <section class="lib" id="lib" hidden>
+    <h2>Mediathek</h2>
+    <div class="grid" id="lib-grid"></div>
+  </section>
+</main>
+<script src="/vendor/hls.min.js"></script>
+<script>
+const $ = s => document.querySelector(s);
+const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const q = new URLSearchParams(location.search);
+if (q.has('embed')) document.body.classList.add('embed');
+let viewer;
+try { viewer = localStorage.getItem('lzs-viewer'); } catch (e) {}
+if (!viewer) { viewer = Math.random().toString(36).slice(2) + Date.now().toString(36); try { localStorage.setItem('lzs-viewer', viewer); } catch (e) {} }
+
+const video = $('#v');
+let hls = null, current = null, info = null;
+
+function fmtDur(s) { s = Math.round(s); const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60); return h ? `${h} h ${m} min` : `${m} min`; }
+function fmtDate(ms) { return new Date(ms).toLocaleString('de-DE', { weekday: 'short', day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }); }
+
+function play(src, kind, session) {
+  if (current && current.src === src) return;
+  current = { src, kind, session };
+  $('#offline').hidden = true;
+  $('#badge').hidden = kind !== 'live';
+  $('#go-live').hidden = !(kind === 'vod' && info && info.live);
+  if (hls) { hls.destroy(); hls = null; }
+  if (window.Hls && Hls.isSupported()) {
+    hls = new Hls({ liveSyncDurationCount: 3, enableWorker: true });
+    hls.on(Hls.Events.MANIFEST_PARSED, () => { video.play().catch(() => {}); tracks(); });
+    hls.on(Hls.Events.AUDIO_TRACKS_UPDATED, tracks);
+    hls.on(Hls.Events.SUBTITLE_TRACKS_UPDATED, tracks);
+    hls.loadSource(src);
+    hls.attachMedia(video);
+  } else {
+    video.src = src;
+    video.play().catch(() => {});
+  }
+}
+
+function tracks() {
+  if (!hls) return;
+  const a = hls.audioTracks || [];
+  $('#audio').hidden = a.length < 2;
+  $('#audio').innerHTML = a.map((t, i) => `<option value="${i}" ${i === hls.audioTrack ? 'selected' : ''}>${esc(t.name || t.lang || 'Ton ' + (i + 1))}</option>`).join('');
+  const tt = Array.from(video.textTracks || []);
+  $('#subs').hidden = !tt.length;
+  $('#subs').innerHTML = '<option value="-1">Untertitel aus</option>' + tt.map((t, i) => `<option value="${i}">${esc(t.label || t.language || 'Untertitel ' + (i + 1))}</option>`).join('');
+}
+$('#audio').addEventListener('change', e => { if (hls) hls.audioTrack = +e.target.value; });
+$('#subs').addEventListener('change', e => { Array.from(video.textTracks).forEach((t, i) => { t.mode = i === +e.target.value ? 'showing' : 'disabled'; }); });
+$('#go-live').addEventListener('click', () => { current = null; refresh(true); });
+
+function offline() {
+  if (hls) { hls.destroy(); hls = null; }
+  video.removeAttribute('src'); video.load();
+  current = null;
+  $('#offline').hidden = false;
+  $('#badge').hidden = true;
+}
+
+function chapters(s) {
+  $('#chapters').innerHTML = (s && s.cues || []).map(c => `<button type="button" data-t="${+c.offset_s}">${esc(c.label)}</button>`).join('');
+}
+$('#chapters').addEventListener('click', e => { const t = e.target.dataset.t; if (t !== undefined) { video.currentTime = +t; video.play().catch(() => {}); } });
+
+async function refresh(force) {
+  try {
+    info = await (await fetch('/api/player/info', { cache: 'no-store' })).json();
+  } catch (e) { return; }
+  const title = info.title || 'Livestream';
+  document.title = title;
+  $('#title').textContent = title;
+  $('#off-title').textContent = title;
+  $('#off-text').textContent = info.offline_text || 'Gerade läuft keine Sendung.';
+  if (info.action) { $('#action').hidden = false; $('#action').textContent = info.action.label; $('#action').href = info.action.url; } else $('#action').hidden = true;
+  const lib = info.library || [];
+  $('#lib').hidden = !lib.length;
+  $('#lib-grid').innerHTML = lib.map(s => `<button type="button" class="card" data-id="${esc(s.id)}"><strong>${esc(s.title)}</strong><span class="meta">${fmtDate(s.started_ms)} · ${fmtDur(s.duration_s)}${s.cues.length ? ' · ' + s.cues.length + ' Kapitel' : ''}</span></button>`).join('');
+  const wanted = q.get('session');
+  if (current && current.kind === 'vod' && !force) { $('#go-live').hidden = !info.live; return; }
+  if (wanted) { const s = lib.find(x => x.id === wanted); if (s) { openVod(s); return; } }
+  if (info.live) {
+    play(info.src, 'live', info.session);
+    $('#meta').textContent = info.delay_s ? `Live · zeitversetzt um ${info.delay_s} s` : 'Live';
+    chapters(null);
+  } else if (!current || current.kind === 'live') {
+    offline();
+    $('#meta').textContent = lib.length ? 'Vergangene Sendungen unten in der Mediathek' : '';
+  }
+}
+
+function openVod(s) {
+  play(`/vod/${s.id}/index.m3u8`, 'vod', s.id);
+  $('#title').textContent = s.title;
+  $('#meta').textContent = `${fmtDate(s.started_ms)} · ${fmtDur(s.duration_s)}`;
+  chapters(s);
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+$('#lib-grid').addEventListener('click', e => {
+  const id = e.target.closest('.card')?.dataset.id;
+  const s = (info.library || []).find(x => x.id === id);
+  if (s) openVod(s);
+});
+
+// Zuschauerzählung: alle 20 s, nur solange wirklich abgespielt wird
+setInterval(() => {
+  if (!current || video.paused) return;
+  fetch('/api/player/ping', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ viewer, session: current.session || '' }) }).catch(() => {});
+}, 20000);
+video.addEventListener('playing', () => {
+  if (current) fetch('/api/player/ping', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ viewer, session: current.session || '' }) }).catch(() => {});
+}, { once: true });
+
+refresh();
+setInterval(refresh, 10000);
+</script>
+</body>
+</html>

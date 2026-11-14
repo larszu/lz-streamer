@@ -19,6 +19,8 @@ ndarray = "0.17"
 vst3-host = { version = "0.11", default-features = false }
 anyhow = "1.0.104"
 base64 = "0.22"
+blake2 = "0.10"
+ureq = "3"
 argon2 = { version = "0.5", features = ["std"] }
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 axum = { version = "0.8.9", features = ["ws"] }

@@ -50,6 +50,9 @@ pub struct ChannelStatus {
     pub graphics: Option<GfxStatus>,
     pub luma: Option<f64>,
     pub uptime_s: f64,
+    /// Empfangsstelle bzw. Standort-Decoder: Zuspieler und Ziele
+    #[serde(default)]
+    pub playout: Option<crate::rsp::PlayoutStatus>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -206,6 +209,9 @@ pub enum ChildCmd {
     Caption2 { text: String },
     /// schaltbare Eigenschaft live umstellen (siehe `control.rs`); `cfg` ist die neue Konfiguration
     Control { path: String, cfg: Box<Config> },
+    /// Empfangsstelle: auf die Soll-Verzögerung zurückspringen
+    #[serde(rename = "catch_up")]
+    CatchUp,
     Stop,
 }
 
@@ -271,6 +277,22 @@ pub struct Channel {
     rec_start_ns: u64,
     /// so viele Zeilen stehen schon in den Untertiteldateien (None = neu schreiben)
     cues_written: Option<usize>,
+    /// Standort-Decoder: Abruf und Zuspieler (Empfangsstelle)
+    pull: Option<PullRun>,
+}
+
+/// Decoder mit Quelle „Empfangsstelle“
+pub struct PullRun {
+    _fetcher: crate::rsp::Fetcher,
+    fetch: Arc<Mutex<crate::rsp::FetchStatus>>,
+    ctl: Arc<crate::rsp::FeedControl>,
+    feed: Arc<Mutex<crate::rsp::FeedStatus>>,
+}
+
+impl Drop for PullRun {
+    fn drop(&mut self) {
+        self.ctl.stop.store(true, Ordering::Relaxed);
+    }
 }
 
 /// Text in die Live-Untertitelquelle `ccin` schieben (etwas in die Zukunft
@@ -598,6 +620,7 @@ impl Channel {
                 Self::start_encoder(&cfg.encoder, &devices, opts)
             }
             Role::Decoder => Self::start_decoder(&cfg.decoder, opts),
+            Role::Relay => Err(anyhow!("Die Empfangsstelle läuft ohne Kanal-Pipeline")),
         }
     }
 
@@ -825,6 +848,7 @@ impl Channel {
                         caption_seen: None,
                         rec_start_ns: 0,
                         cues_written: None,
+                        pull: None,
                         cc,
                         outputs: cfg
                             .outputs
@@ -877,19 +901,29 @@ impl Channel {
         let counters: Arc<Counters> = Arc::default();
         let codec: Arc<Mutex<Option<Codec>>> = Arc::default();
         let tracks: Arc<Mutex<Vec<TrackInfo>>> = Arc::default();
-        let desc = format!(
-            "srtsrc name=srtin uri={} latency={} ! queue max-size-buffers=0 max-size-bytes=0 max-size-time=2000000000 \
-             ! tsdemux name=demux latency={}",
-            pipeline::quote(&cfg.srt.uri()),
-            cfg.srt.latency_ms,
-            cfg.demux_latency_ms
-        );
+        let from_relay = cfg.source == crate::rsp::DecoderSource::Relay;
+        let desc = if from_relay {
+            // Bytes kommen getaktet vom Zuspieler (Aufnahmezeit + Verzögerung)
+            format!(
+                "appsrc name=srtin is-live=true format=bytes do-timestamp=true block=false max-bytes=16000000 \
+                 ! queue max-size-buffers=0 max-size-bytes=0 max-size-time=2000000000 ! tsdemux name=demux latency={}",
+                cfg.demux_latency_ms
+            )
+        } else {
+            format!(
+                "srtsrc name=srtin uri={} latency={} ! queue max-size-buffers=0 max-size-bytes=0 max-size-time=2000000000 \
+                 ! tsdemux name=demux latency={}",
+                pipeline::quote(&cfg.srt.uri()),
+                cfg.srt.latency_ms,
+                cfg.demux_latency_ms
+            )
+        };
         let pipeline = gst::parse::launch(&desc)?.downcast::<gst::Pipeline>().map_err(|_| anyhow!("keine Pipeline"))?;
         let srt = pipeline.by_name("srtin").unwrap();
-        if !cfg.srt.passphrase.is_empty() {
+        if !from_relay && !cfg.srt.passphrase.is_empty() {
             srt.set_property("passphrase", &cfg.srt.passphrase);
         }
-        if !cfg.srt.streamid.is_empty() {
+        if !from_relay && !cfg.srt.streamid.is_empty() {
             srt.set_property("streamid", &cfg.srt.streamid);
         }
         count_bytes(&srt.static_pad("src").unwrap(), &counters);
@@ -900,7 +934,7 @@ impl Channel {
         let t2 = tracks.clone();
         let cc: Arc<CaptionCounter> = Arc::default();
         let cc2 = cc.clone();
-        let ts_off = -(cfg.srt.latency_ms as i64) * 1_000_000;
+        let ts_off = if from_relay { 0 } else { -(cfg.srt.latency_ms as i64) * 1_000_000 };
         demux.connect_pad_added(move |_, pad| {
             let Some(pipeline) = weak.upgrade() else { return };
             let name = pad
@@ -1042,7 +1076,28 @@ impl Channel {
         // bewusst nicht enthalten (siehe ts-offset oben).
         pipeline.set_latency(gst::ClockTime::from_mseconds((cfg.demux_latency_ms + cfg.output_buffer_ms) as u64));
         pipeline.set_state(gst::State::Playing).context("Decoder-Pipeline startet nicht")?;
-        event(&events, "ok", format!("Decoder wartet auf {}", cfg.srt.uri()));
+        let pull = if from_relay {
+            let r = &cfg.relay;
+            let _ = std::fs::create_dir_all(&r.cache_dir);
+            crate::rsp::prune_cache(std::path::Path::new(&r.cache_dir), 48);
+            let fetcher = crate::rsp::Fetcher::spawn(r.clone());
+            let (ctl, feed) = (Arc::new(crate::rsp::FeedControl::default()), Arc::new(Mutex::new(crate::rsp::FeedStatus::default())));
+            let appsrc = srt.clone().downcast::<gst_app::AppSrc>().map_err(|_| anyhow!("appsrc"))?;
+            crate::rsp::spawn_feeder(
+                crate::rsp::DirSource { root: r.cache_dir.clone().into(), session: r.session.clone() },
+                r.delay_s as u64 * 1000,
+                ctl.clone(),
+                feed.clone(),
+                Box::new(move |data, _, _| {
+                    let _ = appsrc.push_buffer(gst::Buffer::from_slice(data.to_vec()));
+                }),
+            );
+            event(&events, "ok", format!("Decoder holt von {} (Verzögerung {} s)", r.url, r.delay_s));
+            Some(PullRun { fetch: fetcher.status.clone(), _fetcher: fetcher, ctl, feed })
+        } else {
+            event(&events, "ok", format!("Decoder wartet auf {}", cfg.srt.uri()));
+            None
+        };
         Ok(Channel {
             second: None,
             role: Role::Decoder,
@@ -1052,7 +1107,7 @@ impl Channel {
             started: Instant::now(),
             last_tick: (Instant::now(), 0, 0),
             rates: (0.0, 0.0),
-            input: format!("SRT {}", cfg.srt.uri()),
+            input: if from_relay { format!("Empfangsstelle {}", cfg.relay.url) } else { format!("SRT {}", cfg.srt.uri()) },
             encoder: None,
             codec,
             prev_standby: None,
@@ -1067,7 +1122,8 @@ impl Channel {
             gfx: None,
             caption_seen: None,
             rec_start_ns: 0,
-                        cues_written: None,
+            cues_written: None,
+            pull,
         })
     }
 
@@ -1141,6 +1197,11 @@ impl Channel {
             ChildCmd::Caption { text } => self.push_caption(text),
             ChildCmd::Caption2 { text } => self.push_caption2(text),
             ChildCmd::Control { path, cfg } => self.apply_control(path, cfg),
+            ChildCmd::CatchUp => {
+                if let Some(p) = &self.pull {
+                    p.ctl.catch_up.store(true, Ordering::Relaxed);
+                }
+            }
             ChildCmd::Stop => self.stop(),
         }
     }
@@ -1471,6 +1532,20 @@ impl Channel {
             },
             luma: self.counters.luma(),
             uptime_s: self.started.elapsed().as_secs_f64().round(),
+            playout: self.pull.as_ref().map(|p| crate::rsp::PlayoutStatus {
+                feed: p.feed.lock().unwrap().clone(),
+                destinations: vec![crate::rsp::DestStatus {
+                    name: "Empfangsstelle".into(),
+                    target: p.fetch.lock().unwrap().session.clone().unwrap_or_default(),
+                    state: match (p.fetch.lock().unwrap().connected, p.fetch.lock().unwrap().last_error.clone()) {
+                        (true, _) => "verbunden".into(),
+                        (false, Some(e)) => format!("Fehler: {e}"),
+                        (false, None) => "verbindet".into(),
+                    },
+                    bytes: p.fetch.lock().unwrap().fetched,
+                    delay_s: p.feed.lock().unwrap().current_delay_s,
+                }],
+            }),
         };
         out.splice(0..0, self.events.lock().unwrap().drain(..));
         out.push(ChildMsg::Status(status));
@@ -1665,7 +1740,7 @@ impl RtmpSender {
 
 // ---------------------------------------------------------------- Kindprozess
 
-fn emit(msg: &ChildMsg) {
+pub fn emit(msg: &ChildMsg) {
     use std::io::Write;
     let mut out = std::io::stdout().lock();
     let _ = serde_json::to_writer(&mut out, msg);
@@ -1677,6 +1752,9 @@ fn emit(msg: &ChildMsg) {
 /// Befehle als JSON-Zeilen von stdin. Endet stdin (Elternprozess weg),
 /// beendet sich der Kanal selbst – keine verwaisten Prozesse.
 pub fn run_child(cfg: Config, opts: ChannelOptions) -> i32 {
+    if cfg.role == Role::Relay {
+        return crate::rsp::run_relay_child(&cfg.relay);
+    }
     let mut ch = match Channel::start(&cfg, &opts) {
         Ok(c) => c,
         Err(e) => {

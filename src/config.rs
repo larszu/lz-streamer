@@ -9,6 +9,8 @@ pub enum Role {
     #[default]
     Encoder,
     Decoder,
+    /// Empfangsstelle: nimmt gesicherte Übertragungen an, verzögert und verteilt sie
+    Relay,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -432,6 +434,9 @@ pub struct EncoderConfig {
     /// weitere Ausgänge (SRT, UDP, RTP) neben dem Haupt-SRT
     pub outputs: Vec<ExtraOutput>,
     pub record: RecordConfig,
+    /// gesicherte Übertragung an eine Empfangsstelle
+    #[serde(default)]
+    pub rsp: crate::rsp::SendConfig,
     /// HLS-Ausgabe (CMAF), lokal unter /hls/
     #[serde(default)]
     pub hls: crate::hls::HlsConfig,
@@ -569,6 +574,9 @@ pub enum OutputKind {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct DecoderConfig {
+    /// SRT direkt oder von einer Empfangsstelle (gepuffert, standortsynchron)
+    pub source: crate::rsp::DecoderSource,
+    pub relay: crate::rsp::PullConfig,
     pub srt: SrtConfig,
     pub output: OutputKind,
     pub device: u32,
@@ -597,6 +605,8 @@ pub struct DecoderConfig {
 impl Default for DecoderConfig {
     fn default() -> Self {
         Self {
+            source: crate::rsp::DecoderSource::Srt,
+            relay: crate::rsp::PullConfig::default(),
             srt: SrtConfig { mode: SrtMode::Caller, ..SrtConfig::default() },
             output: OutputKind::Window,
             device: 0,
@@ -620,6 +630,7 @@ pub struct Config {
     pub role: Role,
     pub encoder: EncoderConfig,
     pub decoder: DecoderConfig,
+    pub relay: crate::rsp::RelayConfig,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -661,6 +672,15 @@ impl Config {
         for o in &mut self.encoder.outputs {
             o.srt.normalize();
         }
+        let r = &mut self.encoder.rsp;
+        r.segment_s = r.segment_s.clamp(1, 10);
+        r.parallel = r.parallel.clamp(1, 8);
+        r.spool_minutes = r.spool_minutes.clamp(1, 24 * 60);
+        self.relay.delay_s = self.relay.delay_s.clamp(4, 6 * 3600);
+        for d in &mut self.relay.destinations {
+            d.srt.normalize();
+        }
+        self.decoder.relay.delay_s = self.decoder.relay.delay_s.clamp(4, 7 * 24 * 3600);
     }
 
     /// Hinweise statt Pflichtfelder: nichts davon verhindert den Start.
@@ -695,15 +715,35 @@ impl Config {
                 if e.video.width > 1920 && e.video.bitrate_kbps < 12_000 {
                     h.push(info("UHD mit weniger als 12 Mbit/s wird sichtbar weich."));
                 }
+                if e.rsp.enabled && (e.rsp.url.trim().is_empty() || e.rsp.token.is_empty()) {
+                    h.push(warn("Gesicherte Übertragung ist an, aber das Gerät ist mit keiner Empfangsstelle gekoppelt."));
+                }
                 if e.srt.latency_ms < 80 {
                     h.push(info("SRT-Latenz unter 80 ms: Verluste lassen sich kaum noch reparieren (Faustregel 3–4 × RTT)."));
                 }
             }
             Role::Decoder => {
                 let d = &self.decoder;
-                if d.srt.mode == SrtMode::Caller && d.srt.host.trim().is_empty() {
+                if d.source == crate::rsp::DecoderSource::Relay {
+                    if d.relay.url.trim().is_empty() || d.relay.token.is_empty() {
+                        h.push(warn("Quelle Empfangsstelle: Das Gerät ist noch nicht gekoppelt."));
+                    }
+                    h.push(info(&format!("Ausgabe zur Aufnahmezeit + {} s. Standorte mit gleicher Verzögerung laufen bildgleich, wenn die Rechneruhren per NTP gehen.", d.relay.delay_s)));
+                } else if d.srt.mode == SrtMode::Caller && d.srt.host.trim().is_empty() {
                     h.push(warn("Keine Encoder-Adresse eingetragen – verbunden wird mit diesem Rechner (127.0.0.1)."));
                 }
+            }
+            Role::Relay => {
+                let r = &self.relay;
+                if r.destinations.iter().all(|d| !d.enabled) {
+                    h.push(info("Kein Ziel eingetragen – die Sendung läuft nur im Web-Player (/player)."));
+                }
+                for d in r.destinations.iter().filter(|d| d.enabled && d.kind == crate::rsp::DestKind::Rtmp) {
+                    if d.platform != crate::rsp::Platform::Custom && d.key.trim().is_empty() {
+                        h.push(warn(&format!("{}: Stream-Schlüssel fehlt.", d.label())));
+                    }
+                }
+                h.push(info(&format!("Verzögerung {} s: So lange darf die Verbindung zum Encoder ausfallen, ohne dass Zuschauer etwas merken.", r.delay_s)));
             }
         }
         h
