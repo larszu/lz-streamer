@@ -23,6 +23,143 @@ pub enum InputKind {
     File,
     /// USB-Video (UVC), z. B. AJA U-TAP: höchstens 1080p60, Ton als UAC (2 Kanäle), kein VANC
     Uvc,
+    /// MPEG-TS über SRT (Caller oder Listener)
+    Srt,
+    /// MPEG-TS über UDP, auch Multicast
+    Udp,
+    /// MPEG-TS über RTP (Nutzlasttyp 33), auch Multicast
+    Rtp,
+    /// RTMP-Strom von einem Server abholen
+    Rtmp,
+}
+
+impl InputKind {
+    pub fn is_network(self) -> bool {
+        matches!(self, InputKind::Srt | InputKind::Udp | InputKind::Rtp | InputKind::Rtmp)
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum NetMode {
+    /// dekodieren und mit der eigenen Kette neu kodieren
+    #[default]
+    Transcode,
+    /// Transportstrom unverändert auf die Ausgänge (Gateway)
+    Passthrough,
+}
+
+/// Netz-Eingang des Encoders.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct NetInputConfig {
+    pub mode: NetMode,
+    pub srt: SrtConfig,
+    /// UDP/RTP: Empfangsadresse; leer = alle Schnittstellen, 224.–239.x = Multicast-Gruppe
+    pub host: String,
+    pub port: u16,
+    /// RTMP: Quelle `rtmp://server/app/stream`
+    pub url: String,
+}
+
+impl Default for NetInputConfig {
+    fn default() -> Self {
+        Self {
+            mode: NetMode::Transcode,
+            srt: SrtConfig { port: 9100, ..SrtConfig::default() },
+            host: String::new(),
+            port: 5000,
+            url: String::new(),
+        }
+    }
+}
+
+/// Eingefügte Netzadresse, zerlegt.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NetAddress {
+    Srt(Target),
+    Udp { host: String, port: Option<u16> },
+    Rtp { host: String, port: Option<u16> },
+    Rtmp(String),
+}
+
+/// Erkennt `srt://…`, `udp://[@]host:port`, `rtp://host:port` und `rtmp(s)://…`.
+pub fn parse_net_address(s: &str) -> Option<NetAddress> {
+    let s = s.trim();
+    let lower = s.to_ascii_lowercase();
+    if lower.starts_with("rtmp://") || lower.starts_with("rtmps://") {
+        return Some(NetAddress::Rtmp(s.to_string()));
+    }
+    if lower.starts_with("srt://") {
+        return parse_target(s).map(NetAddress::Srt);
+    }
+    let (rtp, rest) = if lower.starts_with("udp://") {
+        (false, &s[6..])
+    } else if lower.starts_with("rtp://") {
+        (true, &s[6..])
+    } else {
+        return None;
+    };
+    let t = parse_target(rest.trim_start_matches('@'))?;
+    let host = t.host;
+    Some(if rtp { NetAddress::Rtp { host, port: t.port } } else { NetAddress::Udp { host, port: t.port } })
+}
+
+impl NetInputConfig {
+    /// URI für `srtsrc`/`udpsrc`/`rtmp2src` bzw. `fallbacksrc`.
+    pub fn uri(&self, kind: InputKind) -> String {
+        match kind {
+            InputKind::Srt => {
+                let s = &self.srt;
+                let mut u = format!("{}&latency={}", s.uri(), s.latency_ms);
+                if !s.passphrase.is_empty() {
+                    u.push_str(&format!("&passphrase={}", url_escape(&s.passphrase)));
+                }
+                if !s.streamid.is_empty() {
+                    u.push_str(&format!("&streamid={}", url_escape(&s.streamid)));
+                }
+                u
+            }
+            InputKind::Udp | InputKind::Rtp => {
+                let h = self.listen_host();
+                let h = if h.contains(':') { format!("[{h}]") } else { h.to_string() };
+                format!("{}://{h}:{}", if kind == InputKind::Rtp { "rtp" } else { "udp" }, self.port)
+            }
+            InputKind::Rtmp => self.url.trim().to_string(),
+            _ => String::new(),
+        }
+    }
+
+    pub fn listen_host(&self) -> &str {
+        let h = self.host.trim();
+        if h.is_empty() { "0.0.0.0" } else { h }
+    }
+
+    /// Anzeige ohne Passwort/Stream-Key.
+    pub fn label(&self, kind: InputKind) -> String {
+        match kind {
+            InputKind::Srt => format!("SRT {}", self.srt.uri()),
+            InputKind::Udp | InputKind::Rtp => self.uri(kind),
+            InputKind::Rtmp => {
+                let u = self.url.trim();
+                // letzter Pfadteil ist meist der Stream-Key
+                match u.rsplit_once('/') {
+                    Some((base, _)) if base.matches('/').count() >= 3 => format!("{base}/…"),
+                    _ => u.to_string(),
+                }
+            }
+            _ => String::new(),
+        }
+    }
+}
+
+fn url_escape(s: &str) -> String {
+    s.bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => (b as char).to_string(),
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -60,11 +197,62 @@ pub struct InputConfig {
     /// Ton vom Standard-Toneingang (UAC des Geräts dort auswählen); sonst Stille
     #[serde(default)]
     pub uvc_audio: bool,
+    /// Netz-Eingang (SRT/UDP/RTP/RTMP)
+    #[serde(default)]
+    pub net: NetInputConfig,
+}
+
+impl InputConfig {
+    /// Eingefügte Adresse (`srt://…`, `udp://…`, `rtp://…`, `rtmp://…`) in einem der
+    /// Adressfelder zerlegen und die Eingangsart danach stellen.
+    pub fn normalize(&mut self) {
+        let n = &mut self.net;
+        let found = [n.srt.host.clone(), n.host.clone(), n.url.clone()].into_iter().find_map(|s| parse_net_address(&s));
+        let rtp = matches!(found, Some(NetAddress::Rtp { .. }));
+        match found {
+            Some(NetAddress::Srt(t)) => {
+                self.kind = InputKind::Srt;
+                if n.url.trim().to_ascii_lowercase().starts_with("srt://") {
+                    n.url.clear();
+                }
+                if n.host.trim().to_ascii_lowercase().starts_with("srt://") {
+                    n.host.clear();
+                }
+                n.srt.host = t.host;
+                if let Some(p) = t.port {
+                    n.srt.port = p;
+                }
+                n.srt.mode = t.mode.unwrap_or(if n.srt.host.is_empty() { SrtMode::Listener } else { SrtMode::Caller });
+            }
+            Some(NetAddress::Udp { host, port }) | Some(NetAddress::Rtp { host, port }) => {
+                self.kind = if rtp { InputKind::Rtp } else { InputKind::Udp };
+                for f in [&mut n.srt.host, &mut n.url] {
+                    if parse_net_address(f).is_some() {
+                        f.clear();
+                    }
+                }
+                n.host = host;
+                if let Some(p) = port {
+                    n.port = p;
+                }
+            }
+            Some(NetAddress::Rtmp(u)) => {
+                self.kind = InputKind::Rtmp;
+                for f in [&mut n.srt.host, &mut n.host] {
+                    if parse_net_address(f).is_some() {
+                        f.clear();
+                    }
+                }
+                n.url = u;
+            }
+            None => n.srt.normalize(),
+        }
+    }
 }
 
 impl Default for InputConfig {
     fn default() -> Self {
-        Self { kind: InputKind::Auto, device: 0, connection: Connection::Auto, crop: [0; 4], file: String::new(), uvc_device: 0, uvc_audio: true }
+        Self { kind: InputKind::Auto, device: 0, connection: Connection::Auto, crop: [0; 4], file: String::new(), uvc_device: 0, uvc_audio: true, net: NetInputConfig::default() }
     }
 }
 
@@ -632,6 +820,8 @@ impl Config {
     pub fn normalize(&mut self) {
         self.encoder.srt.normalize();
         self.decoder.srt.normalize();
+        self.encoder.input.normalize();
+        self.encoder.input.net.srt.latency_ms = self.encoder.input.net.srt.latency_ms.clamp(20, 8000);
         let v = &mut self.encoder.video;
         v.width = v.width.clamp(160, 7680) & !1;
         v.height = v.height.clamp(90, 4320) & !1;
@@ -753,6 +943,45 @@ mod tests {
         s.mode = SrtMode::Rendezvous;
         s.host = "198.51.100.7".into();
         assert_eq!(s.uri(), "srt://198.51.100.7:9001?mode=rendezvous");
+    }
+
+    #[test]
+    fn pasted_network_inputs_are_split() {
+        let mut i = InputConfig::default();
+        i.net.srt.host = "srt://example.org:7000?mode=caller".into();
+        i.normalize();
+        assert_eq!(i.kind, InputKind::Srt);
+        assert_eq!((i.net.srt.host.as_str(), i.net.srt.port, i.net.srt.mode), ("example.org", 7000, SrtMode::Caller));
+        i.net.srt.host = "srt://:9200".into();
+        i.normalize();
+        assert_eq!((i.net.srt.host.as_str(), i.net.srt.port, i.net.srt.mode), ("", 9200, SrtMode::Listener));
+
+        let mut i = InputConfig::default();
+        i.net.host = "udp://@239.1.2.3:1234".into();
+        i.normalize();
+        assert_eq!((i.kind, i.net.host.as_str(), i.net.port), (InputKind::Udp, "239.1.2.3", 1234));
+        assert_eq!(i.net.uri(i.kind), "udp://239.1.2.3:1234");
+        i.net.host = "rtp://239.1.2.4:5004".into();
+        i.normalize();
+        assert_eq!((i.kind, i.net.host.as_str(), i.net.port), (InputKind::Rtp, "239.1.2.4", 5004));
+        i.net.host.clear();
+        assert_eq!(i.net.uri(InputKind::Rtp), "rtp://0.0.0.0:5004");
+
+        // RTMP in ein beliebiges Adressfeld eingefügt
+        let mut i = InputConfig::default();
+        i.net.host = "rtmp://example.org/live/geheim".into();
+        i.normalize();
+        assert_eq!((i.kind, i.net.url.as_str(), i.net.host.as_str()), (InputKind::Rtmp, "rtmp://example.org/live/geheim", ""));
+        assert_eq!(i.net.label(i.kind), "rtmp://example.org/live/…");
+
+        // SRT-Parameter landen in der URI
+        let mut n = NetInputConfig::default();
+        n.srt.passphrase = "ab cd&1234".into();
+        assert_eq!(n.uri(InputKind::Srt), "srt://:9100?mode=listener&latency=120&passphrase=ab%20cd%261234");
+        // Ohne eingefügte Adresse bleibt die Art stehen
+        let mut i = InputConfig { kind: InputKind::Test, ..Default::default() };
+        i.normalize();
+        assert_eq!(i.kind, InputKind::Test);
     }
 
     #[test]

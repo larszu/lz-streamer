@@ -80,6 +80,12 @@ pub fn resolve_input(cfg: &InputConfig, devices: &[CaptureDevice]) -> ResolvedIn
         InputKind::File => ResolvedInput::File { path: cfg.file.clone() },
         InputKind::Uvc => ResolvedInput::Uvc { index: cfg.uvc_device, audio: cfg.uvc_audio },
         InputKind::Decklink => ResolvedInput::Decklink { device: cfg.device, connection: cfg.connection.gst_nick() },
+        InputKind::Srt | InputKind::Udp | InputKind::Rtp | InputKind::Rtmp => ResolvedInput::Net {
+            kind: cfg.kind,
+            uri: cfg.net.uri(cfg.kind),
+            label: cfg.net.label(cfg.kind),
+            passthrough: cfg.net.mode == crate::config::NetMode::Passthrough,
+        },
         InputKind::Auto => {
             if has_input(cfg.device) {
                 ResolvedInput::Decklink { device: cfg.device, connection: cfg.connection.gst_nick() }

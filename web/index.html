@@ -100,8 +100,9 @@
           <label class="field"><span>Quelle</span>
             <select class="input" data-path="encoder.input.kind">
               <option value="auto">Automatisch</option><option value="decklink">DeckLink / UltraStudio</option><option value="test">Testbild</option><option value="file">Videodatei (Echtzeit)</option><option value="uvc">USB-Video (UVC, z. B. AJA U-TAP)</option>
+              <option value="srt">SRT</option><option value="udp">UDP (MPEG-TS)</option><option value="rtp">RTP (MPEG-TS)</option><option value="rtmp">RTMP abholen</option>
             </select></label>
-          <label class="field"><span>Anschluss</span>
+          <label class="field" data-show-mode="encoder.input.kind=auto|decklink"><span>Anschluss</span>
             <select class="input" data-path="encoder.input.connection">
               <option value="auto">Automatisch</option><option value="sdi">SDI</option><option value="hdmi">HDMI</option>
             </select></label>
@@ -112,6 +113,38 @@
           <label class="switch"><input type="checkbox" data-path="encoder.input.uvc_audio"> Ton vom Standard-Toneingang (UAC)</label>
         </div>
         <p class="hint" data-show-mode="encoder.input.kind=uvc">USB-Video kann höchstens 1080p60, 2 Tonkanäle und keine Untertitel aus VANC. Den Ton des Geräts in den Systemeinstellungen als Standard-Eingang wählen.</p>
+        <div data-show-mode="encoder.input.kind=srt|udp|rtp|rtmp">
+          <div class="seg" role="group" aria-label="Netz-Eingang" data-seg="encoder.input.net.mode">
+            <button type="button" data-v="transcode">Neu kodieren</button>
+            <button type="button" data-v="passthrough" title="Transportstrom unverändert weitergeben">Durchreichen</button>
+          </div>
+          <p class="hint" data-show-mode="encoder.input.net.mode=transcode">Fällt die Quelle aus, kommt das Standbild; kehrt sie zurück, verbindet der Eingang selbst neu.</p>
+          <p class="hint" data-show-mode="encoder.input.net.mode=passthrough">Ohne Neukodierung: Bild, Ton und Untertitel bleiben, wie sie ankommen. Kein Standbild, kein RTMP-Ausgang.</p>
+        </div>
+        <div data-show-mode="encoder.input.kind=srt">
+          <div class="seg" role="group" aria-label="SRT-Modus Eingang" data-seg="encoder.input.net.srt.mode">
+            <button type="button" data-v="listener">Auf Gegenstelle warten</button>
+            <button type="button" data-v="caller">Quelle anrufen</button>
+            <button type="button" data-v="rendezvous">Rendezvous</button>
+          </div>
+          <div class="row2">
+            <label class="field" data-show-mode="encoder.input.net.srt.mode=caller|rendezvous"><span>Quelladresse</span>
+              <input class="input" data-path="encoder.input.net.srt.host" placeholder="z. B. 192.0.2.30 oder srt://…" autocomplete="off" spellcheck="false"></label>
+            <label class="field"><span>Port</span><input class="input" data-path="encoder.input.net.srt.port" data-num inputmode="numeric"></label>
+          </div>
+          <div class="row2">
+            <label class="field"><span>Latenz (ms)</span><input class="input" data-path="encoder.input.net.srt.latency_ms" data-num inputmode="numeric"></label>
+            <label class="field"><span>SRT-Passwort</span><input class="input" type="password" data-path="encoder.input.net.srt.passphrase" autocomplete="new-password" placeholder="leer = unverschlüsselt"></label>
+          </div>
+          <label class="field"><span>Stream-ID</span><input class="input" data-path="encoder.input.net.srt.streamid" autocomplete="off"></label>
+        </div>
+        <div class="row2" data-show-mode="encoder.input.kind=udp|rtp">
+          <label class="field"><span>Empfangsadresse</span>
+            <input class="input" data-path="encoder.input.net.host" placeholder="leer = alle, 239.x = Multicast, oder udp://…" autocomplete="off" spellcheck="false"></label>
+          <label class="field"><span>Port</span><input class="input" data-path="encoder.input.net.port" data-num inputmode="numeric"></label>
+        </div>
+        <label class="field" data-show-mode="encoder.input.kind=rtmp"><span>RTMP-Quelle</span>
+          <input class="input" data-path="encoder.input.net.url" placeholder="rtmp://server/app/stream" autocomplete="off" spellcheck="false"></label>
         <label class="field" data-show-mode="encoder.input.kind=file"><span>Videodatei (Pfad)</span><input class="input" data-path="encoder.input.file" spellcheck="false"></label>
         <label class="field" id="enc-device-field" hidden><span>Gerät</span><select class="input" data-path="encoder.input.device" data-num id="enc-device"></select></label>
         <p class="hint" id="detected"></p>

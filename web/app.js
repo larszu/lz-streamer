@@ -64,7 +64,7 @@ function applyVisibility() {
   $$('[data-role]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.role === role)));
   $('#enc-form').hidden = role !== 'encoder';
   $('#dec-form').hidden = role !== 'decoder';
-  $('#enc-device-field').hidden = cfg.encoder.input.kind === 'test' || cfg.encoder.input.kind === 'file';
+  $('#enc-device-field').hidden = ['test', 'file', 'srt', 'udp', 'rtp', 'rtmp'].includes(cfg.encoder.input.kind);
 }
 
 function readField(el) {
