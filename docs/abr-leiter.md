@@ -28,10 +28,21 @@ Geprüft in `tests/roundtrip.rs::hls_abr_ladder_aligned_keyframes` mit ffprobe (
 
 `python3 scripts/abr/lastmessung.py target/release/lz-streamer 30` – Testbild mit Uhr, 50 fps, HLS (TS, 2 s), ein Stereo-Ton, CPU als Anteil eines Kerns für den ganzen Prozess.
 
-MESSUNG
+Gemessen am 14.11.2026, Systemlast durch andere Prozesse gering (Last 5–20):
 
-- Die Stufen kosten am Mac vor allem CPU fürs Herunterskalieren (bilinear, mehrere Threads); das Codieren selbst läuft in der Media-Engine.
-- Das UHD-Testbild entsteht in HD und wird auf der CPU hochskaliert (Lanczos). Das kostet schon ohne Leiter den Großteil; an einem echten UHD-Eingang fällt dieser Schritt weg.
+| Fall | Encoder | Stufen | CPU | Bilder/s je Stufe |
+|---|---|---|---|---|
+| 1080p50 ohne Leiter | vtenc_h264_hw | 1920×1080 | 50 % | 49,9 |
+| 1080p50 + 720p/480p | vtenc_h264_hw | 1920×1080 / 1280×720 / 854×480 | 79 % | 49,9 / 50,0 / 50,0 |
+| 2160p50 ohne Leiter (Lanczos hoch) | vtenc_h264_hw | 3840×2160 | 264 % | 50,1 |
+| 2160p50 + 1080p/720p (Lanczos hoch) | vtenc_h264_hw | 3840×2160 / 1920×1080 / 1280×720 | 297 % | 39,1 / 38,3 / 38,3 |
+| 2160p50 ohne Leiter (bilinear hoch) | vtenc_h264_hw | 3840×2160 | 179 % | 50,2 |
+| 2160p50 + 1080p/720p (bilinear hoch) | vtenc_h264_hw | 3840×2160 / 1920×1080 / 1280×720 | 209 % | 38,6 / 38,4 / 38,2 |
+| 1080p50 + 720p/480p, x264 | x264enc | 1920×1080 / 1280×720 / 854×480 | 173 % | 50,1 / 50,0 / 50,0 |
+
+- **1080p50 mit drei Stufen** läuft in Echtzeit, mit VideoToolbox für knapp 30 % eines Kerns mehr, mit x264 als Rückfall für 1,7 Kerne.
+- **2160p50 mit drei Stufen** schafft mit dem Testbild nur ≈ 38 fps. Das UHD-Testbild entsteht in HD und wird auf der CPU hochskaliert; schon ohne Leiter kostet das 1,8–2,6 Kerne. Mit Leiter kommen das Herunterskalieren 2160 → 1080/720 und zwei weitere VideoToolbox-Sitzungen dazu – bei 38 fps liegt die CPU nur bei 2–3 Kernen, die Grenze ist also eher die Media-Engine (drei Sitzungen, eine davon UHD50) als die CPU. Offen: Messung mit echtem UHD-Eingang (ohne Hochskalieren) und mit 2160p25.
+- Weil alle Stufen am selben Tee hängen, bremst die langsamste alle; die Bildraten der Stufen sind darum immer gleich, die Keyframes bleiben ausgerichtet.
 
 ## Diskontinuität (HLS, RTMP)
 
@@ -53,4 +64,5 @@ MESSUNG
 ## Offen
 
 - **Safari-Abnahme** von Hand.
+- **2160p50 mit drei Stufen** in Echtzeit (siehe Messung).
 - **DASH:** `dashsink` (gst-plugins-bad 1.28) legt jede Spur als eigenes AdaptationSet ohne Sprachkennung an, die Bildstufen wären also nicht als Leiter umschaltbar, und der mp4-Muxer ist als „deprecated, non-functional“ markiert. Sinnvoller ist ein eigenes MPD über die CMAF-Segmente von `hlscmafsink` (gleiche Segmente für HLS und DASH).
