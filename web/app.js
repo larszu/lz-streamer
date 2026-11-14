@@ -503,6 +503,9 @@ document.addEventListener('change', e => { if (e.target.matches?.('[data-path="e
 const _render8 = render;
 render = function (st) { _render8(st); if (st.config.encoder.input.kind === 'uvc') loadUvc(); };
 
+// HLS-Adresse vollständig zeigen
+if ($('#hls-url')) $('#hls-url').textContent = `${location.origin}/hls/index.m3u8`;
+
 const alarmLabels = {
   signal_loss_s: 'Kein Signal länger als (s)', no_peer_s: 'Keine Gegenstelle länger als (s)', min_bitrate_kbps: 'Bitrate unter (kbit/s)',
   max_lost_per_min: 'Verluste je Minute über', max_restarts: 'Neustarts in 10 min ab', cpu_percent: 'CPU über (%)',

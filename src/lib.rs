@@ -13,6 +13,7 @@ pub mod config;
 pub mod control;
 pub mod devices;
 pub mod gfx;
+pub mod hls;
 pub mod latency;
 pub mod leveler;
 pub mod loudness;

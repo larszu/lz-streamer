@@ -1018,3 +1018,42 @@ fn encoder_options_reach_the_stream() {
     assert!(types.lines().any(|l| l.trim() == "B"), "keine B-Frames");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// KB-40: HLS mit TS-Segmenten; ffprobe findet über die Master-Playlist Bild und beide Sprachen.
+#[test]
+fn hls_output_with_two_languages() {
+    use lz_streamer::config::CaptionSource;
+    init();
+    let port = free_port();
+    let dir = std::env::temp_dir().join(format!("lzs-hls-{port}"));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut cfg = encoder_cfg(port, SrtMode::Listener);
+    three_languages(&mut cfg);
+    cfg.audio.tracks.truncate(2);
+    cfg.captions.source = CaptionSource::Live;
+    cfg.hls.enabled = true;
+    cfg.hls.dir = dir.to_string_lossy().to_string();
+    cfg.hls.segment_s = 1;
+    let mut enc = Channel::start_encoder(&cfg, &[], &ChannelOptions::default()).unwrap();
+    let end = Instant::now() + Duration::from_secs(8);
+    while Instant::now() < end {
+        status(&mut enc);
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    let master = std::fs::read_to_string(dir.join("index.m3u8")).unwrap();
+    let v = std::fs::read_to_string(dir.join("v.m3u8")).expect("v.m3u8 fehlt");
+    let a1 = std::fs::read_to_string(dir.join("a1.m3u8")).expect("a1.m3u8 fehlt");
+    assert!(v.matches(".ts").count() >= 3, "{v}");
+    assert!(a1.contains("a1_") && a1.contains(".ts"), "{a1}");
+    let out = std::process::Command::new("ffprobe")
+        .args(["-v", "error", "-show_entries", "stream=codec_type,codec_name:stream_tags=language", "-of", "csv=p=0"])
+        .arg(dir.join("index.m3u8"))
+        .output()
+        .unwrap();
+    let probe = String::from_utf8_lossy(&out.stdout);
+    eprintln!("{master}\n{probe}");
+    enc.stop();
+    assert!(probe.contains("video"), "{probe}");
+    assert!(probe.contains("audio,de") && probe.contains("audio,en"), "Sprachen fehlen: {probe}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
