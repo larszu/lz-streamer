@@ -101,6 +101,11 @@ impl Supervisor {
         self.record_dir.parent().map(|p| p.join("modelle")).unwrap_or_else(|| PathBuf::from("modelle"))
     }
 
+    /// Ordner der HLS-Ausgabe (neben den Aufnahmen)
+    pub fn hls_dir(&self) -> PathBuf {
+        self.record_dir.parent().map(|p| p.join("hls")).unwrap_or_else(|| PathBuf::from("hls"))
+    }
+
     pub async fn config(&self) -> Config {
         self.state.lock().await.config.clone()
     }
@@ -201,6 +206,9 @@ impl Supervisor {
         let mut cfg = cfg.clone();
         if cfg.encoder.record.dir.trim().is_empty() {
             cfg.encoder.record.dir = self.record_dir.to_string_lossy().to_string();
+        }
+        if cfg.encoder.hls.dir.trim().is_empty() {
+            cfg.encoder.hls.dir = self.hls_dir().to_string_lossy().to_string();
         }
         let asr = &mut cfg.encoder.captions.asr;
         if asr.model_path.trim().is_empty() {

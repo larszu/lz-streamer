@@ -432,6 +432,9 @@ pub struct EncoderConfig {
     /// weitere Ausgänge (SRT, UDP, RTP) neben dem Haupt-SRT
     pub outputs: Vec<ExtraOutput>,
     pub record: RecordConfig,
+    /// HLS-Ausgabe (CMAF), lokal unter /hls/
+    #[serde(default)]
+    pub hls: crate::hls::HlsConfig,
     pub captions: CaptionConfig,
     pub graphics: GraphicsConfig,
 }

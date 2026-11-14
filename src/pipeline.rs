@@ -230,6 +230,8 @@ pub fn encoder_description(cfg: &EncoderConfig, parts: &EncoderParts) -> String 
     };
     let pcaps = crate::caps::profile_caps(&cfg.video);
     d.push(format!("{enc_src} ! {} name=venc ! {pcaps}{parser} config-interval=-1{inserter} ! tee name=ve", parts.encoder));
+    // HLS: Bild-Rendition (die Ton-Renditionen folgen bei den Tonspuren)
+    d.extend(crate::hls::branches(cfg).into_iter().take(1));
     if let Some(b) = caption_branch(cfg) {
         d.push(b);
     }
@@ -312,6 +314,7 @@ pub fn encoder_description(cfg: &EncoderConfig, parts: &EncoderParts) -> String 
                 d.push(format!("ae{i}. ! queue max-size-buffers=0 max-size-bytes=0 max-size-time=2000000000 ! rec.audio_{i}"));
             }
         }
+        d.extend(crate::hls::branches(cfg).into_iter().skip(1));
         d.push(format!("{} ! valve name=siga drop=false ! asw.sink_0", primary_audio(parts.input, n)));
         d.push(format!("audiotestsrc is-live=true wave=silence ! {} ! asw.sink_1", audio_caps(n)));
     } else if matches!(parts.input, ResolvedInput::File { .. }) {

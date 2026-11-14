@@ -602,6 +602,9 @@ impl Channel {
     }
 
     pub fn start_encoder(cfg: &EncoderConfig, devices: &[CaptureDevice], opts: &ChannelOptions) -> Result<Self> {
+        if cfg.hls.enabled && !cfg.hls.dir.trim().is_empty() {
+            crate::hls::prepare_dir(cfg).with_context(|| format!("HLS-Ordner {}", cfg.hls.dir))?;
+        }
         crate::lzloudness::register();
         crate::plugin::register();
         crate::clearspeech::register();

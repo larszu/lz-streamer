@@ -79,6 +79,7 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/fonts/public-sans.woff2", get(|| async { asset("font/woff2", FONT) }))
         .route("/fonts/public-sans-ext.woff2", get(|| async { asset("font/woff2", FONT_EXT) }))
         .route("/renderer", get(renderer_ws))
+        .route("/hls/{name}", get(hls_file))
         .route("/api/state", get(state))
         .route("/api/config", get(get_config).put(put_config))
         .route("/api/start", post(start))
@@ -591,6 +592,43 @@ async fn standby_use(State(app): S, Path(name): Path<String>) -> Response {
     match app.sup.set_config(cfg).await {
         Ok(()) => ok(),
         Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    }
+}
+
+// ------------------------------------------------------------ HLS
+
+fn hls_dir(app: &App, cfg: &Config) -> std::path::PathBuf {
+    let d = cfg.encoder.hls.dir.trim();
+    if d.is_empty() { app.sup.hls_dir() } else { std::path::PathBuf::from(d) }
+}
+
+async fn hls_file(State(app): S, Path(name): Path<String>) -> Response {
+    let Some(n) = admin::safe_name(&name) else { return err(StatusCode::BAD_REQUEST, "Ungültiger Name") };
+    let cfg = app.sup.config().await;
+    let path = hls_dir(&app, &cfg).join(&n);
+    let ct = if n.ends_with(".m3u8") {
+        "application/vnd.apple.mpegurl"
+    } else if n.ends_with(".m4s") {
+        "video/iso.segment"
+    } else if n.ends_with(".mp4") {
+        "video/mp4"
+    } else if n.ends_with(".ts") {
+        "video/mp2t"
+    } else {
+        return err(StatusCode::NOT_FOUND, "nicht gefunden");
+    };
+    match tokio::fs::read(&path).await {
+        // Playlists ändern sich laufend: nicht zwischenspeichern; Player auf anderen Seiten erlauben
+        Ok(b) => (
+            [
+                (header::CONTENT_TYPE, ct),
+                (header::CACHE_CONTROL, if n.ends_with(".m3u8") { "no-store" } else { "max-age=60" }),
+                (header::ACCESS_CONTROL_ALLOW_ORIGIN, "*"),
+            ],
+            b,
+        )
+            .into_response(),
+        Err(_) => err(StatusCode::NOT_FOUND, "nicht gefunden"),
     }
 }
 
