@@ -64,7 +64,7 @@ function applyVisibility() {
   $$('[data-role]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.role === role)));
   $('#enc-form').hidden = role !== 'encoder';
   $('#dec-form').hidden = role !== 'decoder';
-  $('#enc-device-field').hidden = cfg.encoder.input.kind === 'test' || cfg.encoder.input.kind === 'file';
+  $('#enc-device-field').hidden = ['test', 'file', 'srt', 'udp', 'rtp', 'rtmp'].includes(cfg.encoder.input.kind);
 }
 
 function readField(el) {
@@ -438,8 +438,10 @@ async function loadAdmin() {
       api('GET', '/api/standby'), api('GET', '/api/users'), api('GET', '/api/stats?minutes=60'), api('GET', '/api/me')]);
     settings = s;
     $('#auto-delete').checked = !!s.delete_oldest_recordings;
-    renderPresets(presets); renderSchedule(presets); renderAlarmFields(); renderRecordings(recs);
+    renderPresets(presets); renderSchedule(presets); renderAlarmFields(); renderMail(); renderRecordings(recs);
     renderStandby(imgs); renderUsers(users, me); renderChart(stats);
+    renderTls(await api('GET', '/api/tls'));
+    uploads = await api('GET', '/api/uploads'); renderUploadSettings();
   } catch {}
 }
 
@@ -524,12 +526,49 @@ function renderAlarmFields() {
   }
 }
 
+// ---------------- Alarme per Mail, Messwerte
+// Passwort und Token kommen leer zurück; leer gespeichert heißt unverändert.
+function bindSettings(sel, obj, key) {
+  $$(sel).forEach(i => {
+    const k = i.dataset[key], o = obj();
+    if (i.type === 'checkbox') i.checked = !!o[k];
+    else i.value = o[k] ?? '';
+    if (i.type === 'password') i.placeholder = o[k + '_set'] ? 'gespeichert – leer lassen = unverändert' : '';
+    const num = i.inputMode === 'numeric';
+    i.oninput = i.onchange = () => {
+      o[k] = i.type === 'checkbox' ? i.checked : num ? (parseInt(i.value, 10) || 0) : i.value;
+      mailHint(); saveSettings();
+    };
+  });
+}
+function mailHint() {
+  const m = settings.mail, h = $('#mail-hint');
+  const miss = !m.host?.trim() ? 'Kein Mailserver eingetragen – es geht keine Mail raus.' : !m.to?.trim() ? 'Kein Empfänger eingetragen – es geht keine Mail raus.' : '';
+  h.textContent = m.enabled && miss ? miss : 'Zugangsdaten bleiben auf diesem Rechner; das Passwort zeigt die Oberfläche nie wieder an.';
+}
+function renderMail() {
+  bindSettings('[data-mail]', () => settings.mail, 'mail');
+  bindSettings('[data-metrics]', () => settings.metrics, 'metrics');
+  bindSettings('[data-influx]', () => settings.metrics.influx, 'influx');
+  $('#metrics-url').textContent = `${location.origin}/metrics`;
+  mailHint();
+}
+$('#mail-test').onclick = async () => {
+  clearTimeout(settingsTimer);
+  try {
+    await api('PUT', '/api/settings', settings);
+    await api('POST', '/api/mail/test');
+    toast(`Testmail an ${settings.mail.to} verschickt`);
+  } catch {}
+};
+
 const bytes = n => n > 1e9 ? `${fmt.format(n / 1e9)} GB` : `${fmt.format(n / 1e6)} MB`;
 function renderRecordings(list) {
   $('#recordings').innerHTML = list.length ? list.map(f => `<li><span>${esc(f.name)} <small>${bytes(f.bytes)} · ${new Date(f.modified_ms).toLocaleString('de-DE')}</small></span>
-    <a class="btn btn--soft" href="/api/recordings/${encodeURIComponent(f.name)}">Herunterladen</a>${(f.subtitles || []).map(s => `<a class="btn btn--soft" href="/api/recordings/${encodeURIComponent(s)}" download>${esc(s.split('.').pop().toUpperCase())}</a>`).join('')}<button class="btn btn--danger" data-del="${esc(f.name)}">Löschen</button></li>`).join('')
+    <a class="btn btn--soft" href="/api/recordings/${encodeURIComponent(f.name)}">Herunterladen</a>${(f.subtitles || []).map(s => `<a class="btn btn--soft" href="/api/recordings/${encodeURIComponent(s)}" download>${esc(s.split('.').pop().toUpperCase())}</a>`).join('')}<button class="btn btn--soft" data-up="${esc(f.name)}">Hochladen</button><button class="btn btn--danger" data-del="${esc(f.name)}">Löschen</button></li>`).join('')
     : '<li class="empty">Noch keine Aufnahmen. Einschalten unter Betrieb → Mehr Einstellungen → Aufnahme parallel.</li>';
   $$('#recordings [data-del]').forEach(b => b.onclick = async () => { await api('DELETE', `/api/recordings/${encodeURIComponent(b.dataset.del)}`); loadAdmin(); });
+  $$('#recordings [data-up]').forEach(b => b.onclick = async () => { const r = await api('POST', `/api/recordings/${encodeURIComponent(b.dataset.up)}/upload`); toast(`${r.jobs} Upload(s) eingereiht`); });
 }
 
 function renderStandby(list) {
@@ -600,6 +639,21 @@ const _render = render;
 render = function (st) { _render(st); renderOps(st); };
 
 $('#auto-delete').onchange = e => { settings.delete_oldest_recordings = e.target.checked; saveSettings(); };
+
+// ---------------- HTTPS
+function renderTls(t) {
+  $('#tls-on').checked = !!t.enabled;
+  $('#tls-state').textContent = t.active ? 'aktiv' : t.enabled ? 'nach Neustart' : 'aus';
+  const c = t.cert || {};
+  $('#tls-info').textContent = !c.sha256 ? 'Noch kein Zertifikat – entsteht beim ersten Start mit HTTPS.'
+    : (c.self_signed ? `Selbst signiert für ${c.names.join(', ')} · gültig bis ${c.not_after}` : `Eigenes Zertifikat · ${c.chain} in der Kette`) + ` · SHA-256 ${c.sha256}`;
+}
+$('#tls-on').onchange = e => { settings.https = e.target.checked; saveSettings(); };
+$('#tls-install').onclick = async () => {
+  const r = await api('POST', '/api/tls', { cert: $('#tls-cert').value, key: $('#tls-key').value });
+  $('#tls-key').value = ''; $('#tls-cert').value = ''; toast('Zertifikat übernommen'); renderTls({ ...(await api('GET', '/api/tls')), cert: r.cert });
+};
+$('#tls-self').onclick = async () => { await api('POST', '/api/tls/self-signed'); toast('Neues Zertifikat erzeugt'); loadAdmin(); };
 
 // ---------------- Lautheit je Spur
 function renderMeters(st) {
@@ -883,3 +937,62 @@ render = function (st) {
   $('#player-link').textContent = `${location.origin}/player`;
   if (Date.now() - relayListAt > 15000) loadRelayLists();
 };
+// ---------------- Upload-Ziele
+let uploads = null, uploadsTimer = 0;
+function saveUploads() {
+  clearTimeout(uploadsTimer);
+  uploadsTimer = setTimeout(() => api('PUT', '/api/uploads', uploads).then(() => toast('Gespeichert')), 600);
+}
+const isKind = (...k) => t => k.includes(t.kind);
+const uploadFields = [
+  { key: 'enabled', label: 'An', type: 'check' },
+  { key: 'name', label: 'Name' },
+  { key: 'kind', label: 'Art', type: 'select', rerender: true, options: [['webdav', 'WebDAV'], ['s3', 'S3'], ['sftp', 'SFTP']] },
+  { key: 'url', label: 'Ordner-URL', placeholder: 'https://nas.local/remote.php/dav/files/studio', show: isKind('webdav') },
+  { key: 'url', label: 'Endpunkt', placeholder: 'https://s3.eu-central-1.amazonaws.com', show: isKind('s3') },
+  { key: 'host', label: 'Rechner', placeholder: 'nas.local', show: isKind('sftp') },
+  { key: 'port', label: 'Port', num: true, show: isKind('sftp') },
+  { key: 'bucket', label: 'Bucket', show: isKind('s3') },
+  { key: 'region', label: 'Region', placeholder: 'us-east-1', show: isKind('s3') },
+  { key: 'virtual_host', label: 'Bucket im Rechnernamen', type: 'check', show: isKind('s3') },
+  { key: 'user', label: 'Benutzer', show: isKind('webdav', 'sftp') },
+  { key: 'user', label: 'Access Key', show: isKind('s3') },
+  { key: 'secret', label: 'Passwort', type: 'password', show: isKind('webdav') },
+  { key: 'secret', label: 'Secret Key', type: 'password', show: isKind('s3') },
+  { key: 'key_file', label: 'Schlüsseldatei', placeholder: '~/.ssh/id_ed25519', show: isKind('sftp') },
+  { key: 'dir', label: 'Zielordner' },
+];
+function renderUploadSettings() {
+  $('#up-on').checked = !!uploads.enabled;
+  $('#up-del').checked = !!uploads.delete_after;
+  $('#up-limit').value = uploads.limit_kbps || 0;
+  rowEditor($('#up-targets'), uploads.targets, uploadFields, saveUploads, 'Entfernen');
+  // gespeicherte Geheimnisse nur andeuten
+  $$('#up-targets .edit-row').forEach((row, i) => row.querySelectorAll('input[type=password]').forEach(el => {
+    el.autocomplete = 'new-password';
+    if (uploads.targets[i]?.has_secret) el.placeholder = 'gespeichert';
+  }));
+}
+$('#up-on').onchange = e => { uploads.enabled = e.target.checked; saveUploads(); };
+$('#up-del').onchange = e => { uploads.delete_after = e.target.checked; saveUploads(); };
+$('#up-limit').oninput = e => { uploads.limit_kbps = Math.max(0, parseInt(e.target.value, 10) || 0); saveUploads(); };
+$('#up-add').onclick = () => {
+  uploads.targets.push({ enabled: true, name: `Ziel ${uploads.targets.length + 1}`, kind: 'webdav', url: '', user: '', secret: '', bucket: '', region: '', virtual_host: false, host: '', port: 22, key_file: '', known_hosts: '', dir: '' });
+  renderUploadSettings(); saveUploads();
+};
+$('#up-retry').onclick = async () => { await api('POST', '/api/uploads/retry'); toast('Neuer Versuch'); };
+$('#up-clear').onclick = async () => { await api('POST', '/api/uploads/clear'); toast('Warteschlange geleert'); };
+
+function renderUploads(st) {
+  const u = st.uploads; if (!u) return;
+  const a = u.active;
+  $('#up-state').textContent = a ? `lädt ${fmt0.format(a.rate_kbps)} kbit/s` : u.queue.length ? `${u.queue.length} wartend` : u.enabled ? 'bereit' : 'aus';
+  const rows = [];
+  if (a) rows.push(`<li><span>${esc(a.file)} → ${esc(a.target)} <small>${a.total ? fmt0.format(a.sent * 100 / a.total) + ' %' : ''} · ${fmt0.format(a.rate_kbps)} kbit/s</small></span><progress max="${a.total || 1}" value="${a.sent}"></progress></li>`);
+  for (const j of u.queue) if (!a || j.file !== a.file || j.target !== a.target)
+    rows.push(`<li><span>${esc(j.file)} → ${esc(j.target)} <small>${j.attempts ? `${j.attempts}. Versuch gescheitert, nächster ${new Date(j.next_ms).toLocaleTimeString('de-DE')}` : 'wartet'}</small>${j.error ? ` <small class="up-err">${esc(j.error)}</small>` : ''}</span></li>`);
+  for (const d of u.done.slice(0, 5)) rows.push(`<li><span>${esc(d.file)} → ${esc(d.target)} <small>fertig ${new Date(d.at_ms).toLocaleTimeString('de-DE')} · ${bytes(d.bytes)} in ${fmt0.format(d.seconds)} s</small></span></li>`);
+  $('#up-status').innerHTML = rows.join('') || '<li class="empty">Nichts in der Warteschlange.</li>';
+}
+const _render9 = render;
+render = function (st) { _render9(st); renderUploads(st); };

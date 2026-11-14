@@ -316,3 +316,34 @@ async fn diagnose_and_export() {
     let back: Config = serde_json::from_str(&exp).unwrap();
     assert_eq!(back.encoder.srt.passphrase, "geheim-123456");
 }
+
+#[tokio::test]
+async fn upload_secrets_never_returned() {
+    let (r, root) = app("upload-secrets");
+    let body = json!({"enabled": true, "limit_kbps": 2000, "targets": [{"name": "nas", "kind": "webdav", "url": "http://nas.invalid/dav", "user": "studio", "secret": "streng-geheim"}]});
+    assert_eq!(call(&r, "PUT", "/api/uploads", Some(body), None).await.0, StatusCode::OK);
+    for uri in ["/api/uploads", "/api/state", "/api/diagnose.json", "/api/config/export", "/api/settings"] {
+        let resp = r.clone().oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap()).await.unwrap();
+        let text = String::from_utf8_lossy(&resp.into_body().collect().await.unwrap().to_bytes()).into_owned();
+        assert!(!text.contains("streng-geheim"), "{uri} gibt das Geheimnis zurück");
+    }
+    let (_, v, _) = call(&r, "GET", "/api/uploads", None, None).await;
+    assert_eq!(v["targets"][0]["has_secret"], true);
+    // zurückschicken ohne Geheimnis: bleibt gespeichert
+    let mut back = v.clone();
+    back["limit_kbps"] = json!(500);
+    call(&r, "PUT", "/api/uploads", Some(back), None).await;
+    let file = std::fs::read_to_string(root.join("upload.json")).unwrap();
+    assert!(file.contains("streng-geheim") && file.contains("500"));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(std::fs::metadata(root.join("upload.json")).unwrap().permissions().mode() & 0o777, 0o600);
+    }
+    // ausdrücklich löschen
+    let mut clear = v.clone();
+    clear["targets"][0]["clear_secret"] = json!(true);
+    call(&r, "PUT", "/api/uploads", Some(clear), None).await;
+    let (_, v, _) = call(&r, "GET", "/api/uploads", None, None).await;
+    assert_eq!(v["targets"][0]["has_secret"], false);
+}

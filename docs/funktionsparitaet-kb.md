@@ -20,13 +20,13 @@ Hier stehen nur Funktionen, beschrieben in eigenen Worten. Texte, Logos und Asse
 
 | Status | Anzahl |
 |---|---|
-| fertig | 34 |
+| fertig | 38 |
 | Teil | 14 |
-| fehlt | 11 |
+| fehlt | 7 |
 | entfällt | 5 |
 | **gesamt** | **64** |
 
-Ohne die entfallenden Punkte sind 34 von 59 Funktionen fertig (58 %), dazu 14 in Teilen. Die 11 fehlenden sind fast alle Broadcast-Breite oder Mehrkanal; sie stehen in §6 mit Begründung.
+Ohne die entfallenden Punkte sind 38 von 59 Funktionen fertig (64 %), dazu 14 in Teilen. Die 7 fehlenden sind fast alle Broadcast-Breite oder Mehrkanal; sie stehen in §6 mit Begründung.
 
 ## 1. Kanäle und Bedienung
 
@@ -49,7 +49,7 @@ Ohne die entfallenden Punkte sind 34 von 59 Funktionen fertig (58 %), dazu 14 in
 | # | Funktion | Status | Umsetzung / was fehlt | Aufwand |
 |---|---|---|---|---|
 | 12 | Baseband SDI/HDMI (DeckLink), Format automatisch | fertig | an echter Hardware noch ungeprüft | – |
-| 13 | Netz-Eingänge: TS über SRT/UDP/RTP, RTMP (Umkodieren) | **fehlt** | Decoder-Rolle empfängt SRT, kodiert aber nicht neu | M |
+| 13 | Netz-Eingänge: TS über SRT/UDP/RTP, RTMP (Umkodieren) | fertig | SRT (Caller/Listener/Rendezvous), UDP und RTP (auch Multicast), RTMP abholen; „Neu kodieren“ mit Standbild bei Ausfall und selbstständigem Wiederverbinden oder „Durchreichen“ ohne Neukodierung | – |
 | 14 | Eingebetteter Ton, Pegel in dB | fertig | 2/8/16 Kanäle, Pegel je Spur | – |
 | 15 | Tonkanal-Zuordnung (Modus, L/R, Sprache) | fertig (mehr) | freie Matrix, Mono/Stereo/Downmix, bis 8 Spuren, ISO 639 | – |
 | 16 | Standbild bei Signalverlust ein/aus | fertig | Balken, Schwarz oder eigenes Bild, Umschaltzeit einstellbar | – |
@@ -100,14 +100,14 @@ Ohne die entfallenden Punkte sind 34 von 59 Funktionen fertig (58 %), dazu 14 in
 | 46 | Alarmschwellen CPU/GPU/Speicher/Platte | Teil | CPU, Speicher, Platte; GPU fehlt | S |
 | 47 | Laufzeit-Alarme (Signalverlust, Formatwechsel, Bildrate …) | Teil | Signal, Gegenstelle, Bitrate, Verluste, Neustarts; Formatwechsel und Bildraten-Alarm fehlen | S |
 | 48 | Alarm-Benachrichtigung in der Oberfläche | fertig | Banner und Liste, Ereignis bei Beginn/Ende | – |
-| 49 | Benachrichtigung per E-Mail (SMTP) | **fehlt** | siehe §6 | S |
+| 49 | Benachrichtigung per E-Mail (SMTP) | fertig | STARTTLS/TLS, Anmeldung, nur Fehler oder alle, Entwarnung, Testmail; Passwort nur in `verwaltung.json`. Test: `tests/alarm_mail.rs` mit lokalem Mini-SMTP-Server | – |
 | 50 | Aufnahmeordner | fertig | einstellbar | – |
 | 51 | Älteste Aufnahmen löschen, wenn die Platte voll ist | fertig | neu in PR #2 | – |
-| 52 | Bandbreitenlimit und Upload-Ziele für Aufnahmen | **fehlt** | siehe §6 | M |
+| 52 | Bandbreitenlimit und Upload-Ziele für Aufnahmen | fertig | WebDAV (PUT), S3 (eigene SigV4, bis 5 GB je Datei), SFTP (System-`sftp`, `reput`); Token-Bucket in kbit/s, Warteschlange auf Platte, Neuversuch mit wachsender Pause | – |
 | 53 | Netzwerk (Hostname, DHCP, DNS, NTP, Bonding) | entfällt | Betriebssystem | – |
 | 54 | WLAN-Zugangspunkt | entfällt | Betriebssystem | – |
 | 55 | Standbilder verwalten (hochladen, wählen) | fertig | PNG/JPEG, Vorschau, „Verwenden“ | – |
-| 56 | HTTPS-Zertifikat | **fehlt** | siehe §6 | S |
+| 56 | HTTPS-Zertifikat | fertig | selbst signiert beim ersten Start (Rechnername, eigene IPv4, localhost) oder eigenes PEM, TLS 1.2/1.3 über rustls; Klartext von außen wird umgeleitet | – |
 | 57 | Software-Update hochladen | entfällt | Release per v-Tag und Paketverwaltung | – |
 | 58 | Benutzer mit Rollen (Verwalten/Bedienen/Ansehen) | fertig | Argon2, Sitzungs-Cookie, Rollenprüfung je Aufruf | – |
 | 59 | Info-Dialog (Version) | fertig | `version` in `/api/state` | – |
@@ -120,22 +120,28 @@ Ohne die entfallenden Punkte sind 34 von 59 Funktionen fertig (58 %), dazu 14 in
 | 61 | Ancillary: AFD, Timecode, Durchreichen | **fehlt** | VANC-Parser aus lz-scopes übernehmen, ST 2038 | M |
 | 62 | Diskontinuität als Ereignis durch die Pipeline | Teil | Ereignis im Protokoll; kein In-band-Signal für HLS/RTMP | M |
 | 63 | Cloud-Anbindung (Geräteregistrierung, CDN-Logins) | entfällt bewusst | Fernzugriff per Tunnel; Geräteseite in lz-camera-bridge | – |
-| 64 | Metriken in Zeitreihen-DB | **fehlt** | eigener 24-h-Verlauf vorhanden; Prometheus/Influx-Export fehlt | S |
+| 64 | Metriken in Zeitreihen-DB | fertig | `/metrics` im Prometheus-Format (Bitrate, SRT-RTT, Verluste, Wiederholungen, Lautheit je Spur, CPU/GPU, Bilder/s, Neustarts, Signal, Alarme); Influx-Line-Protocol per HTTP-Push | – |
 
 ## Was offen bleibt und warum
 
-Gezählt sind die 11 fehlenden Funktionen und die drei Teilfunktionen mit dem größten Abstand. Für den Abschluss dieser Runde war entscheidend, dass jeder umgesetzte Punkt mit einem Test belegt ist. Alles, was hier steht, hätte in dieser Runde keinen sauberen Test bekommen.
+Gezählt sind die 7 fehlenden Funktionen und die drei Teilfunktionen mit dem größten Abstand. Für den Abschluss dieser Runde war entscheidend, dass jeder umgesetzte Punkt mit einem Test belegt ist. Alles, was hier steht, hätte in dieser Runde keinen sauberen Test bekommen.
 
 | Punkt | Warum noch nicht |
 |---|---|
 | Mehrkanal (#2), ABR-Leiter (#30) | Umbau von Aufpasser, Statusmodell und Oberfläche auf Kanallisten; eigener PR |
-| Netz-Eingänge mit Umkodieren (#13) | eigener Eingangszweig (srtsrc/udpsrc → decodebin → Umschalter); braucht Tests mit Formatwechsel |
 | CEA-608/708 (#20), SCTE (#60), Ancillary (#61) | braucht VANC aus dem DeckLink-Eingang; ohne angestecktes Gerät nicht prüfbar |
 | HLS/CMAF (#40) | `hlscmafsink` vorhanden; Speicherort, Auslieferung und Aufräumen fehlen noch |
-| E-Mail (#49) | braucht SMTP-Zugang; Zugangsdaten gehören nicht ins Repo, Test nur mit lokalem Mail-Fänger |
-| HTTPS (#56) | selbstsigniertes Zertifikat oder Tunnel; Entscheidung bei Lars (Tunnel ist im Haus üblich) |
-| Upload-Ziele (#52), Zeitreihen-Export (#64) | klein; nach Mehrkanal sinnvoller |
 | Interlaced-Ausgabe (#26), Deinterlacing-Wahl (#17) | erst mit 1080i-Quelle an echter Hardware sinnvoll zu messen |
+
+## Netz-Eingänge (#13)
+
+| Funktion | Test |
+|---|---|
+| SRT-Eingang H.265 → H.264 neu kodiert, Ausgabe über SRT und RTMP, Quelle weg → Standbild, Quelle zurück → wieder verbunden | `tests/roundtrip.rs` `srt_input_transcoded_to_srt_and_rtmp` |
+| SRT durchgereicht: H.265 640×360 kommt unverändert an, kein Encoder, Wiederverbinden | `srt_input_passthrough_keeps_stream` |
+| UDP neu kodiert, RTP durchgereicht | `udp_and_rtp_inputs` |
+| RTMP von ffmpeg als Server abholen | `rtmp_input_pulled_and_transcoded` |
+| Eingefügte Adressen (`srt://`, `udp://@…`, `rtp://`, `rtmp://`) zerlegen, Pipeline-Bau beider Modi | Unit-Tests in `config.rs`, `pipeline.rs` |
 
 ## Neu in PR #2
 

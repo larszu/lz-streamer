@@ -20,6 +20,8 @@ pub mod latency;
 pub mod leveler;
 pub mod loudness;
 pub mod lzloudness;
+pub mod mail;
+pub mod metrics;
 pub mod ops;
 pub mod plugin;
 pub mod pipeline;
@@ -29,6 +31,8 @@ pub mod server;
 pub mod stats;
 pub mod subtitles;
 pub mod supervisor;
+pub mod tls;
+pub mod upload;
 pub mod vad;
 
 /// 4181–4198 belegt die AV-Suite, 4199 lz-nvx-toolbox.

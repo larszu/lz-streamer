@@ -32,11 +32,16 @@ pub struct App {
     pub renderer: Arc<crate::renderer::RendererHub>,
     /// Plugin-Scan läuft gerade
     pub plugin_scanning: Arc<std::sync::atomic::AtomicBool>,
+    /// Zertifikat für HTTPS
+    pub certs: Arc<crate::tls::CertStore>,
+    /// Oberfläche läuft über HTTPS (Sitzungs-Cookie nur verschlüsselt)
+    pub https: std::sync::atomic::AtomicBool,
 }
 
 impl App {
     pub fn new(sup: Arc<Supervisor>, ops: Arc<Ops>, caps: Capabilities, devices: Vec<CaptureDevice>) -> Arc<Self> {
         let users: Vec<User> = admin::load_json(&ops.data.users());
+        let certs = crate::tls::CertStore::new(ops.data.tls());
         Arc::new(Self {
             sup,
             ops,
@@ -46,6 +51,8 @@ impl App {
             sessions: Mutex::new(HashMap::new()),
             renderer: Arc::default(),
             plugin_scanning: Arc::default(),
+            certs,
+            https: Default::default(),
         })
     }
 }
@@ -82,6 +89,7 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/vendor/hls.min.js", get(|| async { asset("text/javascript; charset=utf-8", HLS_JS) }))
         .route("/renderer", get(renderer_ws))
         .route("/hls/{name}", get(hls_file))
+        .route("/metrics", get(metrics))
         .route("/api/state", get(state))
         .route("/api/config", get(get_config).put(put_config))
         .route("/api/start", post(start))
@@ -99,6 +107,7 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/api/presets/{name}/load", post(load_preset))
         .route("/api/settings", get(get_settings).put(put_settings))
         .route("/api/alarms", get(alarms))
+        .route("/api/mail/test", post(mail_test))
         .route("/api/stats", get(stats))
         .route("/api/system", get(system))
         .route("/api/diagnose.json", get(diagnose))
@@ -117,6 +126,10 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/api/models/{name}", delete(model_delete))
         .route("/api/recordings", get(recordings))
         .route("/api/recordings/{name}", get(recording_get).delete(recording_delete))
+        .route("/api/recordings/{name}/upload", post(recording_upload))
+        .route("/api/uploads", get(uploads_get).put(uploads_put))
+        .route("/api/uploads/retry", post(uploads_retry))
+        .route("/api/uploads/clear", post(uploads_clear))
         // Anmeldung
         .route("/api/login", post(login))
         .route("/api/logout", post(logout))
@@ -124,6 +137,8 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/api/users", get(users).post(add_user))
         .route("/api/users/{name}", delete(delete_user))
         .merge(crate::relay::routes().layer(DefaultBodyLimit::max(256 * 1024 * 1024)))
+        .route("/api/tls", get(tls_info).post(tls_install))
+        .route("/api/tls/self-signed", post(tls_self_signed))
         .layer(DefaultBodyLimit::max(25 * 1024 * 1024))
         .layer(middleware::from_fn_with_state(app.clone(), auth))
         .with_state(app)
@@ -146,6 +161,9 @@ async fn current_user(app: &App, headers: &HeaderMap) -> Option<(String, Role)> 
 /// eine Sitzung, und die Rolle entscheidet über Schreibzugriffe.
 async fn auth(State(app): S, req: Request, next: Next) -> Response {
     let path = req.uri().path().to_string();
+    if path == "/metrics" {
+        return metrics_auth(&app, req, next).await;
+    }
     // /renderer ist kein /api-Pfad und nimmt nur Verbindungen von 127.0.0.1 an (siehe renderer_ws)
     if !path.starts_with("/api/") || path == "/api/login" || path == "/api/me" || crate::relay::public_path(&path) {
         return next.run(req).await;
@@ -160,6 +178,36 @@ async fn auth(State(app): S, req: Request, next: Next) -> Response {
         return err(StatusCode::FORBIDDEN, "Dafür fehlt die Berechtigung");
     }
     next.run(req).await
+}
+
+/// `/metrics`: offen ohne Benutzer oder mit Freigabe, sonst Sitzung oder
+/// HTTP-Basic mit einem Benutzer der Verwaltung (für Prometheus `basic_auth`).
+async fn metrics_auth(app: &App, req: Request, next: Next) -> Response {
+    let open = app.users.read().await.is_empty() || app.ops.settings.lock().await.metrics.public;
+    if open || current_user(app, req.headers()).await.is_some() || basic_user_ok(app, req.headers()).await {
+        return next.run(req).await;
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    let mut r = err(StatusCode::UNAUTHORIZED, "Bitte anmelden");
+    r.headers_mut().insert(header::WWW_AUTHENTICATE, header::HeaderValue::from_static("Basic realm=\"lz-streamer\""));
+    r
+}
+
+async fn basic_user_ok(app: &App, headers: &HeaderMap) -> bool {
+    use base64::Engine;
+    let Some(b64) = headers.get(header::AUTHORIZATION).and_then(|v| v.to_str().ok()).and_then(|v| v.strip_prefix("Basic ")) else {
+        return false;
+    };
+    let Some(pair) = base64::engine::general_purpose::STANDARD.decode(b64.trim()).ok().and_then(|b| String::from_utf8(b).ok()) else {
+        return false;
+    };
+    let Some((name, pw)) = pair.split_once(':') else { return false };
+    app.users.read().await.iter().any(|u| u.name == name && admin::verify_password(pw, &u.hash))
+}
+
+async fn metrics(State(app): S) -> Response {
+    let text = crate::metrics::prometheus(&app.ops.metrics(&app.sup).await);
+    ([(header::CONTENT_TYPE, "text/plain; version=0.0.4; charset=utf-8"), (header::CACHE_CONTROL, "no-store")], text).into_response()
 }
 
 #[derive(Deserialize)]
@@ -177,7 +225,8 @@ async fn login(State(app): S, Json(r): Json<LoginReq>) -> Response {
     };
     let token = admin::new_token();
     app.sessions.lock().await.insert(token.clone(), (u.name.clone(), u.role));
-    let cookie = format!("{COOKIE}={token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=604800");
+    let secure = if app.https.load(std::sync::atomic::Ordering::Relaxed) { "; Secure" } else { "" };
+    let cookie = format!("{COOKIE}={token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=604800{secure}");
     ([(header::SET_COOKIE, cookie)], Json(json!({"ok": true, "name": u.name, "role": u.role}))).into_response()
 }
 
@@ -240,6 +289,43 @@ async fn delete_user(State(app): S, Path(name): Path<String>) -> Response {
     ok()
 }
 
+// ------------------------------------------------------------ HTTPS
+
+async fn tls_info(State(app): S) -> impl IntoResponse {
+    let https = app.https.load(std::sync::atomic::Ordering::Relaxed);
+    let wanted = app.ops.settings.lock().await.https;
+    Json(json!({"active": https, "enabled": wanted, "cert": app.certs.info()}))
+}
+
+#[derive(Deserialize)]
+struct TlsUpload {
+    cert: String,
+    key: String,
+}
+
+/// Eigenes Zertifikat (PEM) übernehmen – gilt sofort für neue Verbindungen
+async fn tls_install(State(app): S, Json(r): Json<TlsUpload>) -> Response {
+    let certs = app.certs.clone();
+    match tokio::task::spawn_blocking(move || certs.install(r.cert.as_bytes(), r.key.as_bytes())).await {
+        Ok(Ok(())) => {
+            app.sup.log("info", "Eigenes HTTPS-Zertifikat übernommen").await;
+            Json(json!({"ok": true, "cert": app.certs.info()})).into_response()
+        }
+        Ok(Err(e)) => err(StatusCode::BAD_REQUEST, e.to_string()),
+        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    }
+}
+
+/// Zurück zum selbst signierten Zertifikat (neu erzeugt)
+async fn tls_self_signed(State(app): S) -> Response {
+    let certs = app.certs.clone();
+    match tokio::task::spawn_blocking(move || certs.create_self_signed(crate::tls::own_names())).await {
+        Ok(Ok(())) => Json(json!({"ok": true, "cert": app.certs.info()})).into_response(),
+        Ok(Err(e)) => err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    }
+}
+
 // ------------------------------------------------------------ Grafik-Renderer
 
 async fn renderer_ws(
@@ -280,6 +366,8 @@ async fn state(State(app): S, headers: HeaderMap) -> impl IntoResponse {
         "renderer": app.renderer.state.lock().await.clone(),
         "controls": control_list(&app).await,
         "user": {"open": open, "name": me.as_ref().map(|m| m.0.clone()), "role": me.map(|m| m.1).unwrap_or(Role::Admin)},
+        "https": app.https.load(std::sync::atomic::Ordering::Relaxed),
+        "uploads": app.ops.uploads.status().await,
         "version": env!("CARGO_PKG_VERSION"),
     }))
 }
@@ -439,10 +527,11 @@ async fn delete_preset(State(app): S, Path(name): Path<String>) -> Response {
 // ------------------------------------------------------------ Zeitplan, Alarme, Statistik
 
 async fn get_settings(State(app): S) -> impl IntoResponse {
-    Json(app.ops.settings.lock().await.clone())
+    Json(app.ops.settings.lock().await.redacted())
 }
 
-async fn put_settings(State(app): S, Json(s): Json<Settings>) -> Response {
+async fn put_settings(State(app): S, Json(mut s): Json<Settings>) -> Response {
+    s.keep_secrets(&*app.ops.settings.lock().await);
     match app.ops.save_settings(s).await {
         Ok(()) => ok(),
         Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
@@ -451,6 +540,21 @@ async fn put_settings(State(app): S, Json(s): Json<Settings>) -> Response {
 
 async fn alarms(State(app): S) -> impl IntoResponse {
     Json(app.ops.alarms.lock().await.clone())
+}
+
+/// Testmail mit den gespeicherten Mail-Einstellungen
+async fn mail_test(State(app): S) -> Response {
+    let m = app.ops.settings.lock().await.mail.clone();
+    let host = app.ops.hostname().await;
+    let subject = format!("[lz-streamer {host}] Testmail");
+    let body = format!("Testmail von lz-streamer auf {host}.\nAlarme kommen an diese Adresse.\n");
+    match crate::mail::send(&m, &subject, &body).await {
+        Ok(()) => {
+            app.sup.log("info", format!("Testmail an {} verschickt", m.to.trim())).await;
+            ok()
+        }
+        Err(e) => err(StatusCode::BAD_GATEWAY, format!("{e:#}")),
+    }
 }
 
 #[derive(Deserialize)]
@@ -496,7 +600,7 @@ async fn diagnose(State(app): S) -> Response {
         "system": app.ops.system.lock().await.clone(),
         "faehigkeiten": app.caps,
         "konfiguration": cfg,
-        "einstellungen": app.ops.settings.lock().await.clone(),
+        "einstellungen": app.ops.settings.lock().await.redacted(),
         "alarme": app.ops.alarms.lock().await.clone(),
         "laufzeit": snap,
         "statistik_letzte_stunde": stats,
@@ -690,6 +794,53 @@ async fn recording_delete(State(app): S, Path(name): Path<String>) -> Response {
     }
 }
 
+/// Aufnahme (samt Untertiteln) von Hand für alle eingeschalteten Ziele einreihen
+async fn recording_upload(State(app): S, Path(name): Path<String>) -> Response {
+    let Some(n) = admin::safe_name(&name) else { return err(StatusCode::BAD_REQUEST, "Ungültiger Name") };
+    let cfg = app.sup.config().await;
+    let path = record_dir(&app, &cfg).join(&n);
+    if !path.is_file() {
+        return err(StatusCode::NOT_FOUND, "Aufnahme nicht gefunden");
+    }
+    let jobs = app.ops.uploads.enqueue(&path, std::time::Duration::ZERO).await;
+    if jobs == 0 {
+        return err(StatusCode::BAD_REQUEST, "Kein Upload-Ziel eingeschaltet");
+    }
+    Json(json!({"ok": true, "jobs": jobs})).into_response()
+}
+
+// ------------------------------------------------------------ Upload-Ziele
+
+/// Einstellungen ohne Geheimnisse (`has_secret` zeigt, ob eines gesetzt ist)
+async fn uploads_get(State(app): S) -> impl IntoResponse {
+    Json(app.ops.uploads.settings.lock().await.redacted())
+}
+
+/// Speichern; leeres Geheimnis = bisheriges behalten, `clear_secret: true` löscht es
+async fn uploads_put(State(app): S, Json(v): Json<serde_json::Value>) -> Response {
+    let clear: Vec<bool> = v["targets"].as_array().map(|a| a.iter().map(|t| t["clear_secret"].as_bool().unwrap_or(false)).collect()).unwrap_or_default();
+    let mut s: crate::upload::UploadSettings = match serde_json::from_value(v) {
+        Ok(s) => s,
+        Err(e) => return err(StatusCode::BAD_REQUEST, e.to_string()),
+    };
+    let old = app.ops.uploads.settings.lock().await.clone();
+    s.merge_secrets(&old, &clear);
+    match app.ops.uploads.save_settings(s).await {
+        Ok(()) => ok(),
+        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    }
+}
+
+async fn uploads_retry(State(app): S) -> Response {
+    app.ops.uploads.retry_now().await;
+    ok()
+}
+
+async fn uploads_clear(State(app): S) -> Response {
+    app.ops.uploads.clear_queue().await;
+    ok()
+}
+
 // ------------------------------------------------------------ Whisper-Modelle
 
 async fn graphics_state(State(app): S) -> impl IntoResponse {
@@ -845,4 +996,22 @@ async fn report_pdf(State(app): S, Query(q): Query<RangeQ>) -> Response {
         // ohne Chrome: druckfertiges HTML (im Browser „Als PDF sichern“)
         Err(_) => asset("text/html; charset=utf-8", html),
     }
+}
+
+/// Oberfläche ausliefern, mit HTTPS über rustls (Zertifikat aus `app.certs`)
+/// oder im Klartext. Die Gegenstelle bleibt in beiden Fällen sichtbar.
+pub async fn run(listener: tokio::net::TcpListener, app: Arc<App>, https: bool, shutdown: impl std::future::Future<Output = ()> + Send + 'static) -> anyhow::Result<()> {
+    use axum::serve::ListenerExt;
+    let svc = router(app.clone()).into_make_service_with_connect_info::<std::net::SocketAddr>();
+    if !https {
+        axum::serve(listener, svc).with_graceful_shutdown(shutdown).await?;
+        return Ok(());
+    }
+    let certs = app.certs.clone();
+    tokio::task::spawn_blocking(move || certs.load_or_create()).await??;
+    app.https.store(true, std::sync::atomic::Ordering::Relaxed);
+    let tls = crate::tls::TlsListener::new(listener, app.certs.server_config()?)?;
+    // tap_io: so liefert axum die echte Gegenstelle als ConnectInfo<SocketAddr>
+    axum::serve(tls.tap_io(|_| {}), svc).with_graceful_shutdown(shutdown).await?;
+    Ok(())
 }

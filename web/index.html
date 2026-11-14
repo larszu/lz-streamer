@@ -101,8 +101,9 @@
           <label class="field"><span>Quelle</span>
             <select class="input" data-path="encoder.input.kind">
               <option value="auto">Automatisch</option><option value="decklink">DeckLink / UltraStudio</option><option value="test">Testbild</option><option value="file">Videodatei (Echtzeit)</option><option value="uvc">USB-Video (UVC, z. B. AJA U-TAP)</option>
+              <option value="srt">SRT</option><option value="udp">UDP (MPEG-TS)</option><option value="rtp">RTP (MPEG-TS)</option><option value="rtmp">RTMP abholen</option>
             </select></label>
-          <label class="field"><span>Anschluss</span>
+          <label class="field" data-show-mode="encoder.input.kind=auto|decklink"><span>Anschluss</span>
             <select class="input" data-path="encoder.input.connection">
               <option value="auto">Automatisch</option><option value="sdi">SDI</option><option value="hdmi">HDMI</option>
             </select></label>
@@ -113,6 +114,38 @@
           <label class="switch"><input type="checkbox" data-path="encoder.input.uvc_audio"> Ton vom Standard-Toneingang (UAC)</label>
         </div>
         <p class="hint" data-show-mode="encoder.input.kind=uvc">USB-Video kann höchstens 1080p60, 2 Tonkanäle und keine Untertitel aus VANC. Den Ton des Geräts in den Systemeinstellungen als Standard-Eingang wählen.</p>
+        <div data-show-mode="encoder.input.kind=srt|udp|rtp|rtmp">
+          <div class="seg" role="group" aria-label="Netz-Eingang" data-seg="encoder.input.net.mode">
+            <button type="button" data-v="transcode">Neu kodieren</button>
+            <button type="button" data-v="passthrough" title="Transportstrom unverändert weitergeben">Durchreichen</button>
+          </div>
+          <p class="hint" data-show-mode="encoder.input.net.mode=transcode">Fällt die Quelle aus, kommt das Standbild; kehrt sie zurück, verbindet der Eingang selbst neu.</p>
+          <p class="hint" data-show-mode="encoder.input.net.mode=passthrough">Ohne Neukodierung: Bild, Ton und Untertitel bleiben, wie sie ankommen. Kein Standbild, kein RTMP-Ausgang.</p>
+        </div>
+        <div data-show-mode="encoder.input.kind=srt">
+          <div class="seg" role="group" aria-label="SRT-Modus Eingang" data-seg="encoder.input.net.srt.mode">
+            <button type="button" data-v="listener">Auf Gegenstelle warten</button>
+            <button type="button" data-v="caller">Quelle anrufen</button>
+            <button type="button" data-v="rendezvous">Rendezvous</button>
+          </div>
+          <div class="row2">
+            <label class="field" data-show-mode="encoder.input.net.srt.mode=caller|rendezvous"><span>Quelladresse</span>
+              <input class="input" data-path="encoder.input.net.srt.host" placeholder="z. B. 192.0.2.30 oder srt://…" autocomplete="off" spellcheck="false"></label>
+            <label class="field"><span>Port</span><input class="input" data-path="encoder.input.net.srt.port" data-num inputmode="numeric"></label>
+          </div>
+          <div class="row2">
+            <label class="field"><span>Latenz (ms)</span><input class="input" data-path="encoder.input.net.srt.latency_ms" data-num inputmode="numeric"></label>
+            <label class="field"><span>SRT-Passwort</span><input class="input" type="password" data-path="encoder.input.net.srt.passphrase" autocomplete="new-password" placeholder="leer = unverschlüsselt"></label>
+          </div>
+          <label class="field"><span>Stream-ID</span><input class="input" data-path="encoder.input.net.srt.streamid" autocomplete="off"></label>
+        </div>
+        <div class="row2" data-show-mode="encoder.input.kind=udp|rtp">
+          <label class="field"><span>Empfangsadresse</span>
+            <input class="input" data-path="encoder.input.net.host" placeholder="leer = alle, 239.x = Multicast, oder udp://…" autocomplete="off" spellcheck="false"></label>
+          <label class="field"><span>Port</span><input class="input" data-path="encoder.input.net.port" data-num inputmode="numeric"></label>
+        </div>
+        <label class="field" data-show-mode="encoder.input.kind=rtmp"><span>RTMP-Quelle</span>
+          <input class="input" data-path="encoder.input.net.url" placeholder="rtmp://server/app/stream" autocomplete="off" spellcheck="false"></label>
         <label class="field" data-show-mode="encoder.input.kind=file"><span>Videodatei (Pfad)</span><input class="input" data-path="encoder.input.file" spellcheck="false"></label>
         <label class="field" id="enc-device-field" hidden><span>Gerät</span><select class="input" data-path="encoder.input.device" data-num id="enc-device"></select></label>
         <p class="hint" id="detected"></p>
@@ -419,6 +452,17 @@
       <ol class="rows" id="recordings"></ol>
       <label class="switch"><input type="checkbox" id="auto-delete"> Älteste Aufnahmen löschen, wenn der Platz unter die Alarmschwelle fällt</label>
     </section>
+    <section class="card" aria-labelledby="up-title">
+      <h2 id="up-title">Upload <small id="up-state"></small></h2>
+      <ol class="rows" id="up-status"></ol>
+      <div class="actions"><button type="button" class="btn btn--soft" id="up-retry">Jetzt erneut versuchen</button><button type="button" class="btn" id="up-clear">Warteschlange leeren</button></div>
+      <label class="switch"><input type="checkbox" id="up-on"> Fertige Segmente automatisch hochladen</label>
+      <label class="switch"><input type="checkbox" id="up-del"> Nach dem Upload lokal löschen</label>
+      <label class="field"><span>Bandbreite höchstens (kbit/s, 0 = frei)</span><input class="input" id="up-limit" inputmode="numeric"></label>
+      <div class="list-edit" id="up-targets"></div>
+      <button type="button" class="btn btn--soft" id="up-add">Ziel hinzufügen</button>
+      <p class="hint">WebDAV lädt per PUT in die Ordner-URL, S3 signiert selbst (SigV4, bis 5 GB je Datei), SFTP nutzt das System-<code>sftp</code> mit Schlüssel und setzt Abbrüche fort. Bricht ein Upload ab, folgt ein neuer Versuch mit wachsender Pause; die Warteschlange übersteht Neustarts. Passwörter und Secret Keys bleiben auf diesem Rechner und werden nie angezeigt – leer lassen heißt „unverändert“.</p>
+    </section>
   </div>
   <div class="col-b">
     <section class="card" aria-labelledby="al-title">
@@ -427,6 +471,34 @@
       <details class="more"><summary>Schwellen</summary>
         <div class="form row2" id="alarm-fields"></div>
       </details>
+    </section>
+    <section class="card" aria-labelledby="ml-title">
+      <h2 id="ml-title">Alarme per Mail</h2>
+      <label class="switch"><input type="checkbox" data-mail="enabled"> Alarme per Mail schicken</label>
+      <div class="form row2">
+        <label class="field"><span>Mailserver</span><input class="input" data-mail="host" placeholder="smtp.example.org" autocomplete="off"></label>
+        <label class="field"><span>Port</span><input class="input" data-mail="port" inputmode="numeric"></label>
+        <label class="field"><span>Verschlüsselung</span><select class="input" data-mail="security"><option value="starttls">STARTTLS (587)</option><option value="tls">TLS (465)</option><option value="none">keine (Hausnetz)</option></select></label>
+        <label class="field"><span>Benutzer</span><input class="input" data-mail="user" autocomplete="off"></label>
+        <label class="field"><span>Passwort</span><input class="input" data-mail="password" type="password" autocomplete="new-password"></label>
+        <label class="field"><span>Absender</span><input class="input" data-mail="from" placeholder="leer = Benutzer"></label>
+        <label class="field"><span>Empfänger (mehrere mit Komma)</span><input class="input" data-mail="to" placeholder="regie@example.org"></label>
+      </div>
+      <label class="switch"><input type="checkbox" data-mail="errors_only"> Nur Fehler, keine Warnungen</label>
+      <label class="switch"><input type="checkbox" data-mail="cleared"> Entwarnung schicken, wenn ein Alarm erledigt ist</label>
+      <div class="actions"><button type="button" class="btn btn--soft" id="mail-test">Testmail senden</button></div>
+      <p class="hint" id="mail-hint">Zugangsdaten bleiben auf diesem Rechner; das Passwort zeigt die Oberfläche nie wieder an.</p>
+    </section>
+    <section class="card" aria-labelledby="mt-title">
+      <h2 id="mt-title">Messwerte <small>Prometheus · Influx</small></h2>
+      <p class="hint">Prometheus liest <code id="metrics-url">/metrics</code>; mit Benutzern per <code>basic_auth</code> (Name und Passwort aus der Benutzerliste).</p>
+      <label class="switch"><input type="checkbox" data-metrics="public"> <code>/metrics</code> ohne Anmeldung abrufbar</label>
+      <div class="form row2">
+        <label class="field"><span>Influx-Schreibadresse</span><input class="input" data-influx="url" placeholder="http://influx:8086/api/v2/write?org=…&amp;bucket=…" autocomplete="off"></label>
+        <label class="field"><span>Influx-Token</span><input class="input" data-influx="token" type="password" autocomplete="new-password"></label>
+        <label class="field"><span>Alle (s)</span><input class="input" data-influx="interval_s" inputmode="numeric"></label>
+      </div>
+      <p class="hint">Leere Adresse = kein Push. Gesendet wird Influx-Line-Protocol, Messung <code>lz_streamer</code>.</p>
     </section>
     <section class="card" aria-labelledby="sb-title">
       <h2 id="sb-title">Standbilder</h2>
@@ -447,6 +519,19 @@
         <label class="btn btn--soft">Kanal importieren<input type="file" accept="application/json,.json" id="cfg-import" hidden></label>
       </div>
       <p class="hint" id="cfg-import-hint">Der Export enthält Passwörter und Stream-Schlüssel, das Diagnose-Paket nicht.</p>
+    </section>
+    <section class="card" aria-labelledby="tls-title">
+      <h2 id="tls-title">HTTPS <small id="tls-state"></small></h2>
+      <label class="switch"><input type="checkbox" id="tls-on"> Oberfläche über HTTPS (gilt nach Neustart)</label>
+      <p class="hint" id="tls-info"></p>
+      <details class="more"><summary>Eigenes Zertifikat</summary>
+        <div class="form">
+          <label class="field"><span>Zertifikat (PEM, mit Zwischenzertifikaten)</span><textarea class="input" id="tls-cert" rows="4" placeholder="-----BEGIN CERTIFICATE-----"></textarea></label>
+          <label class="field"><span>Privater Schlüssel (PEM)</span><textarea class="input" id="tls-key" rows="4" placeholder="-----BEGIN PRIVATE KEY-----" autocomplete="off"></textarea></label>
+          <div class="actions"><button type="button" class="btn btn--soft" id="tls-install">Übernehmen</button><button type="button" class="btn" id="tls-self">Selbst signiertes neu erzeugen</button></div>
+        </div>
+      </details>
+      <p class="hint">Ohne eigenes Zertifikat erzeugt lz-streamer beim ersten Start ein selbst signiertes für den Rechnernamen und die eigenen IPv4-Adressen. Klartext von außen wird auf https:// umgeleitet; lokal (127.0.0.1) geht beides.</p>
     </section>
     <section class="card" aria-labelledby="us-title">
       <h2 id="us-title">Benutzer <small id="me"></small></h2>

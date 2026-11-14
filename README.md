@@ -7,7 +7,7 @@ Eigener Video-Encoder und -Decoder: **Eingang → Encoder → SRT** (dazu option
 ## Was es kann (Version 0.1)
 
 - **Ein Kanal**, Rolle umschaltbar: *Senden* (Encoder) oder *Empfangen* (Decoder).
-- **Eingänge:** DeckLink/UltraStudio (SDI/HDMI, Format wird erkannt, Halbbilder werden aufgelöst), USB-Video (UVC, z. B. AJA U-TAP; höchstens 1080p60, Ton über den Standard-Toneingang, kein VANC), Videodatei oder Testbild mit 1-kHz-Ton. „Automatisch“ nimmt das erste gefundene DeckLink-Gerät, sonst das Testbild – und sagt das in der Oberfläche.
+- **Eingänge:** DeckLink/UltraStudio (SDI/HDMI, Format wird erkannt, Halbbilder werden aufgelöst), USB-Video (UVC, z. B. AJA U-TAP; höchstens 1080p60, Ton über den Standard-Toneingang, kein VANC), Videodatei oder Testbild mit 1-kHz-Ton. Dazu **Netz-Eingänge:** MPEG-TS über SRT (Caller, Listener, Rendezvous; Passwort, Stream-ID), UDP und RTP (auch Multicast) sowie RTMP von einem Server abholen. Eine eingefügte Adresse (`srt://…`, `udp://@239.1.2.3:1234`, `rtp://…`, `rtmp://…`) wird zerlegt und stellt die Eingangsart. „Neu kodieren“ dekodiert und läuft durch die ganze Kette (Standbild, Tonmatrix, Untertitel); fällt die Quelle aus, kommt das Standbild, kehrt sie zurück, verbindet der Eingang selbst neu. „Durchreichen“ gibt den Transportstrom ohne Neukodierung auf alle TS-Ausgänge (Gateway), ohne Standbild und ohne RTMP-Ausgang. „Automatisch“ nimmt das erste gefundene DeckLink-Gerät, sonst das Testbild – und sagt das in der Oberfläche.
 - **Encoder:** Hardware zuerst – Mac `vtenc_h264_hw`/`vtenc_h265_hw`, Linux NVENC, VA-API, Quick Sync –, sonst x264/x265. Lässt sich ein Hardware-Encoder laden, aber nicht öffnen, nimmt der Kanal von selbst den nächsten. Voreinstellung latenzarm: keine B-Frames, kein Lookahead, GOP 1 s, CBR, SPS/PPS vor jedem Keyframe.
 - **Formate:** 720p50 bis 2160p50, H.264 oder H.265. Ein HD-Eingang wird für UHD-Ausgänge mehrthreadig mit Lanczos (Hüllkurve 3) hochskaliert (am M1 Pro 1080p50 → 2160p50 in Echtzeit).
 - **SRT** als Caller („An Ziel senden“) oder Listener („Auf Gegenstelle warten“), Latenz, Passwort (AES), Stream-ID. Eine eingefügte Adresse `srt://host:port?mode=…` wird zerlegt.
@@ -31,15 +31,18 @@ Eigener Video-Encoder und -Decoder: **Eingang → Encoder → SRT** (dazu option
 - **Gesicherte Übertragung wie bei Resi:** Der Encoder schickt kurze Segmente mit Prüfsumme an eine Empfangsstelle (dasselbe Programm in der Rolle „Empfangsstelle“) und puffert sie, bis sie quittiert sind. Die Empfangsstelle spielt mit fester Verzögerung (Vorgabe 90 s) an YouTube, Facebook, Twitch, Vimeo, RTMP, SRT oder UDP aus und zeigt die Sendung im Web-Player `/player` mit Mediathek, Kapiteln und Zuschauerzahlen. Standort-Decoder holen dort ab und laufen bei gleicher Verzögerung bildgleich. Gekoppelt wird mit einem Code statt mit Stream-Schlüsseln. Fällt das Netz kürzer aus als die Verzögerung, merkt niemand etwas. Details: [docs/gesicherte-uebertragung.md](docs/gesicherte-uebertragung.md).
 - **Mehrere Ausgänge** aus demselben Strom: weitere SRT-Ziele (auch Rendezvous), TS über UDP/RTP (auch Multicast), dazu RTMP.
 - **Aufnahme parallel** zum Stream: TS oder fragmentiertes MP4, Segmente, alle Tonspuren. Mit Untertiteln liegen neben jedem Segment `.srt` und `.vtt`, deren Zeiten aus dem gesendeten 608-Strom stammen. Eine zweite Untertitelsprache liegt auf CC3. Mit Spracherkennung übersetzt Whisper ins Englische, bei Live-Text kommt sie aus einem eigenen Eingabefeld. Der Decoder wählt CC1 oder CC3 ([Messung](docs/untertitel-messung.md)). Aufnahmen-Liste mit Download; älteste löschen, wenn die Platte voll wird.
+- **Upload fertiger Segmente** zu WebDAV, S3 oder SFTP, samt `.srt`/`.vtt`: Bandbreite in kbit/s begrenzbar (Token-Bucket für alle Uploads zusammen), Warteschlange auf Platte, nach einem Abbruch neuer Versuch mit wachsender Pause (5 s bis 10 min). WebDAV und S3 laden dann vollständig neu, SFTP setzt per `reput` fort. Auf Wunsch wird lokal gelöscht, sobald alle Ziele die Datei haben. S3 signiert selbst (SigV4, Nutzlast unsigniert) und nimmt höchstens 5 GB je Datei. Passwörter und Secret Keys liegen nur in `upload.json` (Rechte 0600) und kommen nie über API, Oberfläche, Diagnose oder Export zurück.
 - **Verwaltung:**
   - Profile (mitgelieferte und eigene)
   - Zeitplan: wöchentlich oder einmalig, mit Profilwahl
-  - Alarme mit Schwellen
+  - Alarme mit Schwellen, per Mail (SMTP) mit Entwarnung und Testmail
+  - Messwerte für Prometheus (`/metrics`) und Influx (Push)
   - Standbilder hochladen
   - Statistik über 24 h, Bericht als CSV
   - Systemlast mit GPU (Mac über ioreg, NVIDIA über nvidia-smi), Alarme für Bildrate und Formatwechsel am Eingang
   - Diagnose-Paket und Kanal-Export/-Import als Datei
   - Benutzer mit Rollen (Verwalten/Bedienen/Ansehen)
+  - HTTPS mit selbst signiertem oder eigenem Zertifikat (PEM), TLS 1.2/1.3
   - Beschnitt
 - **Schalter live:** Untertitel, Klare Sprache, Lautheitsregelung samt Profil, Plugin-Umgehung und Grafik lassen sich während der Sendung umschalten, ohne dass der Kanal neu startet. Das geht in der Karte „Schalter“, über `/api/control` oder per OSC, etwa aus Companion.
 - **Keine Pflichtfelder:** Ein leerer Start ergibt einen SRT-Listener auf Port 9000 mit Testbild. Fehlt etwas, erscheint ein Hinweis, gesperrt wird nichts.
@@ -94,12 +97,14 @@ cargo build --release
 ./target/release/lz-streamer info          # was ist da: Encoder, DeckLink, fehlende Bausteine
 ./target/release/lz-streamer               # Oberfläche auf http://127.0.0.1:4200
 ./target/release/lz-streamer serve --bind 0.0.0.0 --autostart   # im Netz erreichbar, Kanal sofort an
+./target/release/lz-streamer serve --bind 0.0.0.0 --https       # über HTTPS (auch in der Verwaltung einstellbar)
 ./target/release/lz-streamer latenz [--h265] [--srt-latency 40] [--decoder avdec_h265] [--demux 0] [--reserve 20]
 ```
 
 - **Port 4200.** 4181–4198 belegt die AV-Suite, 4199 belegt `lz-nvx-toolbox`.
 - Die Konfiguration liegt unter `~/Library/Application Support/lz-streamer/config.json` (Linux: `~/.config/lz-streamer/`). Dort stehen auch SRT-Passwort und RTMP-Key im Klartext; sie gelangen nie ins Repo.
 - Encoder und Decoder auf einem Rechner: zwei Instanzen mit `--port` und `--config` trennen.
+- **HTTPS:** Beim ersten Start mit HTTPS entsteht ein selbst signiertes Zertifikat (CN = Rechnername, SANs = Rechnername, `localhost`, eigene IPv4-Adressen, 790 Tage gültig) unter `tls/` neben der Konfiguration. Fehlt später eine Adresse, wird es neu erzeugt. Ein eigenes Zertifikat (PEM mit Kette und Schlüssel) lässt sich in der Verwaltung einspielen und gilt sofort. HTTPS und Klartext teilen sich den Port: Klartext von außen bekommt eine Weiterleitung auf `https://`, Klartext von 127.0.0.1 wird weiter bedient (Grafik-Renderer, lokale Werkzeuge). Die Prüfung „nur lokal“ sieht die echte Gegenstelle.
 
 **DeckLink/UltraStudio am Mac:** Blackmagic Desktop Video installieren und die Treibererweiterung freigeben (Systemeinstellungen → Anmeldeobjekte & Erweiterungen). Ohne angestecktes Gerät meldet `lz-streamer info` keine DeckLink-Geräte, und „Automatisch“ nimmt das Testbild. Nach dem Anstecken in der Oberfläche neu laden (`POST /api/devices/refresh`) oder den Dienst neu starten. Ein UltraStudio Recorder 3G nimmt höchstens 1080p (3G-SDI). Für 12G/2160p braucht es z. B. ein UltraStudio 4K Mini oder eine DeckLink-4K/8K-Karte; der Weg über `decklinkvideosrc mode=auto` bleibt derselbe.
 
@@ -111,6 +116,9 @@ cargo test
 
 - **51 Unit-Tests** prüfen Konfiguration, Zielzerlegung, Encoder-Auswahl und Voreinstellungen, Pipeline-Bau, SRT-Statistik und das Kindprozess-Protokoll.
 - **4 API-Tests** (`tests/api.rs`): Anmeldung und Rollen, Profile, Standbilder, Zeitplan, Alarme, Aufnahmen, Bericht.
+- **3 Überwachungstests** (`tests/alarm_mail.rs`): Ein lokaler Mini-SMTP-Server empfängt die Alarm-Mail bei nachgestelltem Signalverlust und die Entwarnung. Passwort und Token tauchen in keiner Antwort auf. `/metrics` prüft Anmeldung, HTTP-Basic und Freigabe.
+- **2 HTTPS-Tests** (`tests/https.rs`): `/api/state` über TLS 1.3 und 1.2 (rustls-Client), Zertifikat für IP und Namen, eigenes Zertifikat gilt ohne Neustart, falscher Schlüssel wird abgelehnt, Renderer von einer Netzadresse abgelehnt, Klartext von außen umgeleitet.
+- **5 Upload-Tests** (`tests/upload.rs`): WebDAV-Ersatz (axum) mit Basic-Auth, Abbruch mitten im PUT und Neuversuch, gemessene Drosselung (4000 kbit/s eingestellt, ≈ 4040 gemessen); Warteschlange übersteht Neustart; S3-PUT mit vom Ersatz nachgerechneter Signatur; SFTP gegen eigenen `sshd` (Drosselung, `reput`); 4 MB Upload neben laufendem SRT-Durchlauf ohne Verluste, danach folgt das beendete Segment automatisch. SigV4 zusätzlich gegen zwei Beispielvektoren aus der AWS-Dokumentation.
 - **13 Integrationstests** laufen über echte SRT-Verbindungen auf 127.0.0.1:
   - Listener → Caller, Caller → Listener
   - H.265 sowie x264 in Software
@@ -122,6 +130,7 @@ cargo test
   - drei Tonspuren mit Sprache (de/en/fr) kommen am Decoder an, Sprachwahl greift
   - Aufnahme als TS und MP4 mit allen Spuren (Prüfung mit ffprobe)
   - zweiter SRT-Ausgang und UDP-Ausgang
+  - Netz-Eingänge: SRT (H.265) neu kodiert auf H.264 mit Standbild bei Ausfall und Wiederverbinden, SRT durchgereicht ohne Encoder, UDP neu kodiert, RTP durchgereicht, RTMP von ffmpeg abgeholt
 
 ## Aufbau
 
@@ -150,15 +159,33 @@ lz-streamer serve ── axum (REST + Weboberfläche, eingebettet) ── Aufpas
 | `POST /api/devices/refresh` | DeckLink-Geräte neu suchen |
 | `GET /api/preview.jpg` | Vorschaubild (2 fps) |
 | `GET/POST /api/presets`, `POST /api/presets/{name}/load`, `DELETE …` | Profile |
-| `GET/PUT /api/settings` | Zeitplan, Alarmschwellen, Aufnahmen automatisch löschen |
+| `GET/PUT /api/settings` | Zeitplan, Alarmschwellen, Aufnahmen automatisch löschen, Mail, Messwerte; Passwort und Token kommen leer zurück |
 | `GET /api/alarms` · `/api/stats?minutes=` · `/api/system` · `/api/report.csv` | Alarme, Verlauf, Systemlast, Bericht |
+| `POST /api/mail/test` | Testmail mit den gespeicherten Mail-Einstellungen |
+| `GET /metrics` | Messwerte im Prometheus-Textformat (siehe unten) |
 | `GET /api/diagnose.json` · `GET /api/config/export` | Diagnose-Paket (Passwörter geschwärzt) · Kanal als Datei (vollständig; einspielen mit `PUT /api/config`) |
 | `GET/POST /api/standby`, `GET/DELETE /api/standby/{name}`, `POST …/use` | Standbilder |
-| `GET /api/recordings`, `GET/DELETE /api/recordings/{name}` | Aufnahmen |
+| `GET /api/recordings`, `GET/DELETE /api/recordings/{name}`, `POST …/upload` | Aufnahmen; von Hand hochladen |
+| `GET/PUT /api/uploads`, `POST /api/uploads/retry` · `/clear` | Upload-Ziele (ohne Geheimnisse; leeres Feld = unverändert, `clear_secret: true` löscht) · sofort neu versuchen · Warteschlange leeren. Status steht in `/api/state` unter `uploads` |
 | `GET /api/plugins` · `POST /api/plugins/scan` | geprüfte Plugins und Sperrliste · neu prüfen |
 | `GET/POST /api/control` | schaltbare Eigenschaften lesen bzw. live umstellen, ohne Neustart: `{"path":"captions.enabled","value":false}`; Pfade siehe `src/control.rs`, benannt für NMOS IS-12. Per OSC: `/lzs/set/<pfad mit />` mit Wert, z. B. `/lzs/set/audio/tracks/0/plugins/0/bypass T` |
 | `GET/POST /api/graphics` | Zustand der Grafik-Ebenen; Befehl `{"action":"show","graphicId":"lz-lower-third","data":{…}}` (`load`, `show`, `play`, `next`, `prev`, `update`, `stop`, `clear`, `custom`) |
+| `GET/POST /api/tls`, `POST /api/tls/self-signed` | Zertifikat ansehen (ohne Schlüssel) · eigenes einspielen `{"cert":"PEM","key":"PEM"}` · selbst signiertes neu erzeugen |
 | `POST /api/login` · `/api/logout`, `GET /api/me`, `GET/POST /api/users`, `DELETE /api/users/{name}` | Anmeldung und Benutzer; ohne Benutzer bleibt die Oberfläche offen, der erste wird Administrator |
+
+### Überwachung: Prometheus, Influx, Mail
+
+- **`GET /metrics`** liefert alle Werte im Prometheus-Textformat, Präfix `lzs_`. Dazu gehören Bitrate, SRT-RTT, verlorene, wiederholte und verworfene Pakete, Lautheit und True Peak je Spur (Labels `track`, `name`, `language`), CPU, GPU, Speicher, freier Platz, Bilder/s (gemessen und eingestellt), Neustarts, Signal, Standbild und aktive Alarme. Ohne angelegte Benutzer ist der Weg offen. Mit Benutzern braucht er eine Sitzung oder HTTP-Basic mit Name und Passwort aus der Benutzerliste; ohne Anmeldung nur, wenn „`/metrics` ohne Anmeldung abrufbar“ eingeschaltet ist.
+
+  ```yaml
+  scrape_configs:
+    - job_name: lz-streamer
+      static_configs: [{ targets: ["streamer.local:4200"] }]
+      basic_auth: { username: prometheus, password: "…" }
+  ```
+- **Influx:** Mit einer Schreibadresse (z. B. `http://influx:8086/api/v2/write?org=technik&bucket=streamer`) schickt lz-streamer im eingestellten Takt Influx-Line-Protocol, Messung `lz_streamer`, Tag `host`. Das Token geht als `Authorization: Token …` mit. Ein Ausfall erscheint einmal im Ereignisprotokoll, die Rückkehr ebenso.
+- **Alarme per Mail:** SMTP mit STARTTLS (587), TLS (465) oder unverschlüsselt im eigenen Netz. Zur Wahl stehen „nur Fehler“ und eine Entwarnung, wenn ein Alarm erledigt ist. Jeder Alarm kommt einmal bei Beginn; alle neuen Alarme eines Prüfdurchlaufs stehen in einer Mail. „Testmail senden“ prüft die Einstellungen sofort.
+- **Zugangsdaten** für Mail und Influx stehen nur in `verwaltung.json` im Datenverzeichnis. `GET /api/settings`, das Diagnose-Paket und die Oberfläche geben Passwort und Token nie zurück. Ein leeres Feld beim Speichern lässt den gespeicherten Wert stehen.
 
 ## Bezug zum Vorbild
 

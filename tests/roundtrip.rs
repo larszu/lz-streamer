@@ -1057,3 +1057,191 @@ fn hls_output_with_two_languages() {
     assert!(probe.contains("audio,de") && probe.contains("audio,en"), "Sprachen fehlen: {probe}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Pollt beliebig viele Kanäle, bis `done` die Status (in derselben Reihenfolge) akzeptiert.
+#[track_caller]
+fn run_all(chs: &mut [&mut Channel], timeout: Duration, mut done: impl FnMut(&[ChannelStatus]) -> bool) -> Vec<ChannelStatus> {
+    let end = Instant::now() + timeout;
+    loop {
+        let st: Vec<ChannelStatus> = chs.iter_mut().map(|c| status(c).0).collect();
+        if done(&st) {
+            return st;
+        }
+        assert!(Instant::now() < end, "Zeit abgelaufen: {st:#?}");
+        std::thread::sleep(Duration::from_millis(200));
+    }
+}
+
+/// Zweiter Encoder mit Netz-Eingang: Quelle ist ein Testbild-Encoder auf `src_port`.
+fn net_encoder_cfg(kind: InputKind, src_port: u16, out_port: u16, mode: lz_streamer::config::NetMode) -> EncoderConfig {
+    let mut c = encoder_cfg(out_port, SrtMode::Listener);
+    c.input.kind = kind;
+    c.input.net.mode = mode;
+    c.input.net.srt.mode = SrtMode::Caller;
+    c.input.net.srt.host = "127.0.0.1".into();
+    c.input.net.srt.port = src_port;
+    c.input.net.srt.latency_ms = 80;
+    c.input.net.host = "127.0.0.1".into();
+    c.input.net.port = src_port;
+    c.standby.timeout_ms = 500;
+    c
+}
+
+fn ffmpeg_available() -> bool {
+    std::process::Command::new("ffmpeg").arg("-version").output().is_ok()
+}
+
+/// KB-13: SRT rein (H.265) → dekodiert → H.264 neu kodiert in anderer Größe → SRT und RTMP raus.
+/// Quelle weg → Standbild, Quelle zurück → Netzquelle verbindet neu, Eingang wieder auf Sendung.
+#[test]
+fn srt_input_transcoded_to_srt_and_rtmp() {
+    use lz_streamer::config::NetMode;
+    init();
+    let (p_src, p_out) = (free_port(), free_port());
+    let mut src_cfg = encoder_cfg(p_src, SrtMode::Listener);
+    src_cfg.video.codec = Codec::H265;
+    let mut src = Channel::start_encoder(&src_cfg, &[], &ChannelOptions::default()).unwrap();
+
+    let mut cfg = net_encoder_cfg(InputKind::Srt, p_src, p_out, NetMode::Transcode);
+    cfg.video.width = 320;
+    cfg.video.height = 180;
+    let rtmp = ffmpeg_available().then(|| {
+        let rport = {
+            let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            l.local_addr().unwrap().port()
+        };
+        let url = format!("rtmp://127.0.0.1:{rport}/live/test");
+        let log = std::env::temp_dir().join(format!("lzs-net-rtmp-{rport}.log"));
+        let ff = std::process::Command::new("ffmpeg")
+            .args(["-hide_banner", "-loglevel", "info", "-listen", "1", "-i", &url, "-f", "null", "-"])
+            .stdin(std::process::Stdio::null())
+            .stderr(std::fs::File::create(&log).unwrap())
+            .spawn()
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(800));
+        cfg.rtmp.enabled = true;
+        cfg.rtmp.url = url;
+        (ff, log)
+    });
+    let mut enc = Channel::start_encoder(&cfg, &[], &ChannelOptions::default()).unwrap();
+    let mut dec = Channel::start_decoder(&decoder_cfg(p_out, SrtMode::Caller), &ChannelOptions::default()).unwrap();
+    let st = run_all(&mut [&mut src, &mut enc, &mut dec], Duration::from_secs(30), |s| !s[1].standby && s[2].frames >= 50);
+    assert!(st[1].input.contains("SRT") && st[1].input.contains("neu kodiert"), "{}", st[1].input);
+    assert_eq!(st[1].signal, "ok");
+    assert!(st[1].encoder.is_some());
+    assert_eq!(st[2].codec, Some(Codec::H264), "nicht neu kodiert");
+    assert_eq!(st[2].resolution.as_deref(), Some("320×180"));
+    if let Some((mut ff, log)) = rtmp {
+        // ffmpeg als RTMP-Gegenstelle nimmt den neu kodierten Strom an
+        let st = run_all(&mut [&mut enc, &mut dec], Duration::from_secs(15), |s| s[0].rtmp.as_deref() == Some("sendet"));
+        let _ = ff.kill();
+        let _ = ff.wait();
+        let _ = std::fs::remove_file(&log);
+        assert_eq!(st[0].rtmp.as_deref(), Some("sendet"));
+    }
+
+    // Quelle fällt aus: Standbild, Ausgang läuft weiter
+    src.stop();
+    drop(src);
+    let st = run_all(&mut [&mut enc, &mut dec], Duration::from_secs(10), |s| s[0].standby);
+    assert_eq!(st[0].signal, "lost");
+    let before = st[1].frames;
+    run_all(&mut [&mut enc, &mut dec], Duration::from_secs(10), |s| s[1].frames >= before + 25);
+
+    // Quelle zurück: Netzquelle verbindet neu
+    let mut src = Channel::start_encoder(&src_cfg, &[], &ChannelOptions::default()).unwrap();
+    let st = run_all(&mut [&mut src, &mut enc, &mut dec], Duration::from_secs(25), |s| !s[1].standby);
+    assert_eq!(st[1].signal, "ok");
+}
+
+/// KB-13 Gateway: SRT rein → unverändert (H.265, 640×360) auf SRT raus, ohne Encoder.
+#[test]
+fn srt_input_passthrough_keeps_stream() {
+    use lz_streamer::config::NetMode;
+    init();
+    let (p_src, p_out) = (free_port(), free_port());
+    let mut src_cfg = encoder_cfg(p_src, SrtMode::Listener);
+    src_cfg.video.codec = Codec::H265;
+    let mut src = Channel::start_encoder(&src_cfg, &[], &ChannelOptions::default()).unwrap();
+    let mut cfg = net_encoder_cfg(InputKind::Srt, p_src, p_out, NetMode::Passthrough);
+    cfg.video.width = 320;
+    cfg.video.height = 180;
+    let mut gw = Channel::start_encoder(&cfg, &[], &ChannelOptions::default()).unwrap();
+    let mut dec = Channel::start_decoder(&decoder_cfg(p_out, SrtMode::Caller), &ChannelOptions::default()).unwrap();
+    let st = run_all(&mut [&mut src, &mut gw, &mut dec], Duration::from_secs(20), |s| s[2].frames >= 50);
+    assert_eq!(st[1].encoder, None, "Durchreichen darf nicht kodieren");
+    assert!(st[1].input.contains("durchgereicht"), "{}", st[1].input);
+    assert_eq!(st[1].signal, "ok");
+    assert_eq!(st[2].codec, Some(Codec::H265));
+    assert_eq!(st[2].resolution.as_deref(), Some("640×360"), "Größe verändert");
+    // Quelle weg: Gateway meldet Signalverlust, bleibt aber stehen
+    src.stop();
+    drop(src);
+    let st = run_all(&mut [&mut gw, &mut dec], Duration::from_secs(10), |s| s[0].signal == "lost");
+    assert!(!st[0].standby);
+    let mut src = Channel::start_encoder(&src_cfg, &[], &ChannelOptions::default()).unwrap();
+    let before = st[1].frames;
+    run_all(&mut [&mut src, &mut gw, &mut dec], Duration::from_secs(25), |s| s[1].signal == "ok" && s[2].frames >= before + 25);
+}
+
+/// UDP-TS rein → neu kodiert; RTP-TS rein → durchgereicht.
+#[test]
+fn udp_and_rtp_inputs() {
+    use lz_streamer::config::{ExtraOutput, NetMode, OutputType};
+    init();
+    let free_udp = || std::net::UdpSocket::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+    let (p_src, p_udp, p_rtp, p_a, p_b) = (free_port(), free_udp(), free_udp(), free_port(), free_port());
+    let mut src_cfg = encoder_cfg(p_src, SrtMode::Listener);
+    let out = |kind, port| ExtraOutput { kind, host: "127.0.0.1".into(), port, ..Default::default() };
+    src_cfg.outputs = vec![out(OutputType::Udp, p_udp), out(OutputType::Rtp, p_rtp)];
+    let mut src = Channel::start_encoder(&src_cfg, &[], &ChannelOptions::default()).unwrap();
+
+    let mut a_cfg = net_encoder_cfg(InputKind::Udp, p_udp, p_a, NetMode::Transcode);
+    a_cfg.video.width = 320;
+    a_cfg.video.height = 180;
+    let mut a = Channel::start_encoder(&a_cfg, &[], &ChannelOptions::default()).unwrap();
+    let mut b = Channel::start_encoder(&net_encoder_cfg(InputKind::Rtp, p_rtp, p_b, NetMode::Passthrough), &[], &ChannelOptions::default()).unwrap();
+    let mut da = Channel::start_decoder(&decoder_cfg(p_a, SrtMode::Caller), &ChannelOptions::default()).unwrap();
+    let mut db = Channel::start_decoder(&decoder_cfg(p_b, SrtMode::Caller), &ChannelOptions::default()).unwrap();
+    let st = run_all(&mut [&mut src, &mut a, &mut b, &mut da, &mut db], Duration::from_secs(25), |s| {
+        !s[1].standby && s[3].frames >= 25 && s[4].frames >= 25
+    });
+    assert_eq!(st[3].resolution.as_deref(), Some("320×180"));
+    assert_eq!(st[4].resolution.as_deref(), Some("640×360"));
+    assert!(st[2].input.starts_with("rtp://127.0.0.1:"), "{}", st[2].input);
+}
+
+/// RTMP-Quelle per URL abholen (ffmpeg als RTMP-Server) und neu kodieren.
+#[test]
+fn rtmp_input_pulled_and_transcoded() {
+    use lz_streamer::config::NetMode;
+    init();
+    if !ffmpeg_available() {
+        eprintln!("ffmpeg fehlt – Test übersprungen");
+        return;
+    }
+    let rport = {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        l.local_addr().unwrap().port()
+    };
+    let url = format!("rtmp://127.0.0.1:{rport}/live/quelle");
+    let mut ff = std::process::Command::new("ffmpeg")
+        .args(["-hide_banner", "-loglevel", "error", "-re", "-f", "lavfi", "-i", "testsrc2=size=480x270:rate=25", "-f", "lavfi", "-i", "sine=frequency=1000"])
+        .args(["-c:v", "libx264", "-tune", "zerolatency", "-g", "25", "-pix_fmt", "yuv420p", "-c:a", "aac", "-f", "flv", "-listen", "1", &url])
+        .stdin(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    std::thread::sleep(Duration::from_millis(1000));
+    let p_out = free_port();
+    let mut cfg = net_encoder_cfg(InputKind::Rtmp, 0, p_out, NetMode::Transcode);
+    cfg.input.net.url = url;
+    let mut enc = Channel::start_encoder(&cfg, &[], &ChannelOptions::default()).unwrap();
+    let mut dec = Channel::start_decoder(&decoder_cfg(p_out, SrtMode::Caller), &ChannelOptions::default()).unwrap();
+    let st = run_all(&mut [&mut enc, &mut dec], Duration::from_secs(20), |s| !s[0].standby && s[1].frames >= 25);
+    let _ = ff.kill();
+    let _ = ff.wait();
+    assert!(st[0].input.contains("rtmp://127.0.0.1"), "{}", st[0].input);
+    assert!(!st[0].input.contains("quelle"), "Stream-Key in der Anzeige: {}", st[0].input);
+    assert_eq!(st[1].resolution.as_deref(), Some("640×360"));
+}
+
