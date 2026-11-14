@@ -82,6 +82,7 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/vendor/hls.min.js", get(|| async { asset("text/javascript; charset=utf-8", HLS_JS) }))
         .route("/renderer", get(renderer_ws))
         .route("/hls/{name}", get(hls_file))
+        .route("/metrics", get(metrics))
         .route("/api/state", get(state))
         .route("/api/config", get(get_config).put(put_config))
         .route("/api/start", post(start))
@@ -99,6 +100,7 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/api/presets/{name}/load", post(load_preset))
         .route("/api/settings", get(get_settings).put(put_settings))
         .route("/api/alarms", get(alarms))
+        .route("/api/mail/test", post(mail_test))
         .route("/api/stats", get(stats))
         .route("/api/system", get(system))
         .route("/api/diagnose.json", get(diagnose))
@@ -145,6 +147,9 @@ async fn current_user(app: &App, headers: &HeaderMap) -> Option<(String, Role)> 
 /// eine Sitzung, und die Rolle entscheidet über Schreibzugriffe.
 async fn auth(State(app): S, req: Request, next: Next) -> Response {
     let path = req.uri().path().to_string();
+    if path == "/metrics" {
+        return metrics_auth(&app, req, next).await;
+    }
     // /renderer ist kein /api-Pfad und nimmt nur Verbindungen von 127.0.0.1 an (siehe renderer_ws)
     if !path.starts_with("/api/") || path == "/api/login" || path == "/api/me" {
         return next.run(req).await;
@@ -159,6 +164,36 @@ async fn auth(State(app): S, req: Request, next: Next) -> Response {
         return err(StatusCode::FORBIDDEN, "Dafür fehlt die Berechtigung");
     }
     next.run(req).await
+}
+
+/// `/metrics`: offen ohne Benutzer oder mit Freigabe, sonst Sitzung oder
+/// HTTP-Basic mit einem Benutzer der Verwaltung (für Prometheus `basic_auth`).
+async fn metrics_auth(app: &App, req: Request, next: Next) -> Response {
+    let open = app.users.read().await.is_empty() || app.ops.settings.lock().await.metrics.public;
+    if open || current_user(app, req.headers()).await.is_some() || basic_user_ok(app, req.headers()).await {
+        return next.run(req).await;
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    let mut r = err(StatusCode::UNAUTHORIZED, "Bitte anmelden");
+    r.headers_mut().insert(header::WWW_AUTHENTICATE, header::HeaderValue::from_static("Basic realm=\"lz-streamer\""));
+    r
+}
+
+async fn basic_user_ok(app: &App, headers: &HeaderMap) -> bool {
+    use base64::Engine;
+    let Some(b64) = headers.get(header::AUTHORIZATION).and_then(|v| v.to_str().ok()).and_then(|v| v.strip_prefix("Basic ")) else {
+        return false;
+    };
+    let Some(pair) = base64::engine::general_purpose::STANDARD.decode(b64.trim()).ok().and_then(|b| String::from_utf8(b).ok()) else {
+        return false;
+    };
+    let Some((name, pw)) = pair.split_once(':') else { return false };
+    app.users.read().await.iter().any(|u| u.name == name && admin::verify_password(pw, &u.hash))
+}
+
+async fn metrics(State(app): S) -> Response {
+    let text = crate::metrics::prometheus(&app.ops.metrics(&app.sup).await);
+    ([(header::CONTENT_TYPE, "text/plain; version=0.0.4; charset=utf-8"), (header::CACHE_CONTROL, "no-store")], text).into_response()
 }
 
 #[derive(Deserialize)]
@@ -432,10 +467,11 @@ async fn delete_preset(State(app): S, Path(name): Path<String>) -> Response {
 // ------------------------------------------------------------ Zeitplan, Alarme, Statistik
 
 async fn get_settings(State(app): S) -> impl IntoResponse {
-    Json(app.ops.settings.lock().await.clone())
+    Json(app.ops.settings.lock().await.redacted())
 }
 
-async fn put_settings(State(app): S, Json(s): Json<Settings>) -> Response {
+async fn put_settings(State(app): S, Json(mut s): Json<Settings>) -> Response {
+    s.keep_secrets(&*app.ops.settings.lock().await);
     match app.ops.save_settings(s).await {
         Ok(()) => ok(),
         Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
@@ -444,6 +480,21 @@ async fn put_settings(State(app): S, Json(s): Json<Settings>) -> Response {
 
 async fn alarms(State(app): S) -> impl IntoResponse {
     Json(app.ops.alarms.lock().await.clone())
+}
+
+/// Testmail mit den gespeicherten Mail-Einstellungen
+async fn mail_test(State(app): S) -> Response {
+    let m = app.ops.settings.lock().await.mail.clone();
+    let host = app.ops.hostname().await;
+    let subject = format!("[lz-streamer {host}] Testmail");
+    let body = format!("Testmail von lz-streamer auf {host}.\nAlarme kommen an diese Adresse.\n");
+    match crate::mail::send(&m, &subject, &body).await {
+        Ok(()) => {
+            app.sup.log("info", format!("Testmail an {} verschickt", m.to.trim())).await;
+            ok()
+        }
+        Err(e) => err(StatusCode::BAD_GATEWAY, format!("{e:#}")),
+    }
 }
 
 #[derive(Deserialize)]
@@ -489,7 +540,7 @@ async fn diagnose(State(app): S) -> Response {
         "system": app.ops.system.lock().await.clone(),
         "faehigkeiten": app.caps,
         "konfiguration": cfg,
-        "einstellungen": app.ops.settings.lock().await.clone(),
+        "einstellungen": app.ops.settings.lock().await.redacted(),
         "alarme": app.ops.alarms.lock().await.clone(),
         "laufzeit": snap,
         "statistik_letzte_stunde": stats,

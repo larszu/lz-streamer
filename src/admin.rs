@@ -378,6 +378,32 @@ pub struct Settings {
     pub alarms: AlarmSettings,
     /// älteste Aufnahmen löschen, wenn weniger als `alarms.disk_free_gb` frei ist
     pub delete_oldest_recordings: bool,
+    /// Alarme per Mail
+    pub mail: crate::mail::MailSettings,
+    /// `/metrics` und Influx-Push
+    pub metrics: crate::metrics::MetricsSettings,
+}
+
+impl Settings {
+    /// Für API und Oberfläche: Passwort und Token leer, dafür `*_set`.
+    pub fn redacted(&self) -> serde_json::Value {
+        let mut v = serde_json::to_value(self).unwrap_or_default();
+        v["mail"]["password"] = "".into();
+        v["mail"]["password_set"] = (!self.mail.password.is_empty()).into();
+        v["metrics"]["influx"]["token"] = "".into();
+        v["metrics"]["influx"]["token_set"] = (!self.metrics.influx.token.is_empty()).into();
+        v
+    }
+
+    /// Leeres Passwort- oder Token-Feld heißt: bisherigen Wert behalten.
+    pub fn keep_secrets(&mut self, old: &Settings) {
+        if self.mail.password.is_empty() {
+            self.mail.password = old.mail.password.clone();
+        }
+        if self.metrics.influx.token.is_empty() {
+            self.metrics.influx.token = old.metrics.influx.token.clone();
+        }
+    }
 }
 
 /// Welche Aufnahmen weg müssen, damit wieder `need` Bytes frei sind

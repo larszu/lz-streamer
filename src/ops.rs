@@ -9,7 +9,8 @@ use tokio::sync::Mutex;
 
 use crate::admin::{self, Alarm, AlarmInput, DataDir, Settings};
 use crate::config::Role as ChannelRole;
-use crate::supervisor::Supervisor;
+use crate::config::Config;
+use crate::supervisor::{Snapshot, Supervisor};
 
 /// Ein Messpunkt alle 5 s, 24 h Verlauf.
 const STEP_S: u64 = 5;
@@ -72,6 +73,91 @@ pub struct ActiveAlarm {
     pub since_ms: u64,
 }
 
+/// Zustand zwischen zwei Alarm-Prüfungen (Dauer ohne Signal, Neustarts, Formatwechsel).
+#[derive(Default)]
+pub struct AlarmTracker {
+    standby_for: f64,
+    no_peer_for: f64,
+    restarts: VecDeque<(u64, u32)>,
+    last_lost: u64,
+    last_format: Option<String>,
+    /// letzter Wechsel: vorher, nachher, Zeitpunkt
+    format_change: Option<(String, String, u64)>,
+    last_uptime: f64,
+}
+
+impl AlarmTracker {
+    /// Ein Durchlauf (alle 5 s). Zweiter Wert: Formatwechsel fürs Protokoll.
+    pub fn step(&mut self, snap: &Snapshot, cfg: &Config, info: &SystemInfo, now: u64) -> (AlarmInput, Option<String>) {
+        let st = snap.status.as_ref();
+        let running = snap.running;
+        let mut log = None;
+        self.standby_for = if st.is_some_and(|s| s.standby) { self.standby_for + STEP_S as f64 } else { 0.0 };
+        self.no_peer_for = if running && st.is_some_and(|s| !s.srt.connected) { self.no_peer_for + STEP_S as f64 } else { 0.0 };
+        if self.restarts.back().is_none_or(|&(_, n)| n != snap.restarts) {
+            self.restarts.push_back((now, snap.restarts));
+        }
+        while self.restarts.front().is_some_and(|&(t, _)| now - t > 600_000) && self.restarts.len() > 1 {
+            self.restarts.pop_front();
+        }
+        let restarts_10min = match (self.restarts.front(), self.restarts.back()) {
+            (Some(a), Some(b)) => b.1.saturating_sub(a.1),
+            _ => 0,
+        };
+        // Kanal neu gestartet (Laufzeit kleiner als zuletzt): neues Format ist kein Wechsel am Eingang
+        let up = st.map(|s| s.uptime_s).unwrap_or(0.0);
+        if up < self.last_uptime {
+            self.last_format = None;
+        }
+        self.last_uptime = up;
+        if let Some(f) = st.and_then(|s| s.input_format.clone()) {
+            if let Some(prev) = self.last_format.as_ref().filter(|p| **p != f) {
+                self.format_change = Some((prev.clone(), f.clone(), now));
+                log = Some(format!("Eingangsformat gewechselt: {prev} → {f}"));
+            }
+            self.last_format = Some(f);
+        }
+        if !running {
+            self.last_format = None;
+        }
+        let lost = st.map(|s| s.srt.lost).unwrap_or(0);
+        let lost_per_min = lost.saturating_sub(self.last_lost) as f64 * 60.0 / STEP_S as f64;
+        self.last_lost = lost;
+
+        let input = AlarmInput {
+            running,
+            encoder: cfg.role == ChannelRole::Encoder,
+            standby_for_s: self.standby_for,
+            no_peer_for_s: self.no_peer_for,
+            bitrate_kbps: st.map(|s| s.bitrate_kbps),
+            lost_per_min,
+            restarts_10min,
+            cpu_percent: info.cpu_percent,
+            memory_percent: info.memory_percent,
+            disk_free_gb: if info.disk_total_gb > 0.0 { info.disk_free_gb } else { f64::MAX },
+            last_error: snap.last_error.clone(),
+            gpu_percent: info.gpu_percent,
+            // Bildrate erst nach dem Anlauf bewerten
+            fps: st.filter(|s| s.uptime_s >= 10.0 && cfg.role == ChannelRole::Encoder).map(|s| (s.fps, cfg.encoder.video.fps)),
+            format_change: self.format_change.as_ref().map(|(a, b, t)| (a.clone(), b.clone(), now.saturating_sub(*t) as f64 / 1000.0)),
+            // Short-Term braucht 3 s Anlauf; vorher keine Lautheitsalarme
+            tracks: st
+                .filter(|s| s.uptime_s >= 6.0)
+                .map(|s| {
+                    s.audio_tracks
+                        .iter()
+                        .map(|t| {
+                            let l = t.loudness.clone().unwrap_or_default();
+                            (t.name.clone().unwrap_or_else(|| format!("Spur {}", t.index + 1)), l.short_term, l.true_peak, l.silent_s, t.target)
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
+        };
+        (input, log)
+    }
+}
+
 pub struct Ops {
     pub data: DataDir,
     pub settings: Mutex<Settings>,
@@ -80,7 +166,7 @@ pub struct Ops {
     pub system: Mutex<SystemInfo>,
 }
 
-fn now_ms() -> u64 {
+pub fn now_ms() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
 }
 
@@ -107,13 +193,7 @@ impl Ops {
         let mut sys = sysinfo::System::new();
         let mut disks = sysinfo::Disks::new_with_refreshed_list();
         let mut tick = tokio::time::interval(Duration::from_secs(STEP_S));
-        let (mut standby_for, mut no_peer_for) = (0.0f64, 0.0f64);
-        let mut restarts: VecDeque<(u64, u32)> = VecDeque::new();
-        let mut last_lost = 0u64;
-        // Eingangsformat: zuletzt gesehen, und der letzte Wechsel (vorher, nachher, Zeitpunkt)
-        let mut last_format: Option<String> = None;
-        let mut format_change: Option<(String, String, u64)> = None;
-        let mut last_uptime = 0.0f64;
+        let mut tracker = AlarmTracker::default();
         loop {
             tick.tick().await;
             sys.refresh_cpu_usage();
@@ -153,95 +233,14 @@ impl Ops {
             let cfg = sup.config().await;
             let st = snap.status.as_ref();
             let running = snap.running;
-            standby_for = if st.is_some_and(|s| s.standby) { standby_for + STEP_S as f64 } else { 0.0 };
-            no_peer_for = if running && st.is_some_and(|s| !s.srt.connected) { no_peer_for + STEP_S as f64 } else { 0.0 };
             let now = now_ms();
-            if restarts.back().is_none_or(|&(_, n)| n != snap.restarts) {
-                restarts.push_back((now, snap.restarts));
+            let (input, format_log) = tracker.step(&snap, &cfg, &info, now);
+            if let Some(t) = format_log {
+                sup.log("warn", t).await;
             }
-            while restarts.front().is_some_and(|&(t, _)| now - t > 600_000) && restarts.len() > 1 {
-                restarts.pop_front();
-            }
-            let restarts_10min = match (restarts.front(), restarts.back()) {
-                (Some(a), Some(b)) => b.1.saturating_sub(a.1),
-                _ => 0,
-            };
-            // Kanal neu gestartet (Laufzeit kleiner als zuletzt): neues Format ist kein Wechsel am Eingang
-            let up = st.map(|s| s.uptime_s).unwrap_or(0.0);
-            if up < last_uptime {
-                last_format = None;
-            }
-            last_uptime = up;
-            if let Some(f) = st.and_then(|s| s.input_format.clone()) {
-                if let Some(prev) = last_format.as_ref().filter(|p| **p != f) {
-                    format_change = Some((prev.clone(), f.clone(), now));
-                    sup.log("warn", format!("Eingangsformat gewechselt: {prev} → {f}")).await;
-                }
-                last_format = Some(f);
-            }
-            if !running {
-                last_format = None;
-            }
-            let lost = st.map(|s| s.srt.lost).unwrap_or(0);
-            let lost_per_min = lost.saturating_sub(last_lost) as f64 * 60.0 / STEP_S as f64;
-            last_lost = lost;
-
-            let input = AlarmInput {
-                running,
-                encoder: cfg.role == ChannelRole::Encoder,
-                standby_for_s: standby_for,
-                no_peer_for_s: no_peer_for,
-                bitrate_kbps: st.map(|s| s.bitrate_kbps),
-                lost_per_min,
-                restarts_10min,
-                cpu_percent: info.cpu_percent,
-                memory_percent: info.memory_percent,
-                disk_free_gb: if info.disk_total_gb > 0.0 { info.disk_free_gb } else { f64::MAX },
-                last_error: snap.last_error.clone(),
-                gpu_percent: info.gpu_percent,
-                // Bildrate erst nach dem Anlauf bewerten
-                fps: st.filter(|s| s.uptime_s >= 10.0 && cfg.role == ChannelRole::Encoder).map(|s| (s.fps, cfg.encoder.video.fps)),
-                format_change: format_change.as_ref().map(|(a, b, t)| (a.clone(), b.clone(), now.saturating_sub(*t) as f64 / 1000.0)),
-                // Short-Term braucht 3 s Anlauf; vorher keine Lautheitsalarme
-                tracks: st
-                    .filter(|s| s.uptime_s >= 6.0)
-                    .map(|s| {
-                        s.audio_tracks
-                            .iter()
-                            .map(|t| {
-                                let l = t.loudness.clone().unwrap_or_default();
-                                (t.name.clone().unwrap_or_else(|| format!("Spur {}", t.index + 1)), l.short_term, l.true_peak, l.silent_s, t.target)
-                            })
-                            .collect()
-                    })
-                    .unwrap_or_default(),
-            };
             let fresh = admin::evaluate_alarms(&self.settings.lock().await.alarms, &input);
-            {
-                let mut active = self.alarms.lock().await;
-                for a in &fresh {
-                    if !active.iter().any(|x| x.alarm.id == a.id) {
-                        sup.log(a.level, format!("Alarm: {}", a.text)).await;
-                        active.push(ActiveAlarm { alarm: a.clone(), since_ms: now });
-                    }
-                }
-                let mut cleared = Vec::new();
-                active.retain(|x| {
-                    let keep = fresh.iter().any(|a| a.id == x.alarm.id);
-                    if !keep {
-                        cleared.push(x.alarm.text.clone());
-                    }
-                    keep
-                });
-                for x in active.iter_mut() {
-                    if let Some(a) = fresh.iter().find(|a| a.id == x.alarm.id) {
-                        x.alarm.text = a.text.clone();
-                    }
-                }
-                for c in cleared {
-                    sup.log("ok", format!("Alarm erledigt: {c}")).await;
-                }
-            }
+            self.apply_alarms(&sup, &fresh, now).await;
+            let lost = st.map(|s| s.srt.lost).unwrap_or(0);
 
             let point = StatPoint {
                 at_ms: now,
@@ -263,6 +262,107 @@ impl Ops {
             stats.push_back(point);
             while stats.len() > KEEP {
                 stats.pop_front();
+            }
+        }
+    }
+
+    /// Neue und erledigte Alarme übernehmen, protokollieren und per Mail melden.
+    pub async fn apply_alarms(&self, sup: &Arc<Supervisor>, fresh: &[Alarm], now: u64) {
+        let mut fired: Vec<(&'static str, String)> = Vec::new();
+        let mut cleared: Vec<(&'static str, String)> = Vec::new();
+        {
+            let mut active = self.alarms.lock().await;
+            for a in fresh {
+                if !active.iter().any(|x| x.alarm.id == a.id) {
+                    fired.push((a.level, a.text.clone()));
+                    active.push(ActiveAlarm { alarm: a.clone(), since_ms: now });
+                }
+            }
+            active.retain(|x| {
+                let keep = fresh.iter().any(|a| a.id == x.alarm.id);
+                if !keep {
+                    cleared.push((x.alarm.level, x.alarm.text.clone()));
+                }
+                keep
+            });
+            for x in active.iter_mut() {
+                if let Some(a) = fresh.iter().find(|a| a.id == x.alarm.id) {
+                    x.alarm.text = a.text.clone();
+                }
+            }
+        }
+        for (level, t) in &fired {
+            sup.log(level, format!("Alarm: {t}")).await;
+        }
+        for (_, c) in &cleared {
+            sup.log("ok", format!("Alarm erledigt: {c}")).await;
+        }
+        let m = self.settings.lock().await.mail.clone();
+        if !m.enabled {
+            return;
+        }
+        let relevant = |(l, _): &(&str, String)| !m.errors_only || *l == "error";
+        fired.retain(relevant);
+        cleared.retain(relevant);
+        if !m.cleared {
+            cleared.clear();
+        }
+        if fired.is_empty() && cleared.is_empty() {
+            return;
+        }
+        let host = self.hostname().await;
+        let cleared: Vec<String> = cleared.into_iter().map(|(_, t)| t).collect();
+        let (subject, body) = crate::mail::alarm_mail(&host, &fired, &cleared);
+        let sup = sup.clone();
+        tokio::spawn(async move {
+            match crate::mail::send(&m, &subject, &body).await {
+                Ok(()) => sup.log("info", format!("Alarm-Mail an {} verschickt", m.to.trim())).await,
+                Err(e) => sup.log("warn", format!("Alarm-Mail nicht verschickt: {e:#}")).await,
+            }
+        });
+    }
+
+    pub async fn hostname(&self) -> String {
+        let h = self.system.lock().await.hostname.clone();
+        if h.is_empty() { sysinfo::System::host_name().unwrap_or_default() } else { h }
+    }
+
+    /// Messwerte für Prometheus und Influx
+    pub async fn metrics(&self, sup: &Supervisor) -> Vec<crate::metrics::Sample> {
+        let (snap, cfg) = (sup.snapshot().await, sup.config().await);
+        let sys = self.system.lock().await.clone();
+        let alarms = self.alarms.lock().await.clone();
+        crate::metrics::collect(&snap, &cfg, &sys, &alarms)
+    }
+
+    /// Influx-Push im eingestellten Takt; ohne Adresse ruht die Schleife.
+    pub async fn influx_push(self: Arc<Self>, sup: Arc<Supervisor>) {
+        let mut failing = false;
+        loop {
+            let s = self.settings.lock().await.metrics.influx.clone();
+            tokio::time::sleep(Duration::from_secs(s.interval_s.max(1) as u64)).await;
+            if s.url.trim().is_empty() {
+                failing = false;
+                continue;
+            }
+            let ts = chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0) as i128;
+            let body = crate::metrics::influx(&self.metrics(&sup).await, &self.hostname().await, ts);
+            let err = match crate::metrics::post(s.url.trim(), s.token.trim(), &body).await {
+                Ok(c) if (200..300).contains(&c) => None,
+                Ok(c) => Some(format!("Antwort {c}")),
+                Err(e) => Some(format!("{e:#}")),
+            };
+            // nur Wechsel protokollieren, nicht jeden Takt
+            match (err, failing) {
+                (Some(e), false) => {
+                    sup.log("warn", format!("Influx-Push fehlgeschlagen: {e}")).await;
+                    failing = true;
+                }
+                (None, true) => {
+                    sup.log("ok", "Influx-Push läuft wieder").await;
+                    failing = false;
+                }
+                _ => {}
             }
         }
     }

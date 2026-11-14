@@ -20,13 +20,13 @@ Hier stehen nur Funktionen, beschrieben in eigenen Worten. Texte, Logos und Asse
 
 | Status | Anzahl |
 |---|---|
-| fertig | 34 |
+| fertig | 36 |
 | Teil | 14 |
-| fehlt | 11 |
+| fehlt | 9 |
 | entfällt | 5 |
 | **gesamt** | **64** |
 
-Ohne die entfallenden Punkte sind 34 von 59 Funktionen fertig (58 %), dazu 14 in Teilen. Die 11 fehlenden sind fast alle Broadcast-Breite oder Mehrkanal; sie stehen in §6 mit Begründung.
+Ohne die entfallenden Punkte sind 36 von 59 Funktionen fertig (61 %), dazu 14 in Teilen. Die 9 fehlenden sind fast alle Broadcast-Breite oder Mehrkanal; sie stehen in §6 mit Begründung.
 
 ## 1. Kanäle und Bedienung
 
@@ -100,7 +100,7 @@ Ohne die entfallenden Punkte sind 34 von 59 Funktionen fertig (58 %), dazu 14 in
 | 46 | Alarmschwellen CPU/GPU/Speicher/Platte | Teil | CPU, Speicher, Platte; GPU fehlt | S |
 | 47 | Laufzeit-Alarme (Signalverlust, Formatwechsel, Bildrate …) | Teil | Signal, Gegenstelle, Bitrate, Verluste, Neustarts; Formatwechsel und Bildraten-Alarm fehlen | S |
 | 48 | Alarm-Benachrichtigung in der Oberfläche | fertig | Banner und Liste, Ereignis bei Beginn/Ende | – |
-| 49 | Benachrichtigung per E-Mail (SMTP) | **fehlt** | siehe §6 | S |
+| 49 | Benachrichtigung per E-Mail (SMTP) | fertig | STARTTLS/TLS, Anmeldung, nur Fehler oder alle, Entwarnung, Testmail; Passwort nur in `verwaltung.json`. Test: `tests/alarm_mail.rs` mit lokalem Mini-SMTP-Server | – |
 | 50 | Aufnahmeordner | fertig | einstellbar | – |
 | 51 | Älteste Aufnahmen löschen, wenn die Platte voll ist | fertig | neu in PR #2 | – |
 | 52 | Bandbreitenlimit und Upload-Ziele für Aufnahmen | **fehlt** | siehe §6 | M |
@@ -120,11 +120,11 @@ Ohne die entfallenden Punkte sind 34 von 59 Funktionen fertig (58 %), dazu 14 in
 | 61 | Ancillary: AFD, Timecode, Durchreichen | **fehlt** | VANC-Parser aus lz-scopes übernehmen, ST 2038 | M |
 | 62 | Diskontinuität als Ereignis durch die Pipeline | Teil | Ereignis im Protokoll; kein In-band-Signal für HLS/RTMP | M |
 | 63 | Cloud-Anbindung (Geräteregistrierung, CDN-Logins) | entfällt bewusst | Fernzugriff per Tunnel; Geräteseite in lz-camera-bridge | – |
-| 64 | Metriken in Zeitreihen-DB | **fehlt** | eigener 24-h-Verlauf vorhanden; Prometheus/Influx-Export fehlt | S |
+| 64 | Metriken in Zeitreihen-DB | fertig | `/metrics` im Prometheus-Format (Bitrate, SRT-RTT, Verluste, Wiederholungen, Lautheit je Spur, CPU/GPU, Bilder/s, Neustarts, Signal, Alarme); Influx-Line-Protocol per HTTP-Push | – |
 
 ## Was offen bleibt und warum
 
-Gezählt sind die 11 fehlenden Funktionen und die drei Teilfunktionen mit dem größten Abstand. Für den Abschluss dieser Runde war entscheidend, dass jeder umgesetzte Punkt mit einem Test belegt ist. Alles, was hier steht, hätte in dieser Runde keinen sauberen Test bekommen.
+Gezählt sind die 9 fehlenden Funktionen und die drei Teilfunktionen mit dem größten Abstand. Für den Abschluss dieser Runde war entscheidend, dass jeder umgesetzte Punkt mit einem Test belegt ist. Alles, was hier steht, hätte in dieser Runde keinen sauberen Test bekommen.
 
 | Punkt | Warum noch nicht |
 |---|---|
@@ -132,9 +132,8 @@ Gezählt sind die 11 fehlenden Funktionen und die drei Teilfunktionen mit dem gr
 | Netz-Eingänge mit Umkodieren (#13) | eigener Eingangszweig (srtsrc/udpsrc → decodebin → Umschalter); braucht Tests mit Formatwechsel |
 | CEA-608/708 (#20), SCTE (#60), Ancillary (#61) | braucht VANC aus dem DeckLink-Eingang; ohne angestecktes Gerät nicht prüfbar |
 | HLS/CMAF (#40) | `hlscmafsink` vorhanden; Speicherort, Auslieferung und Aufräumen fehlen noch |
-| E-Mail (#49) | braucht SMTP-Zugang; Zugangsdaten gehören nicht ins Repo, Test nur mit lokalem Mail-Fänger |
 | HTTPS (#56) | selbstsigniertes Zertifikat oder Tunnel; Entscheidung bei Lars (Tunnel ist im Haus üblich) |
-| Upload-Ziele (#52), Zeitreihen-Export (#64) | klein; nach Mehrkanal sinnvoller |
+| Upload-Ziele (#52) | klein; nach Mehrkanal sinnvoller |
 | Interlaced-Ausgabe (#26), Deinterlacing-Wahl (#17) | erst mit 1080i-Quelle an echter Hardware sinnvoll zu messen |
 
 ## Neu in PR #2

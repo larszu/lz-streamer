@@ -33,7 +33,8 @@ Eigener Video-Encoder und -Decoder: **Eingang → Encoder → SRT** (dazu option
 - **Verwaltung:**
   - Profile (mitgelieferte und eigene)
   - Zeitplan: wöchentlich oder einmalig, mit Profilwahl
-  - Alarme mit Schwellen
+  - Alarme mit Schwellen, per Mail (SMTP) mit Entwarnung und Testmail
+  - Messwerte für Prometheus (`/metrics`) und Influx (Push)
   - Standbilder hochladen
   - Statistik über 24 h, Bericht als CSV
   - Systemlast mit GPU (Mac über ioreg, NVIDIA über nvidia-smi), Alarme für Bildrate und Formatwechsel am Eingang
@@ -110,6 +111,7 @@ cargo test
 
 - **51 Unit-Tests** prüfen Konfiguration, Zielzerlegung, Encoder-Auswahl und Voreinstellungen, Pipeline-Bau, SRT-Statistik und das Kindprozess-Protokoll.
 - **4 API-Tests** (`tests/api.rs`): Anmeldung und Rollen, Profile, Standbilder, Zeitplan, Alarme, Aufnahmen, Bericht.
+- **3 Überwachungstests** (`tests/alarm_mail.rs`): Ein lokaler Mini-SMTP-Server empfängt die Alarm-Mail bei nachgestelltem Signalverlust und die Entwarnung. Passwort und Token tauchen in keiner Antwort auf. `/metrics` prüft Anmeldung, HTTP-Basic und Freigabe.
 - **13 Integrationstests** laufen über echte SRT-Verbindungen auf 127.0.0.1:
   - Listener → Caller, Caller → Listener
   - H.265 sowie x264 in Software
@@ -149,8 +151,10 @@ lz-streamer serve ── axum (REST + Weboberfläche, eingebettet) ── Aufpas
 | `POST /api/devices/refresh` | DeckLink-Geräte neu suchen |
 | `GET /api/preview.jpg` | Vorschaubild (2 fps) |
 | `GET/POST /api/presets`, `POST /api/presets/{name}/load`, `DELETE …` | Profile |
-| `GET/PUT /api/settings` | Zeitplan, Alarmschwellen, Aufnahmen automatisch löschen |
+| `GET/PUT /api/settings` | Zeitplan, Alarmschwellen, Aufnahmen automatisch löschen, Mail, Messwerte; Passwort und Token kommen leer zurück |
 | `GET /api/alarms` · `/api/stats?minutes=` · `/api/system` · `/api/report.csv` | Alarme, Verlauf, Systemlast, Bericht |
+| `POST /api/mail/test` | Testmail mit den gespeicherten Mail-Einstellungen |
+| `GET /metrics` | Messwerte im Prometheus-Textformat (siehe unten) |
 | `GET /api/diagnose.json` · `GET /api/config/export` | Diagnose-Paket (Passwörter geschwärzt) · Kanal als Datei (vollständig; einspielen mit `PUT /api/config`) |
 | `GET/POST /api/standby`, `GET/DELETE /api/standby/{name}`, `POST …/use` | Standbilder |
 | `GET /api/recordings`, `GET/DELETE /api/recordings/{name}` | Aufnahmen |
@@ -158,6 +162,20 @@ lz-streamer serve ── axum (REST + Weboberfläche, eingebettet) ── Aufpas
 | `GET/POST /api/control` | schaltbare Eigenschaften lesen bzw. live umstellen, ohne Neustart: `{"path":"captions.enabled","value":false}`; Pfade siehe `src/control.rs`, benannt für NMOS IS-12. Per OSC: `/lzs/set/<pfad mit />` mit Wert, z. B. `/lzs/set/audio/tracks/0/plugins/0/bypass T` |
 | `GET/POST /api/graphics` | Zustand der Grafik-Ebenen; Befehl `{"action":"show","graphicId":"lz-lower-third","data":{…}}` (`load`, `show`, `play`, `next`, `prev`, `update`, `stop`, `clear`, `custom`) |
 | `POST /api/login` · `/api/logout`, `GET /api/me`, `GET/POST /api/users`, `DELETE /api/users/{name}` | Anmeldung und Benutzer; ohne Benutzer bleibt die Oberfläche offen, der erste wird Administrator |
+
+### Überwachung: Prometheus, Influx, Mail
+
+- **`GET /metrics`** liefert alle Werte im Prometheus-Textformat, Präfix `lzs_`. Dazu gehören Bitrate, SRT-RTT, verlorene, wiederholte und verworfene Pakete, Lautheit und True Peak je Spur (Labels `track`, `name`, `language`), CPU, GPU, Speicher, freier Platz, Bilder/s (gemessen und eingestellt), Neustarts, Signal, Standbild und aktive Alarme. Ohne angelegte Benutzer ist der Weg offen. Mit Benutzern braucht er eine Sitzung oder HTTP-Basic mit Name und Passwort aus der Benutzerliste; ohne Anmeldung nur, wenn „`/metrics` ohne Anmeldung abrufbar“ eingeschaltet ist.
+
+  ```yaml
+  scrape_configs:
+    - job_name: lz-streamer
+      static_configs: [{ targets: ["streamer.local:4200"] }]
+      basic_auth: { username: prometheus, password: "…" }
+  ```
+- **Influx:** Mit einer Schreibadresse (z. B. `http://influx:8086/api/v2/write?org=technik&bucket=streamer`) schickt lz-streamer im eingestellten Takt Influx-Line-Protocol, Messung `lz_streamer`, Tag `host`. Das Token geht als `Authorization: Token …` mit. Ein Ausfall erscheint einmal im Ereignisprotokoll, die Rückkehr ebenso.
+- **Alarme per Mail:** SMTP mit STARTTLS (587), TLS (465) oder unverschlüsselt im eigenen Netz. Zur Wahl stehen „nur Fehler“ und eine Entwarnung, wenn ein Alarm erledigt ist. Jeder Alarm kommt einmal bei Beginn; alle neuen Alarme eines Prüfdurchlaufs stehen in einer Mail. „Testmail senden“ prüft die Einstellungen sofort.
+- **Zugangsdaten** für Mail und Influx stehen nur in `verwaltung.json` im Datenverzeichnis. `GET /api/settings`, das Diagnose-Paket und die Oberfläche geben Passwort und Token nie zurück. Ein leeres Feld beim Speichern lässt den gespeicherten Wert stehen.
 
 ## Bezug zum Vorbild
 

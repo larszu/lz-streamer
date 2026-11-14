@@ -18,6 +18,8 @@ pub mod latency;
 pub mod leveler;
 pub mod loudness;
 pub mod lzloudness;
+pub mod mail;
+pub mod metrics;
 pub mod ops;
 pub mod plugin;
 pub mod pipeline;

@@ -352,6 +352,34 @@
         <div class="form row2" id="alarm-fields"></div>
       </details>
     </section>
+    <section class="card" aria-labelledby="ml-title">
+      <h2 id="ml-title">Alarme per Mail</h2>
+      <label class="switch"><input type="checkbox" data-mail="enabled"> Alarme per Mail schicken</label>
+      <div class="form row2">
+        <label class="field"><span>Mailserver</span><input class="input" data-mail="host" placeholder="smtp.example.org" autocomplete="off"></label>
+        <label class="field"><span>Port</span><input class="input" data-mail="port" inputmode="numeric"></label>
+        <label class="field"><span>Verschlüsselung</span><select class="input" data-mail="security"><option value="starttls">STARTTLS (587)</option><option value="tls">TLS (465)</option><option value="none">keine (Hausnetz)</option></select></label>
+        <label class="field"><span>Benutzer</span><input class="input" data-mail="user" autocomplete="off"></label>
+        <label class="field"><span>Passwort</span><input class="input" data-mail="password" type="password" autocomplete="new-password"></label>
+        <label class="field"><span>Absender</span><input class="input" data-mail="from" placeholder="leer = Benutzer"></label>
+        <label class="field"><span>Empfänger (mehrere mit Komma)</span><input class="input" data-mail="to" placeholder="regie@example.org"></label>
+      </div>
+      <label class="switch"><input type="checkbox" data-mail="errors_only"> Nur Fehler, keine Warnungen</label>
+      <label class="switch"><input type="checkbox" data-mail="cleared"> Entwarnung schicken, wenn ein Alarm erledigt ist</label>
+      <div class="actions"><button type="button" class="btn btn--soft" id="mail-test">Testmail senden</button></div>
+      <p class="hint" id="mail-hint">Zugangsdaten bleiben auf diesem Rechner; das Passwort zeigt die Oberfläche nie wieder an.</p>
+    </section>
+    <section class="card" aria-labelledby="mt-title">
+      <h2 id="mt-title">Messwerte <small>Prometheus · Influx</small></h2>
+      <p class="hint">Prometheus liest <code id="metrics-url">/metrics</code>; mit Benutzern per <code>basic_auth</code> (Name und Passwort aus der Benutzerliste).</p>
+      <label class="switch"><input type="checkbox" data-metrics="public"> <code>/metrics</code> ohne Anmeldung abrufbar</label>
+      <div class="form row2">
+        <label class="field"><span>Influx-Schreibadresse</span><input class="input" data-influx="url" placeholder="http://influx:8086/api/v2/write?org=…&amp;bucket=…" autocomplete="off"></label>
+        <label class="field"><span>Influx-Token</span><input class="input" data-influx="token" type="password" autocomplete="new-password"></label>
+        <label class="field"><span>Alle (s)</span><input class="input" data-influx="interval_s" inputmode="numeric"></label>
+      </div>
+      <p class="hint">Leere Adresse = kein Push. Gesendet wird Influx-Line-Protocol, Messung <code>lz_streamer</code>.</p>
+    </section>
     <section class="card" aria-labelledby="sb-title">
       <h2 id="sb-title">Standbilder</h2>
       <div class="gallery" id="standby"></div>
