@@ -271,6 +271,8 @@ pub struct Channel {
     rec_start_ns: u64,
     /// so viele Zeilen stehen schon in den Untertiteldateien (None = neu schreiben)
     cues_written: Option<usize>,
+    /// Gateway: Eingangsbytes, Stand beim letzten Abruf, Zeitpunkt der letzten Daten
+    net_in: Option<(Arc<AtomicU64>, u64, Option<Instant>)>,
 }
 
 /// Text in die Live-Untertitelquelle `ccin` schieben (etwas in die Zukunft
@@ -590,7 +592,8 @@ impl Channel {
     pub fn start(cfg: &Config, opts: &ChannelOptions) -> Result<Self> {
         match cfg.role {
             Role::Encoder => {
-                let devices = if cfg.encoder.input.kind == crate::config::InputKind::Test {
+                let kind = cfg.encoder.input.kind;
+                let devices = if kind == crate::config::InputKind::Test || kind.is_network() {
                     Vec::new()
                 } else {
                     devices::decklink_devices()
@@ -610,6 +613,12 @@ impl Channel {
         crate::clearspeech::register();
         let events: Events = Arc::default();
         let input = devices::resolve_input(&cfg.input, devices);
+        if let ResolvedInput::Net { kind, uri, passthrough: true, .. } = &input {
+            return Self::start_passthrough(cfg, *kind, uri, input.label(), events);
+        }
+        if matches!(input, ResolvedInput::Net { .. }) && !caps::element_available("fallbacksrc") {
+            bail!("fallbacksrc fehlt (gst-plugins-rs) – bitte nachinstallieren");
+        }
         if !caps::element_available("fallbackswitch") {
             bail!("fallbackswitch fehlt (gst-plugins-rs) – bitte nachinstallieren");
         }
@@ -825,6 +834,7 @@ impl Channel {
                         caption_seen: None,
                         rec_start_ns: 0,
                         cues_written: None,
+                        net_in: None,
                         cc,
                         outputs: cfg
                             .outputs
@@ -870,6 +880,77 @@ impl Channel {
             }
         }
         Err(last_err)
+    }
+
+    /// Gateway: Netz-TS unverändert auf die Ausgänge. Ohne Neukodierung gibt
+    /// es kein Standbild; fällt die Quelle aus, stehen die Ausgänge, bis sie zurück ist.
+    fn start_passthrough(cfg: &EncoderConfig, kind: crate::config::InputKind, uri: &str, label: String, events: Events) -> Result<Self> {
+        if pipeline::rtmp_active(cfg) {
+            event(&events, "warn", "RTMP-Ausgang nur beim Neukodieren – beim Durchreichen bleibt er aus.");
+        }
+        let desc = pipeline::passthrough_description(cfg, kind, uri);
+        tracing::debug!("Gateway-Pipeline: {desc}");
+        let pipeline = gst::parse::launch(&desc)
+            .context("Gateway-Pipeline nicht baubar")?
+            .downcast::<gst::Pipeline>()
+            .map_err(|_| anyhow!("keine Pipeline"))?;
+        let counters: Arc<Counters> = Arc::default();
+        let srt = pipeline.by_name("srtout").unwrap();
+        if !cfg.srt.passphrase.is_empty() {
+            srt.set_property("passphrase", &cfg.srt.passphrase);
+        }
+        if !cfg.srt.streamid.is_empty() {
+            srt.set_property("streamid", &cfg.srt.streamid);
+        }
+        count_bytes(&srt.static_pad("sink").unwrap(), &counters);
+        let net_in = Arc::new(AtomicU64::new(0));
+        if let Some(pad) = pipeline.by_name("netq").and_then(|q| q.static_pad("sink")) {
+            let n = net_in.clone();
+            pad.add_probe(gst::PadProbeType::BUFFER | gst::PadProbeType::BUFFER_LIST, move |_, info| {
+                let len = match &info.data {
+                    Some(gst::PadProbeData::Buffer(b)) => b.size(),
+                    Some(gst::PadProbeData::BufferList(l)) => l.calculate_size(),
+                    _ => 0,
+                };
+                n.fetch_add(len as u64, Ordering::Relaxed);
+                gst::PadProbeReturn::Ok
+            });
+        }
+        play_and_wait(&pipeline, || true, Duration::from_secs(6)).map_err(|e| anyhow!("Start fehlgeschlagen ({}): {}", e.source, e.text))?;
+        event(&events, "ok", format!("Gateway läuft: {label} → SRT {}", cfg.srt.uri()));
+        Ok(Channel {
+            second: None,
+            role: Role::Encoder,
+            pipeline,
+            counters,
+            events,
+            started: Instant::now(),
+            last_tick: (Instant::now(), 0, 0),
+            rates: (0.0, 0.0),
+            input: label,
+            encoder: None,
+            codec: Arc::default(),
+            prev_standby: None,
+            prev_connected: false,
+            rtmp: None,
+            stopped: false,
+            recording: None,
+            outputs: cfg
+                .outputs
+                .iter()
+                .enumerate()
+                .filter(|(_, o)| o.enabled)
+                .map(|(j, o)| (format!("out{j}"), o.name.clone(), output_target(o)))
+                .collect(),
+            tracks: Arc::default(),
+            cc: Arc::default(),
+            asr: None,
+            gfx: None,
+            caption_seen: None,
+            rec_start_ns: 0,
+            cues_written: None,
+            net_in: Some((net_in, 0, None)),
+        })
     }
 
     pub fn start_decoder(cfg: &DecoderConfig, opts: &ChannelOptions) -> Result<Self> {
@@ -1067,7 +1148,8 @@ impl Channel {
             gfx: None,
             caption_seen: None,
             rec_start_ns: 0,
-                        cues_written: None,
+            cues_written: None,
+            net_in: None,
         })
     }
 
@@ -1361,6 +1443,7 @@ impl Channel {
             .by_name("capsrc")
             .or_else(|| self.pipeline.by_name("testsrc"))
             .and_then(|c| c.static_pad("src"))
+            .or_else(|| self.pipeline.by_name("netsrc").filter(|_| self.net_in.is_none()).and_then(|c| c.static_pad("video_0")))
             .and_then(|p| p.current_caps())
             .and_then(|c| c.structure(0).map(describe_video))
             .map(|f| if self.pipeline.by_name("testsrc").is_some() { format!("{f} (Testbild)") } else { f });
@@ -1388,7 +1471,27 @@ impl Channel {
             );
             self.last_tick = (now, bytes, frames);
         }
+        // Gateway: Signal heißt „Daten kommen an“ (bis 1 s Lücke)
+        let net_signal = self.net_in.as_mut().map(|(n, last, seen)| {
+            let now_bytes = n.load(Ordering::Relaxed);
+            if now_bytes > *last {
+                *seen = Some(Instant::now());
+            }
+            *last = now_bytes;
+            seen.is_some_and(|t| t.elapsed() < Duration::from_secs(1))
+        });
+        if let Some(ok) = net_signal {
+            if self.prev_standby.is_some_and(|p| p == ok) || (self.prev_standby.is_none() && ok) {
+                if ok {
+                    event(&self.events, "ok", "Netzquelle liefert");
+                } else {
+                    event(&self.events, "warn", "Netzquelle weg – Ausgänge stehen, bis sie zurück ist");
+                }
+            }
+            self.prev_standby = Some(!ok);
+        }
         let signal = match (deck_signal, standby, self.role) {
+            _ if net_signal.is_some() => if net_signal == Some(true) { "ok" } else { "lost" },
             (Some(true), Some(false), _) => "ok",
             (Some(false), _, _) | (_, Some(true), _) => "lost",
             (None, Some(false), _) => "ok",

@@ -20,13 +20,13 @@ Hier stehen nur Funktionen, beschrieben in eigenen Worten. Texte, Logos und Asse
 
 | Status | Anzahl |
 |---|---|
-| fertig | 36 |
+| fertig | 37 |
 | Teil | 14 |
-| fehlt | 9 |
+| fehlt | 8 |
 | entfällt | 5 |
 | **gesamt** | **64** |
 
-Ohne die entfallenden Punkte sind 36 von 59 Funktionen fertig (61 %), dazu 14 in Teilen. Die 9 fehlenden sind fast alle Broadcast-Breite oder Mehrkanal; sie stehen in §6 mit Begründung.
+Ohne die entfallenden Punkte sind 37 von 59 Funktionen fertig (63 %), dazu 14 in Teilen. Die 8 fehlenden sind fast alle Broadcast-Breite oder Mehrkanal; sie stehen in §6 mit Begründung.
 
 ## 1. Kanäle und Bedienung
 
@@ -49,7 +49,7 @@ Ohne die entfallenden Punkte sind 36 von 59 Funktionen fertig (61 %), dazu 14 in
 | # | Funktion | Status | Umsetzung / was fehlt | Aufwand |
 |---|---|---|---|---|
 | 12 | Baseband SDI/HDMI (DeckLink), Format automatisch | fertig | an echter Hardware noch ungeprüft | – |
-| 13 | Netz-Eingänge: TS über SRT/UDP/RTP, RTMP (Umkodieren) | **fehlt** | Decoder-Rolle empfängt SRT, kodiert aber nicht neu | M |
+| 13 | Netz-Eingänge: TS über SRT/UDP/RTP, RTMP (Umkodieren) | fertig | SRT (Caller/Listener/Rendezvous), UDP und RTP (auch Multicast), RTMP abholen; „Neu kodieren“ mit Standbild bei Ausfall und selbstständigem Wiederverbinden oder „Durchreichen“ ohne Neukodierung | – |
 | 14 | Eingebetteter Ton, Pegel in dB | fertig | 2/8/16 Kanäle, Pegel je Spur | – |
 | 15 | Tonkanal-Zuordnung (Modus, L/R, Sprache) | fertig (mehr) | freie Matrix, Mono/Stereo/Downmix, bis 8 Spuren, ISO 639 | – |
 | 16 | Standbild bei Signalverlust ein/aus | fertig | Balken, Schwarz oder eigenes Bild, Umschaltzeit einstellbar | – |
@@ -124,17 +124,26 @@ Ohne die entfallenden Punkte sind 36 von 59 Funktionen fertig (61 %), dazu 14 in
 
 ## Was offen bleibt und warum
 
-Gezählt sind die 9 fehlenden Funktionen und die drei Teilfunktionen mit dem größten Abstand. Für den Abschluss dieser Runde war entscheidend, dass jeder umgesetzte Punkt mit einem Test belegt ist. Alles, was hier steht, hätte in dieser Runde keinen sauberen Test bekommen.
+Gezählt sind die 8 fehlenden Funktionen und die drei Teilfunktionen mit dem größten Abstand. Für den Abschluss dieser Runde war entscheidend, dass jeder umgesetzte Punkt mit einem Test belegt ist. Alles, was hier steht, hätte in dieser Runde keinen sauberen Test bekommen.
 
 | Punkt | Warum noch nicht |
 |---|---|
 | Mehrkanal (#2), ABR-Leiter (#30) | Umbau von Aufpasser, Statusmodell und Oberfläche auf Kanallisten; eigener PR |
-| Netz-Eingänge mit Umkodieren (#13) | eigener Eingangszweig (srtsrc/udpsrc → decodebin → Umschalter); braucht Tests mit Formatwechsel |
 | CEA-608/708 (#20), SCTE (#60), Ancillary (#61) | braucht VANC aus dem DeckLink-Eingang; ohne angestecktes Gerät nicht prüfbar |
 | HLS/CMAF (#40) | `hlscmafsink` vorhanden; Speicherort, Auslieferung und Aufräumen fehlen noch |
 | HTTPS (#56) | selbstsigniertes Zertifikat oder Tunnel; Entscheidung bei Lars (Tunnel ist im Haus üblich) |
 | Upload-Ziele (#52) | klein; nach Mehrkanal sinnvoller |
 | Interlaced-Ausgabe (#26), Deinterlacing-Wahl (#17) | erst mit 1080i-Quelle an echter Hardware sinnvoll zu messen |
+
+## Netz-Eingänge (#13)
+
+| Funktion | Test |
+|---|---|
+| SRT-Eingang H.265 → H.264 neu kodiert, Ausgabe über SRT und RTMP, Quelle weg → Standbild, Quelle zurück → wieder verbunden | `tests/roundtrip.rs` `srt_input_transcoded_to_srt_and_rtmp` |
+| SRT durchgereicht: H.265 640×360 kommt unverändert an, kein Encoder, Wiederverbinden | `srt_input_passthrough_keeps_stream` |
+| UDP neu kodiert, RTP durchgereicht | `udp_and_rtp_inputs` |
+| RTMP von ffmpeg als Server abholen | `rtmp_input_pulled_and_transcoded` |
+| Eingefügte Adressen (`srt://`, `udp://@…`, `rtp://`, `rtmp://`) zerlegen, Pipeline-Bau beider Modi | Unit-Tests in `config.rs`, `pipeline.rs` |
 
 ## Neu in PR #2
 

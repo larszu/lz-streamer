@@ -7,7 +7,7 @@
 //! Standby ───────────────►        ▲ sink_1                 └► Vorschau (JPEG)        └► RTMP-Abgriff
 //! ```
 
-use crate::config::{BurnTarget, CaptionSource, Codec, EncoderConfig, OutputKind, OutputType, RecordContainer, ScaleQuality, StandbyPattern};
+use crate::config::{BurnTarget, CaptionSource, Codec, EncoderConfig, InputKind, OutputKind, OutputType, RecordContainer, ScaleQuality, StandbyPattern};
 
 /// Eingang nach Auflösung von „Automatisch“.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -17,6 +17,8 @@ pub enum ResolvedInput {
     File { path: String },
     /// UVC-Gerät (Nummer), Ton vom Standard-Toneingang
     Uvc { index: u32, audio: bool },
+    /// Netz-Eingang; `label` ohne Passwort und Stream-Key
+    Net { kind: InputKind, uri: String, label: String, passthrough: bool },
 }
 
 impl ResolvedInput {
@@ -28,6 +30,9 @@ impl ResolvedInput {
                 format!("DeckLink/UltraStudio Nr. {device} ({})", connection.to_uppercase())
             }
             ResolvedInput::Uvc { index, .. } => format!("USB-Video (UVC) Nr. {index}"),
+            ResolvedInput::Net { label, passthrough, .. } => {
+                format!("{label} ({})", if *passthrough { "durchgereicht" } else { "neu kodiert" })
+            }
         }
     }
 }
@@ -108,6 +113,12 @@ pub fn primary_video(cfg: &EncoderConfig, input: &ResolvedInput) -> String {
             uvc_source(*index),
             scaler(cfg)
         ),
+        ResolvedInput::Net { uri, .. } => format!(
+            "{} netsrc.video_0 ! queue max-size-buffers=0 max-size-bytes=0 max-size-time=1000000000 \
+             ! videoconvert ! {deint}{crop} ! {} ! videorate max-duplication-time=100000000 ! {caps}",
+            net_source(cfg, uri),
+            scaler(cfg)
+        ),
         ResolvedInput::Decklink { device, connection } => format!(
             "decklinkvideosrc name=capsrc device-number={device} connection={connection} mode=auto \
              drop-no-signal-frames=true{} ! {deint}{crop} ! {} \
@@ -116,6 +127,55 @@ pub fn primary_video(cfg: &EncoderConfig, input: &ResolvedInput) -> String {
             scaler(cfg)
         ),
     }
+}
+
+/// Netzquelle zum Neukodieren: `fallbacksrc` dekodiert, verbindet bei Abriss
+/// oder Streamende selbst neu und liefert ohne Quelle nichts (kein eigenes
+/// Ersatzbild) – dann übernimmt das Standbild am Umschalter `vsw`.
+pub fn net_source(cfg: &EncoderConfig, uri: &str) -> String {
+    // Ausfall erst nach der Standbild-Schwelle melden, frühestens nach 1 s
+    let timeout = (cfg.standby.timeout_ms as u64).max(1000) * 1_000_000;
+    format!(
+        "fallbacksrc name=netsrc uri={} enable-dummy=false restart-on-eos=true timeout={timeout} \
+         restart-timeout=2000000000 retry-timeout=18446744073709551614",
+        quote(uri)
+    )
+}
+
+/// Netzquelle zum Durchreichen: liefert MPEG-TS, ohne zu dekodieren.
+/// SRT wartet nach einem Abriss weiter (Listener) bzw. ruft neu an (Caller),
+/// UDP/RTP lauschen ohnehin weiter. RTMP wird ohne Neukodierung in TS umverpackt.
+pub fn passthrough_source(kind: InputKind, uri: &str) -> String {
+    match kind {
+        InputKind::Srt => format!(
+            "srtsrc name=netsrc uri={} keep-listening=true auto-reconnect=true ! queue name=netq max-size-buffers=0 max-size-bytes=0 max-size-time=1000000000",
+            quote(uri)
+        ),
+        InputKind::Udp => format!(
+            "udpsrc name=netsrc uri={} buffer-size=4194304 caps=\"video/mpegts,systemstream=(boolean)true,packetsize=(int)188\" \
+             ! queue name=netq max-size-buffers=0 max-size-bytes=0 max-size-time=1000000000",
+            quote(uri)
+        ),
+        InputKind::Rtp => format!(
+            "udpsrc name=netsrc uri={} buffer-size=4194304 \
+             caps=\"application/x-rtp,media=(string)video,clock-rate=(int)90000,encoding-name=(string)MP2T,payload=(int)33\" \
+             ! queue name=netq max-size-buffers=0 max-size-bytes=0 max-size-time=1000000000 ! rtpjitterbuffer latency=50 ! rtpmp2tdepay",
+            quote(&uri.replacen("rtp://", "udp://", 1))
+        ),
+        _ => format!(
+            "mpegtsmux name=pmux alignment=7 pcr-interval=3600  \
+             rtmp2src name=netsrc location={} ! queue name=netq max-size-buffers=0 max-size-bytes=0 max-size-time=1000000000 \
+             ! flvdemux name=fdx  fdx.video ! queue ! h264parse config-interval=-1 ! pmux.  fdx.audio ! queue ! aacparse ! pmux.  pmux.",
+            quote(uri)
+        ),
+    }
+}
+
+/// Gateway-Pipeline: Netz-TS ohne Neukodierung auf SRT-Ziel und weitere Ausgänge.
+pub fn passthrough_description(cfg: &EncoderConfig, kind: InputKind, uri: &str) -> String {
+    let mut d = vec![format!("{} ! tsparse name=tsp alignment=7 ! tee name=tsout allow-not-linked=true", passthrough_source(kind, uri))];
+    d.extend(ts_outputs(cfg));
+    d.join("  ")
 }
 
 pub fn standby_video(cfg: &EncoderConfig, image_ok: bool) -> String {
@@ -184,6 +244,13 @@ pub fn primary_audio(input: &ResolvedInput, n: u32) -> String {
             crate::audio::matrix_string(&(0..n).map(|i| if i % 2 == 0 { vec![1.0f32, 0.0] } else { vec![0.0, 1.0] }).collect::<Vec<_>>())
         ),
         ResolvedInput::Uvc { audio: false, .. } => format!("audiotestsrc name=capasrc is-live=true wave=silence ! {caps}"),
+        // Ton der Netzquelle (ohne Tonspur liefert fallbacksrc Stille), verteilt wie bei der Datei
+        ResolvedInput::Net { .. } => format!(
+            "netsrc.audio_0 ! queue max-size-buffers=0 max-size-bytes=0 max-size-time=1000000000 ! audioconvert ! audioresample \
+             ! audio/x-raw,format=F32LE,layout=interleaved,rate=48000,channels=2,channel-mask=(bitmask)0x3 \
+             ! audioconvert mix-matrix={} ! {caps}",
+            crate::audio::matrix_string(&(0..n).map(|i| if i % 2 == 0 { vec![1.0f32, 0.0] } else { vec![0.0, 1.0] }).collect::<Vec<_>>())
+        ),
         ResolvedInput::Decklink { device, .. } => format!(
             "decklinkaudiosrc name=capasrc device-number={device} channels={n} ! audioconvert ! audioresample ! {caps}"
         ),
@@ -320,6 +387,8 @@ pub fn encoder_description(cfg: &EncoderConfig, parts: &EncoderParts) -> String 
     } else if matches!(parts.input, ResolvedInput::File { .. }) {
         // Ton der Datei verwerfen, sonst bricht decodebin mit „not linked“ ab
         d.push("fsrc. ! audio/x-raw ! fakesink sync=false".into());
+    } else if matches!(parts.input, ResolvedInput::Net { .. }) {
+        d.push("netsrc.audio_0 ! fakesink sync=false async=false".into());
     }
 
     if let Some(location) = parts.record {
@@ -336,13 +405,19 @@ pub fn encoder_description(cfg: &EncoderConfig, parts: &EncoderParts) -> String 
         ));
     }
 
-    d.push(format!(
-        "mpegtsmux name=mux alignment=7 pcr-interval=3600 ! tee name=tsout allow-not-linked=true \
-         tsout. ! queue max-size-buffers=0 max-size-bytes=0 max-size-time=1000000000 ! srtsink name=srtout uri={} latency={} \
+    d.push("mpegtsmux name=mux alignment=7 pcr-interval=3600 ! tee name=tsout allow-not-linked=true".into());
+    d.extend(ts_outputs(cfg));
+    d.join("  ")
+}
+
+/// Ausgänge hinter dem TS-Verteiler `tsout`: SRT-Ziel und weitere Ausgänge.
+pub fn ts_outputs(cfg: &EncoderConfig) -> Vec<String> {
+    let mut d = vec![format!(
+        "tsout. ! queue max-size-buffers=0 max-size-bytes=0 max-size-time=1000000000 ! srtsink name=srtout uri={} latency={} \
          wait-for-connection=false async=false sync=false",
         quote(&cfg.srt.uri()),
         cfg.srt.latency_ms
-    ));
+    )];
     for (j, o) in cfg.outputs.iter().enumerate().filter(|(_, o)| o.enabled) {
         let q = "tsout. ! queue leaky=downstream max-size-buffers=0 max-size-bytes=0 max-size-time=1000000000";
         d.push(match o.kind {
@@ -360,7 +435,7 @@ pub fn encoder_description(cfg: &EncoderConfig, parts: &EncoderParts) -> String 
             ),
         });
     }
-    d.join("  ")
+    d
 }
 
 /// Welche Tonspur die Spracherkennung hört (nur bei Quelle „speech“).
@@ -814,5 +889,27 @@ mod tests {
         assert!(v.contains("GRAY8") && v.contains("h265parse"));
         assert!(decoder_audio_branch(OutputKind::Window, false, 0, 0).contains("fakesink"));
         assert!(decoder_audio_branch(OutputKind::Window, true, 0, 0).contains("autoaudiosink"));
+    }
+
+    #[test]
+    fn network_input_transcode_and_passthrough() {
+        let cfg = EncoderConfig::default();
+        let net = ResolvedInput::Net { kind: InputKind::Srt, uri: "srt://:9100?mode=listener&latency=120".into(), label: "SRT".into(), passthrough: false };
+        let d = encoder_description(&cfg, &parts(&net));
+        assert!(d.contains("fallbacksrc name=netsrc") && d.contains("enable-dummy=false restart-on-eos=true"), "{d}");
+        assert!(d.contains("netsrc.video_0") && d.contains("fallbackswitch"), "{d}");
+        assert!(d.contains("netsrc.audio_0"), "{d}");
+        assert!(d.contains("x264enc"));
+
+        let p = passthrough_description(&cfg, InputKind::Srt, "srt://:9100?mode=listener");
+        assert!(p.starts_with("srtsrc name=netsrc") && p.contains("keep-listening=true auto-reconnect=true"), "{p}");
+        assert!(p.contains("tsparse") && p.contains("srtsink name=srtout"), "{p}");
+        assert!(!p.contains("x264enc") && !p.contains("decodebin") && !p.contains("fallbacksrc"), "{p}");
+        let p = passthrough_description(&cfg, InputKind::Udp, "udp://239.1.2.3:1234");
+        assert!(p.contains("udpsrc name=netsrc uri=\"udp://239.1.2.3:1234\"") && p.contains("video/mpegts"), "{p}");
+        let p = passthrough_description(&cfg, InputKind::Rtp, "rtp://0.0.0.0:5004");
+        assert!(p.contains("uri=\"udp://0.0.0.0:5004\"") && p.contains("rtpmp2tdepay"), "{p}");
+        let p = passthrough_description(&cfg, InputKind::Rtmp, "rtmp://example.org/live/key");
+        assert!(p.contains("rtmp2src name=netsrc") && p.contains("flvdemux") && p.contains("mpegtsmux name=pmux"), "{p}");
     }
 }
