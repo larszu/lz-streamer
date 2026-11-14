@@ -391,6 +391,8 @@ pub fn encoder_description(cfg: &EncoderConfig, parts: &EncoderParts) -> String 
         d.push("netsrc.audio_0 ! fakesink sync=false async=false".into());
     }
 
+    d.extend(crate::rsp::encoder_branches(cfg));
+
     if let Some(location) = parts.record {
         // eigener Parser: MP4 braucht avc-Format, der TS-Weg liefert byte-stream
         d.push(format!("ve. ! queue max-size-buffers=0 max-size-bytes=0 max-size-time=2000000000 ! {parser} ! rec.video"));

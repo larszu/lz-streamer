@@ -57,6 +57,7 @@ pub fn collect(snap: &Snapshot, cfg: &Config, sys: &SystemInfo, alarms: &[Active
     let role = match cfg.role {
         Role::Encoder => "encoder",
         Role::Decoder => "decoder",
+        Role::Relay => "relay",
     };
     g("lzs_info", "Version und Rolle", vec![("version", env!("CARGO_PKG_VERSION").into()), ("role", role.into())], 1.0);
     g("lzs_running", "Kanal soll laufen (1) oder ist gestoppt (0)", vec![], snap.running as u8 as f64);
