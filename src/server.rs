@@ -55,6 +55,7 @@ type S = State<Arc<App>>;
 const INDEX: &str = include_str!("../web/index.html");
 const CSS: &str = include_str!("../web/app.css");
 const JS: &str = include_str!("../web/app.js");
+const HLS_JS: &str = include_str!("../web/vendor/hls.min.js");
 const FONT: &[u8] = include_bytes!("../web/fonts/public-sans-latin-wght-normal.woff2");
 const FONT_EXT: &[u8] = include_bytes!("../web/fonts/public-sans-latin-ext-wght-normal.woff2");
 const COOKIE: &str = "lzs_session";
@@ -78,6 +79,7 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/app.js", get(|| async { asset("text/javascript; charset=utf-8", JS) }))
         .route("/fonts/public-sans.woff2", get(|| async { asset("font/woff2", FONT) }))
         .route("/fonts/public-sans-ext.woff2", get(|| async { asset("font/woff2", FONT_EXT) }))
+        .route("/vendor/hls.min.js", get(|| async { asset("text/javascript; charset=utf-8", HLS_JS) }))
         .route("/renderer", get(renderer_ws))
         .route("/hls/{name}", get(hls_file))
         .route("/api/state", get(state))
