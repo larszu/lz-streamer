@@ -164,6 +164,8 @@ pub struct Ops {
     pub stats: Mutex<VecDeque<StatPoint>>,
     pub alarms: Mutex<Vec<ActiveAlarm>>,
     pub system: Mutex<SystemInfo>,
+    /// Uploads fertiger Aufnahmen
+    pub uploads: Arc<crate::upload::Uploader>,
 }
 
 pub fn now_ms() -> u64 {
@@ -174,6 +176,7 @@ impl Ops {
     pub fn new(data: DataDir) -> Arc<Self> {
         let settings: Settings = admin::load_json(&data.settings());
         Arc::new(Self {
+            uploads: crate::upload::Uploader::new(data.root.clone()),
             data,
             settings: Mutex::new(settings),
             stats: Mutex::new(VecDeque::new()),

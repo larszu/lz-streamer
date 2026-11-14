@@ -346,3 +346,5 @@ dialog#login h2{margin-block-end:var(--space-2)}
 .screen .caption-line{position:absolute;inset-inline:8%;inset-block-end:6%;margin:0;text-align:center;font:600 clamp(.9rem,2.2vw,1.3rem)/1.3 var(--font);color:#fff;background:rgb(0 0 0 / .72);padding:4px 10px;border-radius:var(--radius-s)}
 #tls-cert,#tls-key{font-family:ui-monospace,Menlo,monospace;font-size:.8rem;resize:vertical}
 #tls-info{overflow-wrap:anywhere}
+#up-status progress{width:100%;accent-color:var(--accent,currentColor)}
+.up-err{display:block;color:var(--error-text);overflow-wrap:anywhere}

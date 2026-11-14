@@ -30,6 +30,7 @@ pub mod stats;
 pub mod subtitles;
 pub mod supervisor;
 pub mod tls;
+pub mod upload;
 pub mod vad;
 
 /// 4181–4198 belegt die AV-Suite, 4199 lz-nvx-toolbox.

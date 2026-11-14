@@ -376,6 +376,17 @@
       <ol class="rows" id="recordings"></ol>
       <label class="switch"><input type="checkbox" id="auto-delete"> Älteste Aufnahmen löschen, wenn der Platz unter die Alarmschwelle fällt</label>
     </section>
+    <section class="card" aria-labelledby="up-title">
+      <h2 id="up-title">Upload <small id="up-state"></small></h2>
+      <ol class="rows" id="up-status"></ol>
+      <div class="actions"><button type="button" class="btn btn--soft" id="up-retry">Jetzt erneut versuchen</button><button type="button" class="btn" id="up-clear">Warteschlange leeren</button></div>
+      <label class="switch"><input type="checkbox" id="up-on"> Fertige Segmente automatisch hochladen</label>
+      <label class="switch"><input type="checkbox" id="up-del"> Nach dem Upload lokal löschen</label>
+      <label class="field"><span>Bandbreite höchstens (kbit/s, 0 = frei)</span><input class="input" id="up-limit" inputmode="numeric"></label>
+      <div class="list-edit" id="up-targets"></div>
+      <button type="button" class="btn btn--soft" id="up-add">Ziel hinzufügen</button>
+      <p class="hint">WebDAV lädt per PUT in die Ordner-URL, S3 signiert selbst (SigV4, bis 5 GB je Datei), SFTP nutzt das System-<code>sftp</code> mit Schlüssel und setzt Abbrüche fort. Bricht ein Upload ab, folgt ein neuer Versuch mit wachsender Pause; die Warteschlange übersteht Neustarts. Passwörter und Secret Keys bleiben auf diesem Rechner und werden nie angezeigt – leer lassen heißt „unverändert“.</p>
+    </section>
   </div>
   <div class="col-b">
     <section class="card" aria-labelledby="al-title">

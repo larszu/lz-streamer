@@ -20,13 +20,13 @@ Hier stehen nur Funktionen, beschrieben in eigenen Worten. Texte, Logos und Asse
 
 | Status | Anzahl |
 |---|---|
-| fertig | 37 |
+| fertig | 38 |
 | Teil | 14 |
-| fehlt | 8 |
+| fehlt | 7 |
 | entfällt | 5 |
 | **gesamt** | **64** |
 
-Ohne die entfallenden Punkte sind 37 von 59 Funktionen fertig (63 %), dazu 14 in Teilen. Die 8 fehlenden sind fast alle Broadcast-Breite oder Mehrkanal; sie stehen in §6 mit Begründung.
+Ohne die entfallenden Punkte sind 38 von 59 Funktionen fertig (64 %), dazu 14 in Teilen. Die 7 fehlenden sind fast alle Broadcast-Breite oder Mehrkanal; sie stehen in §6 mit Begründung.
 
 ## 1. Kanäle und Bedienung
 
@@ -103,7 +103,7 @@ Ohne die entfallenden Punkte sind 37 von 59 Funktionen fertig (63 %), dazu 14 in
 | 49 | Benachrichtigung per E-Mail (SMTP) | fertig | STARTTLS/TLS, Anmeldung, nur Fehler oder alle, Entwarnung, Testmail; Passwort nur in `verwaltung.json`. Test: `tests/alarm_mail.rs` mit lokalem Mini-SMTP-Server | – |
 | 50 | Aufnahmeordner | fertig | einstellbar | – |
 | 51 | Älteste Aufnahmen löschen, wenn die Platte voll ist | fertig | neu in PR #2 | – |
-| 52 | Bandbreitenlimit und Upload-Ziele für Aufnahmen | **fehlt** | siehe §6 | M |
+| 52 | Bandbreitenlimit und Upload-Ziele für Aufnahmen | fertig | WebDAV (PUT), S3 (eigene SigV4, bis 5 GB je Datei), SFTP (System-`sftp`, `reput`); Token-Bucket in kbit/s, Warteschlange auf Platte, Neuversuch mit wachsender Pause | – |
 | 53 | Netzwerk (Hostname, DHCP, DNS, NTP, Bonding) | entfällt | Betriebssystem | – |
 | 54 | WLAN-Zugangspunkt | entfällt | Betriebssystem | – |
 | 55 | Standbilder verwalten (hochladen, wählen) | fertig | PNG/JPEG, Vorschau, „Verwenden“ | – |
@@ -124,14 +124,13 @@ Ohne die entfallenden Punkte sind 37 von 59 Funktionen fertig (63 %), dazu 14 in
 
 ## Was offen bleibt und warum
 
-Gezählt sind die 8 fehlenden Funktionen und die drei Teilfunktionen mit dem größten Abstand. Für den Abschluss dieser Runde war entscheidend, dass jeder umgesetzte Punkt mit einem Test belegt ist. Alles, was hier steht, hätte in dieser Runde keinen sauberen Test bekommen.
+Gezählt sind die 7 fehlenden Funktionen und die drei Teilfunktionen mit dem größten Abstand. Für den Abschluss dieser Runde war entscheidend, dass jeder umgesetzte Punkt mit einem Test belegt ist. Alles, was hier steht, hätte in dieser Runde keinen sauberen Test bekommen.
 
 | Punkt | Warum noch nicht |
 |---|---|
 | Mehrkanal (#2), ABR-Leiter (#30) | Umbau von Aufpasser, Statusmodell und Oberfläche auf Kanallisten; eigener PR |
 | CEA-608/708 (#20), SCTE (#60), Ancillary (#61) | braucht VANC aus dem DeckLink-Eingang; ohne angestecktes Gerät nicht prüfbar |
 | HLS/CMAF (#40) | `hlscmafsink` vorhanden; Speicherort, Auslieferung und Aufräumen fehlen noch |
-| Upload-Ziele (#52) | klein; nach Mehrkanal sinnvoller |
 | Interlaced-Ausgabe (#26), Deinterlacing-Wahl (#17) | erst mit 1080i-Quelle an echter Hardware sinnvoll zu messen |
 
 ## Netz-Eingänge (#13)
