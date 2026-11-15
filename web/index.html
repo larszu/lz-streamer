@@ -191,14 +191,17 @@
               <label class="field"><span>GOP (ms)</span><input class="input" data-path="encoder.video.gop_ms" data-num inputmode="numeric"></label>
             </div>
             <div class="row2">
-              <label class="field"><span>Halbbilder auflösen</span><select class="input" data-path="encoder.video.deinterlace"><option value="linear">schnell (linear)</option><option value="yadif">beste Qualität (yadif)</option><option value="greedyh">bewegungsadaptiv, weniger Last</option><option value="off">nicht auflösen</option></select></label>
+              <label class="field"><span>Halbbilder auflösen</span><select class="input" data-path="encoder.video.deinterlace"><option value="yadif">beste Qualität (yadif)</option><option value="greedyh">bewegungsadaptiv, weniger Last</option><option value="linear">schnell (linear)</option><option value="weave">zusammenfügen (PsF, 2:2)</option><option value="off">nicht auflösen</option></select></label>
+              <label class="field"><span>Halbbildreihenfolge Eingang</span><select class="input" data-path="encoder.video.input_field_order"><option value="auto">wie die Quelle meldet</option><option value="tff">oberes zuerst erzwingen</option><option value="bff">unteres zuerst erzwingen (z. B. DV)</option></select></label>
               <label class="field"><span>B-Frames (0 = latenzarm)</span><input class="input" data-path="encoder.video.bframes" data-num inputmode="numeric"></label>
               <label class="field"><span>Profil</span><select class="input" data-path="encoder.video.profile"><option value="">automatisch</option><option value="baseline">baseline (H.264)</option><option value="main">main</option><option value="high">high (H.264)</option><option value="main-10">main-10 (H.265)</option></select></label>
               <label class="field"><span>Level (leer = automatisch)</span><input class="input" data-path="encoder.video.level" placeholder="4.1"></label>
               <label class="field"><span>Entropie (x264)</span><select class="input" data-path="encoder.video.entropy"><option value="auto">automatisch</option><option value="cabac">CABAC</option><option value="cavlc">CAVLC</option></select></label>
               <label class="field"><span>Zusatzparameter (name=wert …)</span><input class="input" data-path="encoder.video.extra" spellcheck="false" placeholder="threads=4"></label>
             </div>
+            <label class="switch"><input type="checkbox" data-path="encoder.video.deinterlace_force"> Auch auflösen, wenn die Quelle sich als progressiv meldet (Kammeffekt im Bild)</label>
             <label class="switch"><input type="checkbox" data-path="encoder.video.interlaced"> Halbbilder ausgeben (1080i: Bildrate = Halbbilder/s, nur H.264, kodiert mit x264)</label>
+            <label class="field" data-show-mode="encoder.video.interlaced=true"><span>Halbbildreihenfolge Ausgabe</span><select class="input" data-path="encoder.video.output_field_order"><option value="tff">oberes zuerst (1080i, 576i)</option><option value="bff">unteres zuerst (480i, DV)</option></select></label>
             <div class="row2">
               <label class="field"><span>Skalierung</span>
                 <select class="input" data-path="encoder.video.scale_quality"><option value="high">Hochwertig (Lanczos)</option><option value="fast">Schnell (bilinear)</option></select></label>

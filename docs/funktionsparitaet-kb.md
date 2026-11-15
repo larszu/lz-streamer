@@ -53,7 +53,7 @@ Ohne die entfallenden Punkte sind 38 von 59 Funktionen fertig (64 %), dazu 14 in
 | 14 | Eingebetteter Ton, Pegel in dB | fertig | 2/8/16 Kanäle, Pegel je Spur | – |
 | 15 | Tonkanal-Zuordnung (Modus, L/R, Sprache) | fertig (mehr) | freie Matrix, Mono/Stereo/Downmix, bis 8 Spuren, ISO 639 | – |
 | 16 | Standbild bei Signalverlust ein/aus | fertig | Balken, Schwarz oder eigenes Bild, Umschaltzeit einstellbar | – |
-| 17 | Hochwertiges Deinterlacing | Teil | `deinterlace` automatisch, nicht wählbar; bwdif-Klasse fehlt | M |
+| 17 | Hochwertiges Deinterlacing | fertig | yadif (Vorgabe), greedyh, linear, weave (PsF); Reihenfolge Eingang automatisch/oben/unten erzwingbar, Auflösen erzwingbar; Halbbildrate 50i → 50p | – |
 | 18 | Beschnitt (Cropping) | fertig | oben/unten/links/rechts in Pixeln | – |
 | 19 | Zeitstempel „Systemzeit“ / „ab null“ | Teil | immer Systemuhr; Wahl ohne Nutzen für SRT, DeckLink-Uhr als Pipeline-Uhr fehlt | M |
 | 20 | Untertitel CEA-608/708 Kanal 1–4 | **fehlt** | siehe §6 | M |
@@ -67,7 +67,7 @@ Ohne die entfallenden Punkte sind 38 von 59 Funktionen fertig (64 %), dazu 14 in
 | 23 | Bitrate | fertig | CBR | – |
 | 24 | Ausgabeauflösungen inkl. eigener | Teil | Liste 720p–2160p in der Oberfläche, beliebige über API; kleine Stufen (≤ 540p) nicht in der Liste | S |
 | 25 | Bildraten-Klassen | fertig | frei einstellbar 1–120 fps | – |
-| 26 | Bildstruktur progressiv/interlaced | fertig | Halbbilder (oberes zuerst) aus progressiver Kette, x264; Test `interlaced_output_tff` | – |
+| 26 | Bildstruktur progressiv/interlaced | fertig | Halbbild-Ausgabe oberes oder unteres zuerst, Reihenfolge ausdrücklich in den Caps, x264; Tests `interlaced_output_tff`, `interlaced_file_input_is_deinterlaced` | – |
 | 27 | Framing IP/IBP/IBBP/IBBBP | Teil | nur IP, bewusst für Latenz; B-Frames wählbar machen | S |
 | 28 | Profil, Level, Entropie, Performance-Stufe | Teil | Encoder-Vorgaben latenzarm, nicht einzeln wählbar | S |
 | 29 | GOP-Modus und -Dauer | fertig | Dauer in ms | – |

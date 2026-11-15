@@ -42,6 +42,33 @@ pub fn quote(s: &str) -> String {
     format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
+/// Deinterlacer vor Beschnitt und Skalierung. `fields=all` liefert die Halbbildrate (50i → 50p);
+/// die eingestellte Bildrate stellt danach `videorate` her. `tff` korrigiert eine falsch
+/// gekennzeichnete Quelle, `mode=interlaced` löst auch fälschlich progressiv gemeldete Quellen auf.
+pub fn deinterlace_chain(v: &crate::config::VideoConfig) -> String {
+    match v.deinterlace.method() {
+        None => "identity".into(),
+        Some(m) => format!(
+            "deinterlace method={m} fields=all tff={} mode={}",
+            v.input_field_order.gst_nick(),
+            if v.deinterlace_force { "interlaced" } else { "auto" }
+        ),
+    }
+}
+
+/// Halbbild-Ausgabe: Vollbilder paarweise in Halbbilder, Reihenfolge ausdrücklich in den Caps
+/// (fehlt `field-order`, kodiert x264 still unteres Halbbild zuerst)
+pub fn interlace_chain(cfg: &EncoderConfig) -> String {
+    if !interlaced_output(cfg) {
+        return String::new();
+    }
+    let tff = cfg.video.output_field_order == crate::config::OutputFieldOrder::Tff;
+    format!(
+        " ! interlace field-pattern=1:1 top-field-first={tff} ! video/x-raw,interlace-mode=interleaved,field-order={}",
+        if tff { "top-field-first" } else { "bottom-field-first" }
+    )
+}
+
 /// Halbbild-Ausgabe aktiv (nur H.264)
 pub fn interlaced_output(cfg: &EncoderConfig) -> bool {
     cfg.video.interlaced && cfg.video.codec == Codec::H264
@@ -90,7 +117,7 @@ pub fn crop(cfg: &EncoderConfig) -> String {
 
 pub fn primary_video(cfg: &EncoderConfig, input: &ResolvedInput) -> String {
     let caps = raw_caps(cfg);
-    let deint = cfg.video.deinterlace.element();
+    let deint = deinterlace_chain(&cfg.video);
     let crop = crop(cfg);
     match input {
         ResolvedInput::Test => {
@@ -302,7 +329,7 @@ pub fn encoder_description(cfg: &EncoderConfig, parts: &EncoderParts) -> String 
     };
     let pcaps = crate::caps::profile_caps(&cfg.video);
     // Halbbilder: je zwei Vollbilder → ein Bild mit zwei Halbbildern, oberes zuerst
-    let il = if interlaced_output(cfg) { " ! interlace field-pattern=1:1 top-field-first=true ! video/x-raw,interlace-mode=interleaved" } else { "" };
+    let il = interlace_chain(cfg);
     d.push(format!("{enc_src}{il} ! {} name=venc ! {pcaps}{parser} config-interval=-1{inserter} ! tee name=ve", parts.encoder));
     // HLS: Bild-Rendition (die Ton-Renditionen folgen bei den Tonspuren)
     d.extend(crate::hls::branches(cfg).into_iter().take(1));
@@ -596,7 +623,8 @@ pub fn decoder_video_branch(
     // CC3 liegt im zweiten Feld
     let field = if channel == 3 { 1 } else { 0 };
     let sink = match output {
-        OutputKind::Window => format!("autovideosink name=vsink sync=true async=false ts-offset={ts_offset_ns}"),
+        // Bildschirme zeigen progressiv: Halbbilder auflösen (progressive Ströme laufen durch)
+        OutputKind::Window => format!("deinterlace method=yadif fields=all ! videoconvert ! autovideosink name=vsink sync=true async=false ts-offset={ts_offset_ns}"),
         OutputKind::Decklink => format!(
             "videoconvert ! decklinkvideosink name=vsink device-number={device} mode={} cc-line={cc_line} sync=true async=false ts-offset={ts_offset_ns}",
             if deck_mode.trim().is_empty() { "auto" } else { deck_mode.trim() }
@@ -699,7 +727,7 @@ mod tests {
         let src = if cfg!(target_os = "macos") { "avfvideosrc name=capsrc device-index=1" } else { "v4l2src name=capsrc device=/dev/video1" };
         assert!(d.contains(src), "{d}");
         assert!(d.contains("autoaudiosrc name=capasrc"), "{d}");
-        assert!(d.contains("deinterlace method=linear"));
+        assert!(d.contains("deinterlace method=yadif fields=all tff=auto mode=auto"));
         let d = encoder_description(&cfg, &parts(&ResolvedInput::Uvc { index: 0, audio: false }));
         assert!(d.contains("audiotestsrc name=capasrc is-live=true wave=silence"), "{d}");
         assert_eq!(ResolvedInput::Uvc { index: 2, audio: true }.label(), "USB-Video (UVC) Nr. 2");
@@ -709,19 +737,23 @@ mod tests {
     fn encoder_options_in_pipeline() {
         let mut cfg = EncoderConfig::default();
         let d = encoder_description(&cfg, &parts(&ResolvedInput::File { path: "/x.mp4".into() }));
-        assert!(d.contains("deinterlace method=linear"), "{d}");
+        assert!(d.contains("deinterlace method=yadif fields=all tff=auto mode=auto"), "{d}");
         assert!(!d.contains("profile="));
-        cfg.video.deinterlace = Deinterlace::Yadif;
+        cfg.video.deinterlace = Deinterlace::Greedyh;
+        cfg.video.input_field_order = crate::config::FieldOrder::Bff;
+        cfg.video.deinterlace_force = true;
         cfg.video.profile = "high".into();
         cfg.video.level = "4.2".into();
         let d = encoder_description(&cfg, &parts(&ResolvedInput::File { path: "/x.mp4".into() }));
-        assert!(d.contains("deinterlace method=yadif"), "{d}");
+        assert!(d.contains("deinterlace method=greedyh fields=all tff=bff mode=interlaced"), "{d}");
         assert!(d.contains("name=venc ! video/x-h264,profile=high,level=(string)4.2 ! h264parse"), "{d}");
         cfg.video.interlaced = true;
         let mut c = crate::config::Config { encoder: cfg, ..Default::default() };
         c.normalize();
         let d = encoder_description(&c.encoder, &parts(&ResolvedInput::File { path: "/x.mp4".into() }));
-        assert!(d.contains("! interlace field-pattern=1:1 top-field-first=true ! video/x-raw,interlace-mode=interleaved ! "), "{d}");
+        assert!(d.contains("! interlace field-pattern=1:1 top-field-first=true ! video/x-raw,interlace-mode=interleaved,field-order=top-field-first ! "), "{d}");
+        c.encoder.video.output_field_order = crate::config::OutputFieldOrder::Bff;
+        assert!(interlace_chain(&c.encoder).contains("top-field-first=false ! video/x-raw,interlace-mode=interleaved,field-order=bottom-field-first"));
         assert_eq!(c.encoder.video.gop_frames(), 25, "GOP in Bildern, nicht Halbbildern");
     }
 
