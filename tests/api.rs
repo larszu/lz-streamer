@@ -355,8 +355,6 @@ fn web_scripts_parse() {
         eprintln!("node fehlt – Test übersprungen");
         return;
     }
-    for f in ["web/app.js"] {
-        let out = std::process::Command::new("node").args(["--check", f]).output().unwrap();
-        assert!(out.status.success(), "{f}: {}", String::from_utf8_lossy(&out.stderr));
-    }
+    let out = std::process::Command::new("node").args(["--check", "web/app.js"]).output().unwrap();
+    assert!(out.status.success(), "web/app.js: {}", String::from_utf8_lossy(&out.stderr));
 }
