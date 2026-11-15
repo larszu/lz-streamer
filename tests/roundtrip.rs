@@ -1487,3 +1487,60 @@ fn rtmp_output_carries_video_size() {
         assert!(s.contains("aac"), "{encoder}: kein Ton: {s}");
     }
 }
+
+/// Schneidet den TS eines UDP-Zusatzausgangs `secs` Sekunden lang mit (für ffprobe).
+/// `during` läuft bei jedem Status-Abruf mit (etwa für Befehle an den Kanal).
+fn capture_udp_ts(cfg: &mut EncoderConfig, secs: u64, tag: &str, mut during: impl FnMut(&mut Channel, Duration)) -> std::path::PathBuf {
+    use lz_streamer::config::{ExtraOutput, OutputType};
+    let udp = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    udp.set_read_timeout(Some(Duration::from_millis(200))).unwrap();
+    let port = udp.local_addr().unwrap().port();
+    cfg.outputs.push(ExtraOutput { name: "Mitschnitt".into(), kind: OutputType::Udp, host: "127.0.0.1".into(), port, ..Default::default() });
+    let mut enc = Channel::start_encoder(cfg, &[], &ChannelOptions::default()).unwrap();
+    let path = std::env::temp_dir().join(format!("lzs-{tag}-{port}.ts"));
+    let mut data = Vec::new();
+    let t0 = Instant::now();
+    let mut buf = [0u8; 65536];
+    let mut last_poll = Instant::now();
+    while t0.elapsed() < Duration::from_secs(secs) {
+        if let Ok(n) = udp.recv(&mut buf) {
+            data.extend_from_slice(&buf[..n]);
+        }
+        if last_poll.elapsed() > Duration::from_millis(200) {
+            let _ = status(&mut enc);
+            during(&mut enc, t0.elapsed());
+            last_poll = Instant::now();
+        }
+    }
+    enc.stop();
+    std::fs::write(&path, &data).unwrap();
+    path
+}
+
+fn ffprobe_csv(path: &std::path::Path, args: &[&str]) -> String {
+    let out = std::process::Command::new("ffprobe").args(["-v", "error"]).args(args).args(["-of", "csv=p=0"]).arg(path).output().unwrap();
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+/// #16: Untertiteldatei → zusätzlich DVB-Untertitel im TS, mit Sprachkennung.
+#[test]
+fn dvb_subtitles_in_ts_with_language() {
+    use lz_streamer::config::CaptionSource;
+    init();
+    let mut cfg = encoder_cfg(free_port(), SrtMode::Listener);
+    cfg.captions.source = CaptionSource::File;
+    cfg.captions.file = srt_file("dvb").to_string_lossy().to_string();
+    cfg.captions.dvb.enabled = true;
+    cfg.captions.dvb.language = "deu".into();
+    let ts = capture_udp_ts(&mut cfg, 10, "dvb", |_, _| {});
+    let streams = ffprobe_csv(&ts, &["-show_entries", "stream=codec_name,id:stream_tags=language"]);
+    let pk = ffprobe_csv(&ts, &["-select_streams", "s", "-show_entries", "packet=size"]);
+    let pcr = ffprobe_csv(&ts, &["-show_entries", "program=pcr_pid"]);
+    if std::env::var("LZS_KEEP").is_err() { let _ = std::fs::remove_file(&ts); }
+    let sizes: Vec<u32> = pk.lines().filter_map(|l| l.split(',').next()?.trim().parse().ok()).collect();
+    assert!(streams.contains("h264") && streams.contains("dvb_subtitle,0x60,deu") && streams.contains("h264,0x41") && streams.contains("aac,0x42"), "{streams}");
+    assert!(pcr.starts_with("65"), "PCR nicht auf dem Bild: {pcr}");
+    // Seiten mit Bild (groß) und Löschseiten (klein)
+    assert!(sizes.iter().filter(|&&s| s > 100).count() >= 2, "{sizes:?}");
+    assert!(sizes.iter().any(|&s| s < 100), "keine Löschseite: {sizes:?}");
+}

@@ -284,6 +284,11 @@
               <label class="switch"><input type="checkbox" data-path="encoder.captions.second.enabled"> Zweite Sprache auf CC3</label>
               <label class="field"><span>Sprache der zweiten Spur</span><input class="input" data-path="encoder.captions.second.language" placeholder="eng"></label>
             </div>
+            <div class="row2">
+              <label class="switch"><input type="checkbox" data-path="encoder.captions.dvb.enabled"> Zusätzlich als DVB-Untertitel im TS</label>
+              <label class="field"><span>Sprachkennung DVB (ISO 639-2)</span><input class="input" data-path="encoder.captions.dvb.language" placeholder="deu"></label>
+            </div>
+            <p class="hint">DVB-Untertitel sind für IPTV- und Multicast-Empfänger (Fernseher, VLC) und laufen auf SRT/UDP/RTP mit, nicht über RTMP. Die zweite Sprache nimmt die Kennung der zweiten Spur.</p>
             <p class="hint">Mit Spracherkennung übersetzt Whisper ins Englische; bei Live-Text kommt die zweite Sprache aus dem zweiten Eingabefeld. YouTube und viele Player zeigen nur die erste Spur (CC1).</p>
             <div data-show-mode="encoder.captions.source=speech">
               <p class="hint">Ersetzungen (Namen, Fachbegriffe): erkannt → geschrieben</p>
