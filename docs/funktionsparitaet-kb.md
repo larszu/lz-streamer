@@ -79,7 +79,7 @@ Ohne die entfallenden Punkte sind 38 von 59 Funktionen fertig (64 %), dazu 14 in
 
 | # | Funktion | Status | Umsetzung / was fehlt | Aufwand |
 |---|---|---|---|---|
-| 33 | RTMP (Social Media) | fertig | eigene Teil-Pipeline, Abbruch reißt SRT nicht mit | – |
+| 33 | RTMP (Social Media) | fertig | eigene Teil-Pipeline, Abbruch reißt SRT nicht mit; Zeitstempel der Abgriffe als Laufzeit, damit Bild und Ton im FLV zusammenliegen | – |
 | 34 | SRT Caller/Listener | fertig | – | – |
 | 35 | SRT Rendezvous | fertig | neu in PR #2 | – |
 | 36 | SRT Passwort, Latenz, Stream-ID | fertig | – | – |
@@ -141,6 +141,8 @@ Gezählt sind die 7 fehlenden Funktionen und die drei Teilfunktionen mit dem gr�
 | SRT durchgereicht: H.265 640×360 kommt unverändert an, kein Encoder, Wiederverbinden | `srt_input_passthrough_keeps_stream` |
 | UDP neu kodiert, RTP durchgereicht | `udp_and_rtp_inputs` |
 | RTMP von ffmpeg als Server abholen | `rtmp_input_pulled_and_transcoded` |
+| RTMP-Ausgang: ffmpeg/ffprobe sehen H.264 640×360 und AAC (VideoToolbox und x264) | `rtmp_output_carries_video_size` |
+| RTMP-Ausspielung der Empfangsstelle: ffprobe sieht H.264 640×360 und AAC | `tests/resi.rs` |
 | Eingefügte Adressen (`srt://`, `udp://@…`, `rtp://`, `rtmp://`) zerlegen, Pipeline-Bau beider Modi | Unit-Tests in `config.rs`, `pipeline.rs` |
 
 ## Neu in PR #2

@@ -1425,3 +1425,65 @@ fn interlaced_file_input_is_deinterlaced() {
     assert!(info.contains("field_order=progressive") && info.contains("r_frame_rate=50/1"), "{info}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Nimmt mit ffmpeg als RTMP-Gegenstelle `secs` Sekunden auf und liefert
+/// `codec_type,codec_name,width,height` je Spur.
+fn rtmp_capture(secs: u32, start: impl FnOnce(String) -> Vec<Channel>) -> String {
+    let rport = {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        l.local_addr().unwrap().port()
+    };
+    let url = format!("rtmp://127.0.0.1:{rport}/live/test");
+    let out = std::env::temp_dir().join(format!("lzs-rtmp-{rport}.flv"));
+    let mut ff = std::process::Command::new("ffmpeg")
+        .args(["-hide_banner", "-loglevel", "error", "-y", "-listen", "1", "-i", &url, "-c", "copy", "-t", &secs.to_string()])
+        .arg(&out)
+        .stdin(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    std::thread::sleep(Duration::from_millis(800));
+    let mut chs = start(url);
+    let end = Instant::now() + Duration::from_secs(30);
+    while ff.try_wait().unwrap().is_none() {
+        for c in chs.iter_mut() {
+            let _ = c.poll();
+        }
+        if Instant::now() > end {
+            let _ = ff.kill();
+            panic!("ffmpeg endet nicht");
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    for c in chs.iter_mut() {
+        c.stop();
+    }
+    let probe = std::process::Command::new("ffprobe")
+        .args(["-v", "error", "-show_entries", "stream=codec_type,codec_name,width,height", "-of", "csv=p=0"])
+        .arg(&out)
+        .output()
+        .unwrap();
+    let _ = std::fs::remove_file(&out);
+    String::from_utf8_lossy(&probe.stdout).into_owned()
+}
+
+/// RTMP-Ausgang: ffmpeg muss Bildgröße und Ton sehen, nicht „h264, none, unspecified size“.
+#[test]
+fn rtmp_output_carries_video_size() {
+    init();
+    if !ffmpeg_available() {
+        eprintln!("ffmpeg fehlt – Test übersprungen");
+        return;
+    }
+    // Hardware-Encoder (falls vorhanden) und x264
+    for encoder in ["", "x264enc"] {
+        let s = rtmp_capture(3, |url| {
+            let mut cfg = encoder_cfg(free_port(), SrtMode::Listener);
+            cfg.video.encoder = encoder.into();
+            cfg.rtmp.enabled = true;
+            cfg.rtmp.url = url;
+            vec![Channel::start_encoder(&cfg, &[], &ChannelOptions::default()).unwrap()]
+        });
+        assert!(s.lines().any(|l| l.starts_with("h264,") && l.ends_with(",640,360")), "{encoder}: {s}");
+        assert!(s.contains("aac"), "{encoder}: kein Ton: {s}");
+    }
+}

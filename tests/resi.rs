@@ -113,14 +113,27 @@ fn resilient_transfer_survives_outage_shorter_than_delay() {
 
     // Ausspielung der Empfangsstelle an ein SRT-Ziel, dort hört ein zweiter Decoder zu
     let out_port = free_port();
+    // zweites Ziel: RTMP an ffmpeg, das 3 s mitschneidet
+    let rtmp_port = free_port();
+    let rtmp_file = root.join("rtmp.flv");
+    std::fs::create_dir_all(&root).unwrap();
+    let mut ff = std::process::Command::new("ffmpeg")
+        .args(["-hide_banner", "-loglevel", "error", "-y", "-listen", "1", "-i", &format!("rtmp://127.0.0.1:{rtmp_port}/live/k"), "-c", "copy", "-t", "3"])
+        .arg(&rtmp_file)
+        .stdin(std::process::Stdio::null())
+        .spawn()
+        .ok();
     let relay_cfg = RelayConfig {
         delay_s: delay,
         dir: relay_sup.relay_dir().to_string_lossy().to_string(),
-        destinations: vec![Destination {
-            kind: DestKind::Srt,
-            srt: lz_streamer::config::SrtConfig { mode: SrtMode::Listener, port: out_port, latency_ms: 120, ..Default::default() },
-            ..Default::default()
-        }],
+        destinations: vec![
+            Destination {
+                kind: DestKind::Srt,
+                srt: lz_streamer::config::SrtConfig { mode: SrtMode::Listener, port: out_port, latency_ms: 120, ..Default::default() },
+                ..Default::default()
+            },
+            Destination { kind: DestKind::Rtmp, url: format!("rtmp://127.0.0.1:{rtmp_port}/live"), key: "k".into(), ..Default::default() },
+        ],
         ..Default::default()
     };
     let mut playout = Playout::start(&relay_cfg).unwrap();
@@ -183,6 +196,19 @@ fn resilient_transfer_survives_outage_shorter_than_delay() {
     assert!(frames_after_outage > 25 * 12, "nach dem Ausfall kamen nur {frames_after_outage} Bilder");
     assert!(dec2_frames > 25 * 5, "Ziel über die Ausspielung: nur {dec2_frames} Bilder");
     assert!(up_status.sent > 10 && up_status.last_error.is_none(), "{up_status:?}");
+    // RTMP-Ausspielung: ffmpeg sieht Bildgröße und Ton
+    if let Some(ff) = ff.as_mut() {
+        let ended = ff.try_wait().unwrap().is_some();
+        let _ = ff.kill();
+        let _ = ff.wait();
+        let probe = std::process::Command::new("ffprobe")
+            .args(["-v", "error", "-show_entries", "stream=codec_name,width,height", "-of", "csv=p=0"])
+            .arg(&rtmp_file)
+            .output()
+            .unwrap();
+        let p = String::from_utf8_lossy(&probe.stdout);
+        assert!(ended && p.contains("h264,640,360") && p.contains("aac"), "RTMP-Ziel: {p}");
+    }
 
     // keine Lücke in der Ablage: fortlaufende Segmentnummern
     let dir = rsp::latest_session(&relay_sup.relay_dir()).unwrap();

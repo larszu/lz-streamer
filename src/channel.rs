@@ -1831,6 +1831,18 @@ struct RtmpTaps {
     need_key: bool,
 }
 
+/// Zeitstempel eines Abgriffs auf Laufzeit umrechnen. Encoder legen ihr
+/// Segment oft 1000 h nach vorn (Platz für negative DTS); die Teil-Pipeline
+/// hinter appsrc kennt dieses Segment nicht. Ohne Umrechnung liegt das Bild
+/// 1000 h hinter dem Ton und flvmux schreibt nur Ton.
+fn to_running_time(buf: &mut gst::BufferRef, seg: &gst::FormattedSegment<gst::ClockTime>) {
+    let pts = buf.pts().and_then(|t| seg.to_running_time(t));
+    // DTS vor Segmentbeginn (B-Bilder) gibt es in FLV nicht: auf PTS zurückfallen
+    let dts = buf.dts().and_then(|t| seg.to_running_time(t)).or(if buf.dts().is_some() { pts } else { None });
+    buf.set_pts(pts);
+    buf.set_dts(dts);
+}
+
 /// RTMP läuft als eigene kleine Pipeline. Bricht sie ab, versucht sie es
 /// nach einer Pause erneut – SRT läuft davon unberührt weiter.
 struct RtmpSender {
@@ -1856,7 +1868,10 @@ impl RtmpSender {
                     .new_sample(move |s| {
                         let sample = s.pull_sample().map_err(|_| gst::FlowError::Eos)?;
                         let mut taps = t.lock().unwrap();
-                        let Some(buf) = sample.buffer_owned() else { return Ok(gst::FlowSuccess::Ok) };
+                        let Some(mut buf) = sample.buffer_owned() else { return Ok(gst::FlowSuccess::Ok) };
+                        if let Some(seg) = sample.segment().and_then(|s| s.downcast_ref::<gst::ClockTime>().cloned()) {
+                            to_running_time(buf.make_mut(), &seg);
+                        }
                         if is_video {
                             if taps.need_key && buf.flags().contains(gst::BufferFlags::DELTA_UNIT) {
                                 return Ok(gst::FlowSuccess::Ok);
@@ -2063,5 +2078,25 @@ mod tests {
         let t = c.luma_rise().unwrap();
         c.set_luma(210.0);
         assert_eq!(c.luma_rise(), Some(t));
+    }
+
+    #[test]
+    fn rtmp_tap_timestamps_become_running_time() {
+        gst::init().unwrap();
+        // Encoder-Segment beginnt 1000 h später (Platz für negative DTS)
+        let off = gst::ClockTime::from_seconds(3_600_000);
+        let mut seg = gst::FormattedSegment::<gst::ClockTime>::new();
+        seg.set_start(off);
+        seg.set_time(gst::ClockTime::ZERO);
+        let mut buf = gst::Buffer::new();
+        {
+            let b = buf.get_mut().unwrap();
+            b.set_pts(off + gst::ClockTime::from_mseconds(120));
+            b.set_dts(off - gst::ClockTime::from_mseconds(40));
+            to_running_time(b, &seg);
+        }
+        assert_eq!(buf.pts(), Some(gst::ClockTime::from_mseconds(120)));
+        // DTS vor Segmentbeginn → PTS
+        assert_eq!(buf.dts(), Some(gst::ClockTime::from_mseconds(120)));
     }
 }

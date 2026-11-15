@@ -135,7 +135,7 @@ cargo test
   - HD-Testbild auf UHD hochskaliert, als H.265 übertragen
   - Signalverlust: Das Standbild übernimmt, der Decoder bekommt weiter Bilder
   - Latenzmessung
-  - RTMP-Abbruch reißt SRT nicht mit (braucht `ffmpeg` als RTMP-Gegenstelle)
+  - RTMP-Abbruch reißt SRT nicht mit; ffmpeg als RTMP-Gegenstelle sieht Bildgröße und Ton, mit Hardware-Encoder und x264, ebenso bei der Ausspielung der Empfangsstelle (braucht `ffmpeg`)
   - Kindprozess meldet Status und beendet sich ohne Elternprozess
   - drei Tonspuren mit Sprache (de/en/fr) kommen am Decoder an, Sprachwahl greift
   - Aufnahme als TS und MP4 mit allen Spuren (Prüfung mit ffprobe)
