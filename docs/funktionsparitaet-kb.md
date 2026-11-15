@@ -145,6 +145,14 @@ Gezählt sind die 7 fehlenden Funktionen und die drei Teilfunktionen mit dem gr�
 | RTMP-Ausspielung der Empfangsstelle: ffprobe sieht H.264 640×360 und AAC | `tests/resi.rs` |
 | Eingefügte Adressen (`srt://`, `udp://@…`, `rtp://`, `rtmp://`) zerlegen, Pipeline-Bau beider Modi | Unit-Tests in `config.rs`, `pipeline.rs` |
 
+## Untertitel und Daten im TS
+
+| Funktion | Test |
+|---|---|
+| DVB-Untertitel (U7, #16): Datei → `dvbsubenc` → PID 0x60 mit Sprachkennung, Lösch-Seiten, PCR bleibt auf dem Bild | `dvb_subtitles_in_ts_with_language`, Unit-Test `dvb_subtitles_branch` |
+
+Offen bei #16: Abnahme an VLC und einem Fernseher mit DVB-IPTV sowie Descriptor-Prüfung mit TSDuck (hier nicht installiert; ffprobe liest Sprache und PID).
+
 ## Neu in PR #2
 
 Jede Zeile hat einen eigenen Test:

@@ -342,7 +342,9 @@ pub fn encoder_description(cfg: &EncoderConfig, parts: &EncoderParts) -> String 
     if let Some(b) = caption_branch(cfg) {
         d.push(b);
     }
-    d.push("ve. ! queue max-size-buffers=0 max-size-bytes=0 max-size-time=2000000000 ! mux.".into());
+    // Mit DVB-Untertiteln hat das Bild eine feste PID und trägt die PCR (siehe `dvb_branch`)
+    let dvb = cfg.captions.dvb.enabled && caption_branch(cfg).is_some();
+    d.push(format!("ve. ! queue max-size-buffers=0 max-size-bytes=0 max-size-time=2000000000 ! mux.{}", if dvb { "sink_65" } else { "" }));
     let rtmp_sink = "appsink name=rtmp_v sync=false async=false emit-signals=false max-buffers=120 drop=true";
     if burn == BurnTarget::Rtmp {
         // zweiter Encoder nur für RTMP mit eingebrannter Grafik
@@ -447,7 +449,10 @@ pub fn encoder_description(cfg: &EncoderConfig, parts: &EncoderParts) -> String 
         ));
     }
 
-    d.push("mpegtsmux name=mux alignment=7 pcr-interval=3600 ! tee name=tsout allow-not-linked=true".into());
+    d.push(format!(
+        "mpegtsmux name=mux alignment=7 pcr-interval=3600{} ! tee name=tsout allow-not-linked=true",
+        if dvb { " prog-map=\"progmap,PCR_1=(string)sink_65\"" } else { "" }
+    ));
     d.extend(ts_outputs(cfg));
     d.join("  ")
 }
@@ -503,6 +508,36 @@ pub fn cc_extractor(codec: Codec) -> &'static str {
     }
 }
 
+/// DVB-Untertitel einer Sprache (`n` = "" erste, "2" zweite): Text als Bild
+/// gesetzt (textrender, AYUV in Bildgröße) → `dvbsubenc` → eigene PID im
+/// Haupt-TS, Sprachkennung über das Tag für den Subtitling-Descriptor.
+/// Zeilen mit Dauer löscht dvbsubenc danach selbst. `identity sync=true` gibt
+/// jede Seite erst zu ihrer Zeit an den Muxer: Aus einer Datei kämen sonst alle
+/// Seiten vor dem ersten Bild, mpegtsmux nähme die Untertitel-PID als PCR und
+/// hielte den ganzen Strom bis zur ersten Zeile an. Zusätzlich legt `prog-map`
+/// die PCR fest auf das Bild (PID 0x41), denn mpegtsmux nimmt sonst den Strom,
+/// dessen Caps zuerst ankommen. Feste PIDs 0x60/0x61 für die Untertitel, damit
+/// Bild und Ton ihre gewohnten PIDs behalten.
+pub fn dvb_branch(cfg: &EncoderConfig, n: &str) -> Option<String> {
+    let c = &cfg.captions;
+    if !c.dvb.enabled {
+        return None;
+    }
+    let lang = crate::config::iso639_2(if n.is_empty() { &c.dvb.language } else { &c.second.language });
+    let size = (cfg.video.height / 16).max(14);
+    Some(format!(
+        "  dvbt{n}. ! queue max-size-buffers=0 max-size-bytes=0 max-size-time=2000000000 \
+         ! textrender valignment=bottom halignment=center line-alignment=center font-desc={} \
+         ! video/x-raw,width={},height={} ! videoconvert ! video/x-raw,format=AYUV \
+         ! dvbsubenc name=dvbsub{n} ! identity sync=true ! taginject tags={} ! mux.sink_{}",
+        quote(&format!("Sans Bold {size}px")),
+        cfg.video.width,
+        cfg.video.height,
+        quote(&format!("language-code={lang}")),
+        if n.is_empty() { 0x60 } else { 0x61 }
+    ))
+}
+
 /// Untertitelquelle → CEA-608 im 708-cc_data-Rahmen → `cccombiner` vor dem
 /// Encoder. Der Inserter hinter dem Parser schreibt sie als SEI ins Video.
 /// Bei SDI hängt die Meta schon am Bild (`output-cc=true`), dann kein Zweig.
@@ -524,9 +559,13 @@ pub fn caption_branch(cfg: &EncoderConfig) -> Option<String> {
         } else {
             (String::new(), String::new())
         };
+        let (dvb_tap, dvb) = match dvb_branch(cfg, n) {
+            Some(b) => (format!("tee name=dvbt{n} ! queue max-size-buffers=0 max-size-bytes=0 max-size-time=2000000000 ! "), b),
+            None => (String::new(), String::new()),
+        };
         format!(
-            "{src} ! tttocea608 name=cc608{n} mode={} ! closedcaption/x-cea-608,format=raw,framerate={}/1 \
-             ! {tap}queue max-size-buffers=0 max-size-bytes=0 max-size-time=2000000000 ! {pad}{side}",
+            "{src} ! {dvb_tap}tttocea608 name=cc608{n} mode={} ! closedcaption/x-cea-608,format=raw,framerate={}/1 \
+             ! {tap}queue max-size-buffers=0 max-size-bytes=0 max-size-time=2000000000 ! {pad}{side}{dvb}",
             c.mode.gst_nick(),
             cfg.video.fps
         )
@@ -844,6 +883,28 @@ mod tests {
         let deck = ResolvedInput::Decklink { device: 0, connection: "sdi" };
         let d = encoder_description(&cfg, &parts(&deck));
         assert!(d.contains("output-cc=true") && d.contains("ccinserter") && !d.contains("cccombiner"));
+    }
+
+    #[test]
+    fn dvb_subtitles_branch() {
+        let mut cfg = EncoderConfig::default();
+        let input = ResolvedInput::Test;
+        cfg.captions.source = CaptionSource::Live;
+        assert!(!encoder_description(&cfg, &parts(&input)).contains("dvbsubenc"));
+        cfg.captions.dvb.enabled = true;
+        cfg.captions.dvb.language = "de".into();
+        let d = encoder_description(&cfg, &parts(&input));
+        assert!(d.contains("appsrc name=ccin") && d.contains("tee name=dvbt ! queue"), "{d}");
+        assert!(d.contains("! mux.sink_65") && d.contains("PCR_1=(string)sink_65"), "{d}");
+        assert!(d.contains("dvbsubenc name=dvbsub ! identity sync=true ! taginject tags=\"language-code=deu\" ! mux.sink_96"), "{d}");
+        // zweite Sprache bekommt eine eigene DVB-Spur
+        cfg.captions.source = CaptionSource::Speech;
+        cfg.captions.second.enabled = true;
+        cfg.captions.second.language = "eng".into();
+        let d = encoder_description(&cfg, &parts(&input));
+        assert!(d.contains("dvbsubenc name=dvbsub2 ! identity sync=true ! taginject tags=\"language-code=eng\""), "{d}");
+        assert_eq!(crate::config::iso639_2("EN"), "eng");
+        assert_eq!(crate::config::iso639_2("xx1"), "und");
     }
 
     #[test]
