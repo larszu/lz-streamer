@@ -179,6 +179,7 @@ fn output_target(o: &crate::config::ExtraOutput) -> String {
         crate::config::OutputType::Srt => o.srt.uri(),
         crate::config::OutputType::Udp => format!("udp://{}:{}", o.host, o.port),
         crate::config::OutputType::Rtp => format!("rtp://{}:{}", o.host, o.port),
+        crate::config::OutputType::Rist => format!("rist://{}", crate::config::rist_paths(Some((&o.host, o.port)), &o.rist_paths)),
     }
 }
 
@@ -1230,7 +1231,17 @@ impl Channel {
         let codec: Arc<Mutex<Option<Codec>>> = Arc::default();
         let tracks: Arc<Mutex<Vec<TrackInfo>>> = Arc::default();
         let from_relay = cfg.source == crate::rsp::DecoderSource::Relay;
-        let desc = if from_relay {
+        let desc = if cfg.source == crate::rsp::DecoderSource::Rist {
+            // RIST liefert RTP; mehrere Wege werden zusammengeführt, Doppeltes verworfen
+            format!(
+                "ristsrc name=srtin bonding-addresses={} receiver-buffer={} \
+                 caps=\"application/x-rtp,media=video,encoding-name=MP2T,clock-rate=90000,payload=33\" \
+                 ! rtpmp2tdepay ! queue max-size-buffers=0 max-size-bytes=0 max-size-time=2000000000 ! tsdemux name=demux latency={}",
+                pipeline::quote(&crate::config::rist_paths(None, &cfg.rist.paths)),
+                cfg.rist.buffer_ms.clamp(50, 10_000),
+                cfg.demux_latency_ms
+            )
+        } else if from_relay {
             // Bytes kommen getaktet vom Zuspieler (Aufnahmezeit + Verzögerung)
             format!(
                 "appsrc name=srtin is-live=true format=bytes do-timestamp=true block=false max-bytes=16000000 \
@@ -1248,10 +1259,10 @@ impl Channel {
         };
         let pipeline = gst::parse::launch(&desc)?.downcast::<gst::Pipeline>().map_err(|_| anyhow!("keine Pipeline"))?;
         let srt = pipeline.by_name("srtin").unwrap();
-        if !from_relay && !cfg.srt.passphrase.is_empty() {
+        if cfg.source == crate::rsp::DecoderSource::Srt && !cfg.srt.passphrase.is_empty() {
             srt.set_property("passphrase", &cfg.srt.passphrase);
         }
-        if !from_relay && !cfg.srt.streamid.is_empty() {
+        if cfg.source == crate::rsp::DecoderSource::Srt && !cfg.srt.streamid.is_empty() {
             srt.set_property("streamid", &cfg.srt.streamid);
         }
         count_bytes(&srt.static_pad("src").unwrap(), &counters);
@@ -1264,7 +1275,7 @@ impl Channel {
         let cc2 = cc.clone();
         let anc: Arc<Mutex<Option<crate::anc::AncStatus>>> = Arc::default();
         let anc2 = anc.clone();
-        let ts_off = if from_relay { 0 } else { -(cfg.srt.latency_ms as i64) * 1_000_000 };
+        let ts_off = if cfg.source != crate::rsp::DecoderSource::Srt { 0 } else { -(cfg.srt.latency_ms as i64) * 1_000_000 };
         demux.connect_pad_added(move |_, pad| {
             let Some(pipeline) = weak.upgrade() else { return };
             let name = pad

@@ -159,6 +159,10 @@ Gez채hlt sind die 7 fehlenden Funktionen und die drei Teilfunktionen mit dem gr�
 
 | 10 bit/4:2:2/HDR (F-03, #34): H.265 4:2:2 10 bit PQ und 4:2:0 10 bit HLG mit VideoToolbox, 4:2:2 10 bit mit x265, H.264 4:2:2 10 bit mit x264; ffprobe pr체ft pix_fmt, Kennlinie, Prim채rfarben | `ten_bit_422_and_hdr_flags_in_stream`, Unit-Test in `caps.rs` |
 
+| SRT-FEC und RIST-Redundanz (F-02, #33): RIST-Ausgang mit mehreren Wegen (broadcast), Decoder-Quelle RIST; Trennung eines Wegs ohne Bildl체cke; SRT-Paketfilter `fec` spart Wiederholungen | `rist_two_paths_survive_cut_of_one`, `srt_fec_reduces_retransmissions_under_loss`, Unit-Tests in `config.rs`, `pipeline.rs` |
+
+Offen bei #33: SRT Socket Groups (das installierte libsrt 1.5.7 ist ohne Bonding gebaut), RIST mit SMPTE-2022-1-FEC, Messung an echten Netzwegen.
+
 Offen bei #34: HDR-Metadaten (Mastering Display, Content Light Level) aus der Quelle durchreichen und 10-bit-Eingang am DeckLink pr체fen (braucht Hardware); NVENC (Blackwell 4:2:2) und Intel Arc hier nicht vorhanden.
 
 Offen bei #27: SCTE-104 aus dem VANC des DeckLink-Eingangs lesen und 체bersetzen (braucht Hardware) und Gegenprobe mit TSDuck (hier nicht installiert; der Test zerlegt den TS selbst).

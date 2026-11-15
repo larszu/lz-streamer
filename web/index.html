@@ -213,6 +213,7 @@
             <div class="row2">
               <label class="field"><span>SRT-Passwort</span><input class="input" type="password" data-path="encoder.srt.passphrase" autocomplete="new-password" placeholder="leer = unverschlüsselt"></label>
               <label class="field"><span>Stream-ID</span><input class="input" data-path="encoder.srt.streamid" autocomplete="off"></label>
+              <label class="field"><span>SRT-FEC (leer = aus)</span><input class="input" data-path="encoder.srt.fec" spellcheck="false" placeholder="fec,cols:10,rows:5"></label>
             </div>
             <label class="switch"><input type="checkbox" data-path="encoder.audio.enabled"> Ton (AAC)</label>
             <p class="group-title">Tonspuren</p>
@@ -348,6 +349,14 @@
         <div class="seg" role="group" aria-label="Quelle" data-seg="decoder.source">
           <button type="button" data-v="srt">SRT direkt</button>
           <button type="button" data-v="relay">Empfangsstelle (gepuffert)</button>
+          <button type="button" data-v="rist">RIST (mehrere Wege)</button>
+        </div>
+        <div class="form" data-show-mode="decoder.source=rist">
+          <div class="row2">
+            <label class="field"><span>Empfangswege (Adresse:Port, …; Port gerade)</span><input class="input" data-path="decoder.rist.paths" spellcheck="false" placeholder="0.0.0.0:5004, 0.0.0.0:5006"></label>
+            <label class="field"><span>Puffer für Wiederholungen (ms)</span><input class="input" data-path="decoder.rist.buffer_ms" data-num inputmode="numeric"></label>
+          </div>
+          <p class="hint">Jeder Weg trägt den ganzen Strom; fällt einer aus, läuft das Bild über die anderen weiter. Der Encoder sendet mit einem RIST-Ausgang an alle Wege.</p>
         </div>
         <div class="form" data-show-mode="decoder.source=relay">
           <div class="row2 inline">
@@ -371,6 +380,7 @@
           <label class="field" data-show-mode="decoder.srt.mode=caller|rendezvous"><span>Encoder-Adresse</span>
             <input class="input" data-path="decoder.srt.host" placeholder="z. B. 192.0.2.10 oder srt://…" autocomplete="off" spellcheck="false"></label>
           <label class="field"><span>Port</span><input class="input" data-path="decoder.srt.port" data-num inputmode="numeric"></label>
+          <label class="field"><span>SRT-FEC (wie am Encoder)</span><input class="input" data-path="decoder.srt.fec" spellcheck="false" placeholder="fec,cols:10,rows:5"></label>
         </div>
         </div>
         <p class="group-title">Ausgabe</p>

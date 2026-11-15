@@ -1799,3 +1799,179 @@ fn ten_bit_422_and_hdr_flags_in_stream() {
         assert!(info.lines().any(|l| l.trim() == want), "{codec:?}/{encoder}/{chroma:?}: {info} statt {want}");
     }
 }
+
+/// UDP-Weiterleitung mit Störung (statt netem): `drop_every` verwirft jedes n-te
+/// Paket (0 = keins), `cut` verwirft alles – wie ein gezogenes Kabel.
+struct UdpProxy {
+    port: u16,
+    drop_every: std::sync::Arc<std::sync::atomic::AtomicU32>,
+    cut: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+fn udp_proxy_on(listen: std::net::UdpSocket, target: u16) -> UdpProxy {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+    let port = listen.local_addr().unwrap().port();
+    let up = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    up.connect(("127.0.0.1", target)).unwrap();
+    let drop_every: Arc<AtomicU32> = Arc::default();
+    let cut: Arc<AtomicBool> = Arc::default();
+    let client: Arc<std::sync::Mutex<Option<std::net::SocketAddr>>> = Arc::default();
+    let n: Arc<AtomicU64> = Arc::default();
+    let pass = {
+        let (d, c, n) = (drop_every.clone(), cut.clone(), n.clone());
+        move || {
+            let i = n.fetch_add(1, Ordering::Relaxed) + 1;
+            let e = d.load(Ordering::Relaxed) as u64;
+            !c.load(Ordering::Relaxed) && (e == 0 || i % e != 0)
+        }
+    };
+    {
+        let (l, u, cl, pass) = (listen.try_clone().unwrap(), up.try_clone().unwrap(), client.clone(), pass.clone());
+        std::thread::spawn(move || {
+            let mut b = [0u8; 65536];
+            while let Ok((len, from)) = l.recv_from(&mut b) {
+                *cl.lock().unwrap() = Some(from);
+                if pass() {
+                    let _ = u.send(&b[..len]);
+                }
+            }
+        });
+    }
+    std::thread::spawn(move || {
+        let mut b = [0u8; 65536];
+        while let Ok(len) = up.recv(&mut b) {
+            let to = *client.lock().unwrap();
+            if let (Some(to), true) = (to, pass()) {
+                let _ = listen.send_to(&b[..len], to);
+            }
+        }
+    });
+    UdpProxy { port, drop_every, cut }
+}
+
+fn udp_proxy(target: u16) -> UdpProxy {
+    udp_proxy_on(std::net::UdpSocket::bind("127.0.0.1:0").unwrap(), target)
+}
+
+/// Gerader Port p, bei dem p und p + 1 frei sind (RTP/RTCP für RIST).
+fn even_udp_pair() -> (std::net::UdpSocket, std::net::UdpSocket) {
+    loop {
+        let s = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        let p = s.local_addr().unwrap().port();
+        if !p.is_multiple_of(2) || p == u16::MAX {
+            continue;
+        }
+        if let Ok(s2) = std::net::UdpSocket::bind(("127.0.0.1", p + 1)) {
+            return (s, s2);
+        }
+    }
+}
+
+fn even_free_port() -> u16 {
+    let (a, _) = even_udp_pair();
+    a.local_addr().unwrap().port()
+}
+
+/// #33: RIST über zwei Wege (broadcast). Fällt ein Weg aus, laufen die Bilder ohne Lücke weiter.
+#[test]
+fn rist_two_paths_survive_cut_of_one() {
+    use lz_streamer::config::{ExtraOutput, OutputType};
+    use std::sync::atomic::Ordering;
+    init();
+    if !lz_streamer::caps::element_available("ristsink") {
+        eprintln!("ristsink fehlt – Test übersprungen");
+        return;
+    }
+    // Empfänger lauscht auf r1/r2, der Sender schickt über je ein Proxy-Paar (RTP + RTCP)
+    let (r1, r2) = (even_free_port(), even_free_port());
+    let paths: Vec<(UdpProxy, UdpProxy)> = [r1, r2]
+        .into_iter()
+        .map(|r| {
+            let (a, b) = even_udp_pair();
+            (udp_proxy_on(a, r), udp_proxy_on(b, r + 1))
+        })
+        .collect();
+    let mut dc = decoder_cfg(free_port(), SrtMode::Caller);
+    dc.source = lz_streamer::rsp::DecoderSource::Rist;
+    dc.rist.paths = format!("127.0.0.1:{r1},127.0.0.1:{r2}");
+    dc.rist.buffer_ms = 300;
+    let mut dec = Channel::start_decoder(&dc, &ChannelOptions::default()).unwrap();
+    let mut cfg = encoder_cfg(free_port(), SrtMode::Listener);
+    cfg.outputs = vec![ExtraOutput {
+        name: "RIST".into(),
+        kind: OutputType::Rist,
+        host: "127.0.0.1".into(),
+        port: paths[0].0.port,
+        rist_paths: format!("127.0.0.1:{}", paths[1].0.port),
+        rist_buffer_ms: 500,
+        ..Default::default()
+    }];
+    let mut enc = Channel::start_encoder(&cfg, &[], &ChannelOptions::default()).unwrap();
+    run_until(&mut enc, &mut dec, Duration::from_secs(15), |_, d| d.frames >= 50);
+    // je Weg 3 s getrennt; in jeder Sekunde müssen ≥ 20 Bilder ankommen
+    for (i, (rtp, rtcp)) in paths.iter().enumerate() {
+        rtp.cut.store(true, Ordering::Relaxed);
+        rtcp.cut.store(true, Ordering::Relaxed);
+        for _ in 0..3 {
+            let before = status(&mut dec).0.frames;
+            let t0 = Instant::now();
+            while t0.elapsed() < Duration::from_secs(1) {
+                let _ = status(&mut enc);
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            let got = status(&mut dec).0.frames - before;
+            assert!(got >= 20, "Weg {} getrennt: nur {got} Bilder in 1 s", i + 1);
+        }
+        rtp.cut.store(false, Ordering::Relaxed);
+        rtcp.cut.store(false, Ordering::Relaxed);
+        std::thread::sleep(Duration::from_secs(1));
+    }
+    // Gegenprobe: beide Wege getrennt → nach dem Puffer kommt nichts mehr
+    for (rtp, rtcp) in &paths {
+        rtp.cut.store(true, Ordering::Relaxed);
+        rtcp.cut.store(true, Ordering::Relaxed);
+    }
+    std::thread::sleep(Duration::from_millis(800));
+    let before = status(&mut dec).0.frames;
+    std::thread::sleep(Duration::from_secs(1));
+    let got = status(&mut dec).0.frames - before;
+    assert!(got < 5, "beide Wege getrennt, trotzdem {got} Bilder – Proxy wirkt nicht");
+    enc.stop();
+    dec.stop();
+}
+
+/// #33: SRT-FEC (Paketfilter) über eine verlustbehaftete Strecke: deutlich
+/// weniger Wiederholungen als ohne FEC, Bilder kommen in beiden Fällen an.
+#[test]
+fn srt_fec_reduces_retransmissions_under_loss() {
+    init();
+    let run = |fec: &str| -> (u64, u64) {
+        let port = free_port();
+        let mut cfg = encoder_cfg(port, SrtMode::Listener);
+        cfg.srt.fec = fec.into();
+        let proxy = udp_proxy(port);
+        proxy.drop_every.store(50, std::sync::atomic::Ordering::Relaxed);
+        let mut dc = decoder_cfg(proxy.port, SrtMode::Caller);
+        dc.srt.fec = fec.into();
+        let mut enc = Channel::start_encoder(&cfg, &[], &ChannelOptions::default()).unwrap();
+        let mut dec = Channel::start_decoder(&dc, &ChannelOptions::default()).unwrap();
+        let (_, d0) = run_until(&mut enc, &mut dec, Duration::from_secs(15), |_, d| d.frames >= 25);
+        let t0 = Instant::now();
+        let f0 = d0.frames;
+        let mut last = (status(&mut enc).0, d0);
+        while t0.elapsed() < Duration::from_secs(6) {
+            last = (status(&mut enc).0, status(&mut dec).0);
+            std::thread::sleep(Duration::from_millis(200));
+        }
+        enc.stop();
+        dec.stop();
+        (last.0.srt.retransmitted, last.1.frames - f0)
+    };
+    let (plain, frames_plain) = run("");
+    let (fec, frames_fec) = run("fec,cols:10,rows:5");
+    eprintln!("Wiederholungen ohne FEC {plain}, mit FEC {fec}; Bilder {frames_plain}/{frames_fec}");
+    assert!(frames_plain >= 120 && frames_fec >= 120, "{frames_plain}/{frames_fec}");
+    assert!(plain >= 20, "Verlust-Proxy wirkt nicht ({plain} Wiederholungen)");
+    assert!(fec * 3 < plain, "FEC spart keine Wiederholungen: {fec} gegen {plain}");
+}

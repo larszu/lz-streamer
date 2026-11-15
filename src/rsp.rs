@@ -210,6 +210,8 @@ pub enum DecoderSource {
     Srt,
     /// von einer Empfangsstelle holen (gepuffert, standortsynchron)
     Relay,
+    /// RIST, auf einem oder mehreren Wegen (Redundanz)
+    Rist,
 }
 
 /// Decoder: von einer Empfangsstelle holen
