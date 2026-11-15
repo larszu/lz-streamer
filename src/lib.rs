@@ -1,6 +1,7 @@
 //! lz-streamer – eigener Video-Encoder/Decoder auf Rust + GStreamer.
 
 pub mod admin;
+pub mod anc;
 pub mod asr;
 #[cfg(target_os = "macos")]
 pub mod au;

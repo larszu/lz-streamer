@@ -266,6 +266,10 @@
               <label class="field"><span>Neue Datei alle (min)</span><input class="input" data-path="encoder.record.segment_minutes" data-num inputmode="numeric"></label>
             </div>
             <label class="field"><span>Ordner (leer = Aufnahmeordner)</span><input class="input" data-path="encoder.record.dir" spellcheck="false"></label>
+            <p class="group-title">Ancillary (Timecode, AFD)</p>
+            <label class="switch"><input type="checkbox" data-path="encoder.anc.st2038"> Timecode und AFD als ST 2038 mitsenden</label>
+            <label class="switch"><input type="checkbox" data-path="encoder.anc.stamp_timecode"> Timecode aus der Systemzeit, wenn der Eingang keinen liefert</label>
+            <p class="hint">Timecode und AFD kommen vom DeckLink-Eingang; der Decoder zeigt sie an. Eigene PID 0x62, das Bild trägt dann fest PID 0x41 und die PCR.</p>
             <p class="group-title">Untertitel (CEA-608/708)</p>
             <div class="row2">
               <label class="field"><span>Quelle</span>

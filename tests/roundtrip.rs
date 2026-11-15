@@ -1545,12 +1545,14 @@ fn dvb_subtitles_in_ts_with_language() {
     assert!(sizes.iter().any(|&s| s < 100), "keine Löschseite: {sizes:?}");
 }
 
+type Posts = std::sync::Arc<std::sync::Mutex<Vec<(String, String)>>>;
+
 /// Kleiner HTTP-Ersatz: nimmt POSTs an und legt (Anfragezeile, Körper) ab.
-fn http_post_stub() -> (u16, std::sync::Arc<std::sync::Mutex<Vec<(String, String)>>>) {
+fn http_post_stub() -> (u16, Posts) {
     use std::io::{BufRead, BufReader, Read, Write};
     let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = l.local_addr().unwrap().port();
-    let got: std::sync::Arc<std::sync::Mutex<Vec<(String, String)>>> = Default::default();
+    let got: Posts = Default::default();
     let g = got.clone();
     std::thread::spawn(move || {
         for s in l.incoming().flatten() {
@@ -1608,4 +1610,38 @@ fn youtube_captions_posted_with_sequence() {
     let at = chrono::NaiveDateTime::parse_from_str(ts, "%Y-%m-%dT%H:%M:%S%.3f").unwrap().and_utc();
     let lead = at.timestamp_millis() - chrono::DateTime::<chrono::Utc>::from(before).timestamp_millis();
     assert!((0..2000).contains(&lead), "Zeitstempel {ts} weicht {lead} ms ab");
+}
+
+/// #28: Timecode (aus der Systemzeit gestempelt) geht als ST 2038 auf PID 0x62
+/// durch und erscheint am Decoder; die PCR bleibt auf dem Bild.
+#[test]
+fn timecode_as_st2038_reaches_decoder() {
+    init();
+    let port = free_port();
+    let mut cfg = encoder_cfg(port, SrtMode::Listener);
+    cfg.anc.st2038 = true;
+    cfg.anc.stamp_timecode = true;
+    let mut enc = Channel::start_encoder(&cfg, &[], &ChannelOptions::default()).unwrap();
+    let mut dec = Channel::start_decoder(&decoder_cfg(port, SrtMode::Caller), &ChannelOptions::default()).unwrap();
+    let (e, d) = run_until(&mut enc, &mut dec, Duration::from_secs(15), |_, d| d.frames >= 25 && d.anc.as_ref().is_some_and(|a| a.packets >= 25));
+    enc.stop();
+    dec.stop();
+    let (ea, da) = (e.anc.unwrap(), d.anc.unwrap());
+    let tc = da.timecode.clone().unwrap();
+    // hh:mm:ss:ff der Systemzeit, Encoder und Decoder liegen höchstens wenige Sekunden auseinander
+    assert_eq!(tc.len(), 11, "{tc}");
+    let secs = |t: &str| t.split(':').take(3).map(|x| x.parse::<i64>().unwrap()).fold(0, |a, x| a * 60 + x);
+    assert!((secs(&tc) - secs(ea.timecode.as_deref().unwrap())).abs() <= 3, "{tc} / {:?}", ea.timecode);
+    assert!(ea.packets >= da.packets, "{ea:?} {da:?}");
+
+    // im TS: Datenstrom „VANC“ auf 0x62, PCR auf dem Bild
+    let mut cfg = encoder_cfg(free_port(), SrtMode::Listener);
+    cfg.anc.st2038 = true;
+    cfg.anc.stamp_timecode = true;
+    let ts = capture_udp_ts(&mut cfg, 4, "anc", |_, _| {});
+    let streams = ffprobe_csv(&ts, &["-show_entries", "stream=codec_type,codec_tag_string,id"]);
+    let pcr = ffprobe_csv(&ts, &["-show_entries", "program=pcr_pid"]);
+    let _ = std::fs::remove_file(&ts);
+    assert!(streams.contains("data,VANC,0x62"), "{streams}");
+    assert!(pcr.starts_with("65"), "{pcr}");
 }

@@ -683,6 +683,18 @@ pub struct EncoderConfig {
     pub hls: crate::hls::HlsConfig,
     pub captions: CaptionConfig,
     pub graphics: GraphicsConfig,
+    /// Ancillary: Timecode und AFD als ST 2038 im TS
+    #[serde(default)]
+    pub anc: AncConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(default)]
+pub struct AncConfig {
+    /// Timecode und AFD des Eingangs als ST 2038 (eigene PID 0x62) mitsenden
+    pub st2038: bool,
+    /// Timecode aus der Systemzeit erzeugen, wenn der Eingang keinen liefert
+    pub stamp_timecode: bool,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]

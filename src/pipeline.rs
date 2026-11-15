@@ -153,9 +153,10 @@ pub fn primary_video(cfg: &EncoderConfig, input: &ResolvedInput) -> String {
         ),
         ResolvedInput::Decklink { device, connection } => format!(
             "decklinkvideosrc name=capsrc device-number={device} connection={connection} mode=auto \
-             drop-no-signal-frames=true{} ! {deint}{crop} ! {} \
+             drop-no-signal-frames=true{}{} ! {deint}{crop} ! {} \
              ! videorate max-duplication-time=100000000 ! {caps}",
             if cfg.captions.source == CaptionSource::Sdi { " output-cc=true" } else { "" },
+            if cfg.anc.st2038 { " output-afd-bar=true" } else { "" },
             scaler(cfg)
         ),
     }
@@ -313,8 +314,10 @@ pub fn encoder_description(cfg: &EncoderConfig, parts: &EncoderParts) -> String 
 
     let has_cc = caption_branch(cfg).is_some();
     d.push(format!(
-        "fallbackswitch name=vsw timeout={timeout_ns} immediate-fallback=true ! videoconvert ! {}{} ! tee name=vt",
+        "fallbackswitch name=vsw timeout={timeout_ns} immediate-fallback=true ! videoconvert ! {}{}{} ! tee name=vt",
         raw_caps(cfg),
+        // vorhandenen Timecode (DeckLink) behalten, sonst aus der Systemzeit
+        if cfg.anc.stamp_timecode { " ! timecodestamper name=tcs set=keep source=rtc" } else { "" },
         if has_cc { " ! cccombiner name=ccc" } else { "" }
     ));
     let inserter =
@@ -342,9 +345,18 @@ pub fn encoder_description(cfg: &EncoderConfig, parts: &EncoderParts) -> String 
     if let Some(b) = caption_branch(cfg) {
         d.push(b);
     }
-    // Mit DVB-Untertiteln hat das Bild eine feste PID und trägt die PCR (siehe `dvb_branch`)
-    let dvb = cfg.captions.dvb.enabled && caption_branch(cfg).is_some();
-    d.push(format!("ve. ! queue max-size-buffers=0 max-size-bytes=0 max-size-time=2000000000 ! mux.{}", if dvb { "sink_65" } else { "" }));
+    // Mit DVB-Untertiteln oder ST 2038 hat das Bild eine feste PID und trägt die PCR (siehe `dvb_branch`)
+    let fixed_pcr = cfg.captions.dvb.enabled && caption_branch(cfg).is_some() || cfg.anc.st2038;
+    d.push(format!("ve. ! queue max-size-buffers=0 max-size-bytes=0 max-size-time=2000000000 ! mux.{}", if fixed_pcr { "sink_65" } else { "" }));
+    if cfg.anc.st2038 {
+        // je Bild und Zeile ein ST-2038-Puffer mit Timecode/AFD, gefüllt in `channel.rs` (PID 0x62);
+        // mpegtsmux nimmt nur alignment=line
+        d.push(
+            "appsrc name=ancsrc is-live=true format=time do-timestamp=false caps=meta/x-st-2038,alignment=line \
+             ! queue max-size-buffers=0 max-size-bytes=0 max-size-time=2000000000 ! mux.sink_98"
+                .into(),
+        );
+    }
     let rtmp_sink = "appsink name=rtmp_v sync=false async=false emit-signals=false max-buffers=120 drop=true";
     if burn == BurnTarget::Rtmp {
         // zweiter Encoder nur für RTMP mit eingebrannter Grafik
@@ -451,7 +463,7 @@ pub fn encoder_description(cfg: &EncoderConfig, parts: &EncoderParts) -> String 
 
     d.push(format!(
         "mpegtsmux name=mux alignment=7 pcr-interval=3600{} ! tee name=tsout allow-not-linked=true",
-        if dvb { " prog-map=\"progmap,PCR_1=(string)sink_65\"" } else { "" }
+        if fixed_pcr { " prog-map=\"progmap,PCR_1=(string)sink_65\"" } else { "" }
     ));
     d.extend(ts_outputs(cfg));
     d.join("  ")
@@ -905,6 +917,22 @@ mod tests {
         assert!(d.contains("dvbsubenc name=dvbsub2 ! identity sync=true ! taginject tags=\"language-code=eng\""), "{d}");
         assert_eq!(crate::config::iso639_2("EN"), "eng");
         assert_eq!(crate::config::iso639_2("xx1"), "und");
+    }
+
+    #[test]
+    fn st2038_branch_and_timecode() {
+        let mut cfg = EncoderConfig::default();
+        let input = ResolvedInput::Test;
+        let d = encoder_description(&cfg, &parts(&input));
+        assert!(!d.contains("ancsrc") && !d.contains("timecodestamper") && !d.contains("prog-map"));
+        cfg.anc.st2038 = true;
+        cfg.anc.stamp_timecode = true;
+        let d = encoder_description(&cfg, &parts(&input));
+        assert!(d.contains("timecodestamper name=tcs set=keep source=rtc ! tee name=vt"), "{d}");
+        assert!(d.contains("caps=meta/x-st-2038,alignment=line") && d.contains("! mux.sink_98"), "{d}");
+        assert!(d.contains("! mux.sink_65") && d.contains("PCR_1=(string)sink_65"), "{d}");
+        let deck = ResolvedInput::Decklink { device: 0, connection: "sdi" };
+        assert!(encoder_description(&cfg, &parts(&deck)).contains("output-afd-bar=true"));
     }
 
     #[test]
