@@ -288,9 +288,19 @@ pub struct VideoConfig {
     /// GOP-Länge in Millisekunden (kurz = schneller Einstieg, latenzarm).
     pub gop_ms: u32,
     pub scale_quality: ScaleQuality,
-    /// Halbbilder des Eingangs auflösen (bei Halbbild-Ausgabe aus)
+    /// Halbbilder des Eingangs auflösen (nur wenn der Eingang Halbbilder meldet, sonst Durchlauf)
     #[serde(default)]
     pub deinterlace: Deinterlace,
+    /// Halbbildreihenfolge des Eingangs: automatisch (aus der Quelle) oder erzwungen,
+    /// wenn eine Quelle falsch kennzeichnet (Bewegung zittert vor und zurück)
+    #[serde(default)]
+    pub input_field_order: FieldOrder,
+    /// auch Quellen auflösen, die sich fälschlich als progressiv melden (Kammeffekt im Bild)
+    #[serde(default)]
+    pub deinterlace_force: bool,
+    /// Halbbildreihenfolge der Ausgabe bei `interlaced`
+    #[serde(default)]
+    pub output_field_order: OutputFieldOrder,
     /// B-Frames (0 = latenzarm; jedes B-Frame kostet ≈ eine Bilddauer)
     #[serde(default)]
     pub bframes: u32,
@@ -314,26 +324,63 @@ pub struct VideoConfig {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum Deinterlace {
-    /// schnell, leicht weich (bisheriges Verhalten)
+    /// bewegungsadaptiv, beste Qualität hier (Klasse von bwdif), mittlere Last
     #[default]
-    Linear,
-    /// bewegungsadaptiv, beste Qualität (Klasse von bwdif)
     Yadif,
-    /// bewegungsadaptiv, weniger Last
+    /// bewegungsadaptiv, weniger Last (nur 8 bit)
     Greedyh,
+    /// schnell, halbe vertikale Auflösung bei Bewegung
+    Linear,
+    /// Halbbilder nur zusammenfügen: richtig für PsF und 2:2-Material, sonst Kammeffekt
+    Weave,
     /// nicht auflösen
     Off,
 }
 
 impl Deinterlace {
-    pub fn element(self) -> &'static str {
+    pub fn method(self) -> Option<&'static str> {
         match self {
-            Deinterlace::Linear => "deinterlace method=linear",
-            Deinterlace::Yadif => "deinterlace method=yadif",
-            Deinterlace::Greedyh => "deinterlace method=greedyh",
-            Deinterlace::Off => "identity",
+            Deinterlace::Yadif => Some("yadif"),
+            Deinterlace::Greedyh => Some("greedyh"),
+            Deinterlace::Linear => Some("linear"),
+            Deinterlace::Weave => Some("weave"),
+            Deinterlace::Off => None,
         }
     }
+}
+
+/// Halbbildreihenfolge am Eingang
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum FieldOrder {
+    /// aus der Quelle (DeckLink: SD-PAL und HD oberes zuerst, NTSC unteres zuerst)
+    #[default]
+    Auto,
+    /// oberes Halbbild zuerst (TFF)
+    Tff,
+    /// unteres Halbbild zuerst (BFF), z. B. DV
+    Bff,
+}
+
+impl FieldOrder {
+    pub fn gst_nick(self) -> &'static str {
+        match self {
+            FieldOrder::Auto => "auto",
+            FieldOrder::Tff => "tff",
+            FieldOrder::Bff => "bff",
+        }
+    }
+}
+
+/// Halbbildreihenfolge der Ausgabe
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum OutputFieldOrder {
+    /// oberes Halbbild zuerst (TFF): 1080i und 576i nach Norm
+    #[default]
+    Tff,
+    /// unteres Halbbild zuerst (BFF): 480i, DV
+    Bff,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -356,7 +403,10 @@ impl Default for VideoConfig {
             bitrate_kbps: 8000,
             gop_ms: 1000,
             scale_quality: ScaleQuality::High,
-            deinterlace: Deinterlace::Linear,
+            deinterlace: Deinterlace::Yadif,
+            input_field_order: FieldOrder::Auto,
+            deinterlace_force: false,
+            output_field_order: OutputFieldOrder::Tff,
             bframes: 0,
             profile: String::new(),
             level: String::new(),
@@ -911,7 +961,11 @@ impl Config {
                 if e.video.interlaced && e.video.codec == Codec::H265 {
                     h.push(warn("Halbbilder gibt es hier nur mit H.264 – mit H.265 bleibt das Bild progressiv."));
                 } else if e.video.interlaced {
-                    h.push(info(&format!("Halbbilder: {}i{} = {} Bilder/s, oberes Halbbild zuerst. Kodiert wird mit x264 (VideoToolbox kann keine Halbbilder).", e.video.height, e.video.fps, e.video.fps / 2)));
+                    let first = if e.video.output_field_order == OutputFieldOrder::Bff { "unteres" } else { "oberes" };
+                    h.push(info(&format!("Halbbilder: {}i{} = {} Bilder/s, {first} Halbbild zuerst. Kodiert wird mit x264 (VideoToolbox kann keine Halbbilder).", e.video.height, e.video.fps, e.video.fps / 2)));
+                    if e.video.height == 1080 && first == "unteres" {
+                        h.push(warn("1080i ist nach Norm oberes Halbbild zuerst – unteres zuerst nur, wenn das Ziel es verlangt."));
+                    }
                 }
                 if e.srt.latency_ms < 80 {
                     h.push(info("SRT-Latenz unter 80 ms: Verluste lassen sich kaum noch reparieren (Faustregel 3–4 × RTT)."));

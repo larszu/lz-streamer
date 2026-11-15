@@ -1325,6 +1325,11 @@ fn abr_ladder_with(encoder: &str) {
 /// auch wenn „automatisch“ sonst VideoToolbox nähme.
 #[test]
 fn interlaced_output_tff() {
+    interlaced_output(lz_streamer::config::OutputFieldOrder::Tff, "tt");
+    interlaced_output(lz_streamer::config::OutputFieldOrder::Bff, "bb");
+}
+
+fn interlaced_output(order: lz_streamer::config::OutputFieldOrder, want: &str) {
     init();
     if !lz_streamer::caps::element_available("x264enc") {
         return;
@@ -1335,6 +1340,7 @@ fn interlaced_output_tff() {
     let mut cfg = encoder_cfg(port, SrtMode::Listener);
     cfg.video.fps = 50;
     cfg.video.interlaced = true;
+    cfg.video.output_field_order = order;
     cfg.record.enabled = true;
     cfg.record.dir = dir.to_string_lossy().to_string();
     let mut enc = Channel::start_encoder(&cfg, &[], &ChannelOptions::default()).unwrap();
@@ -1357,7 +1363,65 @@ fn interlaced_output_tff() {
         .unwrap();
     let info = String::from_utf8_lossy(&out.stdout);
     eprintln!("{info}");
-    assert!(info.contains("field_order=tt") || info.contains("field_order=tb"), "keine Halbbilder: {info}");
+    assert!(info.contains(&format!("field_order={want}")), "Reihenfolge {want} erwartet: {info}");
     assert!(info.contains("avg_frame_rate=25/1") || info.contains("r_frame_rate=25/1") || info.contains("r_frame_rate=50/1"), "{info}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Halbbild-Eingang (unteres zuerst, wie DV) wird aufgelöst: progressive Ausgabe mit voller Bildrate.
+#[test]
+fn interlaced_file_input_is_deinterlaced() {
+    use lz_streamer::config::{FieldOrder, InputKind};
+    init();
+    if !lz_streamer::caps::element_available("x264enc") {
+        return;
+    }
+    let port = free_port();
+    let dir = std::env::temp_dir().join(format!("lzs-deint-{port}"));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let src = dir.join("bff.ts");
+    let maker = gstreamer::parse::launch(&format!(
+        "videotestsrc num-buffers=200 pattern=ball ! video/x-raw,width=640,height=360,framerate=50/1 ! interlace field-pattern=1:1 top-field-first=false \
+         ! x264enc ! h264parse ! mpegtsmux ! filesink location={}",
+        src.display()
+    ))
+    .unwrap();
+    use gstreamer::prelude::*;
+    maker.set_state(gstreamer::State::Playing).unwrap();
+    let _ = maker.bus().unwrap().timed_pop_filtered(gstreamer::ClockTime::from_seconds(20), &[gstreamer::MessageType::Eos, gstreamer::MessageType::Error]);
+    maker.set_state(gstreamer::State::Null).unwrap();
+    let mut cfg = encoder_cfg(port, SrtMode::Listener);
+    cfg.input.kind = InputKind::File;
+    cfg.input.file = src.to_string_lossy().to_string();
+    cfg.video.fps = 50;
+    cfg.video.input_field_order = FieldOrder::Auto;
+    cfg.record.enabled = true;
+    cfg.record.dir = dir.join("rec").to_string_lossy().to_string();
+    let mut enc = Channel::start_encoder(&cfg, &[], &ChannelOptions::default()).unwrap();
+    let end = Instant::now() + Duration::from_secs(3);
+    let mut rec = None;
+    let mut deint_caps = String::new();
+    while Instant::now() < end {
+        rec = rec.or(status(&mut enc).0.recording);
+        // der Deinterlacer muss Halbbilder mit unterem zuerst sehen
+        for el in enc.pipeline().iterate_recurse().into_iter().flatten() {
+            if el.factory().is_some_and(|f| f.name() == "deinterlace")
+                && let Some(c) = el.static_pad("sink").and_then(|p| p.current_caps())
+            {
+                deint_caps = c.to_string();
+            }
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    enc.stop();
+    assert!(deint_caps.contains("interlace-mode=(string)interleaved") && deint_caps.contains("field-order=(string)bottom-field-first"), "{deint_caps}");
+    let out = std::process::Command::new("ffprobe")
+        .args(["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=field_order,r_frame_rate", "-of", "default=nw=1"])
+        .arg(rec.unwrap())
+        .output()
+        .unwrap();
+    let info = String::from_utf8_lossy(&out.stdout);
+    assert!(info.contains("field_order=progressive") && info.contains("r_frame_rate=50/1"), "{info}");
     let _ = std::fs::remove_dir_all(&dir);
 }
