@@ -775,6 +775,53 @@ pub struct CaptionConfig {
     /// zweite Untertitelsprache (608 CC3), aus der Spracherkennung übersetzt
     #[serde(default)]
     pub second: SecondCaptions,
+    /// zusätzlich als DVB-Untertitel (Bitmap) im Transportstrom
+    #[serde(default)]
+    pub dvb: DvbSubtitles,
+}
+
+/// DVB-Untertitel (EN 300 743) für IPTV-/Multicast-Empfänger: derselbe Text,
+/// als Bild gesetzt, mit Sprachkennung im Subtitling-Descriptor.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct DvbSubtitles {
+    pub enabled: bool,
+    /// Sprachkennung der ersten Sprache (ISO 639-2, drei Buchstaben); die zweite nimmt `second.language`
+    pub language: String,
+}
+
+impl Default for DvbSubtitles {
+    fn default() -> Self {
+        Self { enabled: false, language: "deu".into() }
+    }
+}
+
+/// ISO 639-2 für den Descriptor: drei Kleinbuchstaben; Zweibuchstaben-Codes
+/// der häufigen Sprachen werden umgesetzt, Unbekanntes wird „und“.
+pub fn iso639_2(code: &str) -> String {
+    let c = code.trim().to_ascii_lowercase();
+    let mapped = match c.as_str() {
+        "de" => "deu",
+        "en" => "eng",
+        "fr" => "fra",
+        "es" => "spa",
+        "it" => "ita",
+        "nl" => "nld",
+        "pl" => "pol",
+        "ru" => "rus",
+        "uk" => "ukr",
+        "tr" => "tur",
+        "ar" => "ara",
+        "pt" => "por",
+        _ => "",
+    };
+    if !mapped.is_empty() {
+        mapped.into()
+    } else if c.len() == 3 && c.chars().all(|ch| ch.is_ascii_lowercase()) {
+        c
+    } else {
+        "und".into()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
