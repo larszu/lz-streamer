@@ -47,11 +47,14 @@ pub struct MeasureOptions {
     pub decoder: String,
     pub demux_latency_ms: u32,
     pub output_buffer_ms: u32,
+    /// TS mit konstanter Rate (kbit/s, 0 = variabel) und PCR-Takt
+    pub cbr_kbps: u32,
+    pub pace: bool,
 }
 
 impl Default for MeasureOptions {
     fn default() -> Self {
-        Self { codec: Codec::H264, encoder: "auto".into(), srt_latency_ms: 120, port: 0, rounds: 7, width: 1280, height: 720, fps: 50, audio: true, decoder: "auto".into(), demux_latency_ms: 40, output_buffer_ms: 60 }
+        Self { codec: Codec::H264, encoder: "auto".into(), srt_latency_ms: 120, port: 0, rounds: 7, width: 1280, height: 720, fps: 50, audio: true, decoder: "auto".into(), demux_latency_ms: 40, output_buffer_ms: 60, cbr_kbps: 0, pace: false }
     }
 }
 
@@ -83,6 +86,8 @@ pub fn pair(opts: &MeasureOptions) -> Result<(Channel, Channel)> {
     enc.srt.mode = SrtMode::Listener;
     enc.srt.port = port;
     enc.srt.latency_ms = opts.srt_latency_ms;
+    enc.ts.cbr_kbps = opts.cbr_kbps;
+    enc.ts.pace = opts.pace;
     let encoder = Channel::start_encoder(&enc, &[], &ChannelOptions::default())?;
 
     let mut dec = DecoderConfig::default();

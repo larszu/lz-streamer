@@ -161,6 +161,22 @@ Gezählt sind die 7 fehlenden Funktionen und die drei Teilfunktionen mit dem gr�
 
 | SRT-FEC und RIST-Redundanz (F-02, #33): RIST-Ausgang mit mehreren Wegen (broadcast), Decoder-Quelle RIST; Trennung eines Wegs ohne Bildlücke; SRT-Paketfilter `fec` spart Wiederholungen | `rist_two_paths_survive_cut_of_one`, `srt_fec_reduces_retransmissions_under_loss`, Unit-Tests in `config.rs`, `pipeline.rs` |
 
+| Broadcast-TS (F-01, #32): CBR mit Nullpaketen, PCR-getaktetes Senden; TR 101 290 Prio 1/2 (Teil, eigene Prüfung): CC, PAT/PMT-Abstand, PCR-Abstand, Rate | `cbr_ts_with_pcr_pacing_passes_tr101290_subset`, Unit-Test `cbr_and_pcr_pacing` |
+
+### Broadcast-TS (#32)
+
+`lz-streamer latenz` (Release, M1 Pro, 1280×720p50, VideoToolbox H.264 8000 kbit/s, SRT 120 ms, je 7 Runden, Median):
+
+| Einstellung | Median | Parser+Mux |
+|---|---|---|
+| variabel (bisher) | 215–230 ms | 50–56 ms |
+| `--cbr 12000` | 215–228 ms | 5–39 ms |
+| `--cbr 12000 --takt` | 212–226 ms | 31–36 ms |
+
+CBR und PCR-Takt ändern die Gesamtlatenz nicht messbar: was der Muxer früher abgibt, wartet danach im SRT-/Demux-Puffer. Die erhofften 37–51 ms und das Ziel < 130 ms erreicht dieser Schritt nicht; dafür bräuchte es ein eigenes Pacing-Element mit T-STD-Puffermodell und kleinerem Demux-Puffer am Decoder. Eine CBR-Rate unter Bild + Ton bringt den Takt aus dem Tritt (`--cbr 6000` bei 8000 kbit/s: Weißsprung kommt nicht an), daher der Hinweis in der Oberfläche.
+
+Offen bei #32: T-STD-Pufferprüfung, eigenes PCR-Pacing-Element, Latenzziel < 130 ms, Gegenprobe mit TSDuck.
+
 Offen bei #33: SRT Socket Groups (das installierte libsrt 1.5.7 ist ohne Bonding gebaut), RIST mit SMPTE-2022-1-FEC, Messung an echten Netzwegen.
 
 Offen bei #34: HDR-Metadaten (Mastering Display, Content Light Level) aus der Quelle durchreichen und 10-bit-Eingang am DeckLink prüfen (braucht Hardware); NVENC (Blackwell 4:2:2) und Intel Arc hier nicht vorhanden.

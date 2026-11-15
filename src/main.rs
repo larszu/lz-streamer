@@ -62,6 +62,12 @@ enum Cmd {
         /// Puffer des TS-Demuxers in ms
         #[arg(long, default_value_t = 40)]
         demux: u32,
+        /// TS mit konstanter Rate in kbit/s (Nullpakete), 0 = variabel
+        #[arg(long, default_value_t = 0)]
+        cbr: u32,
+        /// im Takt der PCR senden
+        #[arg(long)]
+        takt: bool,
         /// Reserve am Decoder-Ausgang in ms
         #[arg(long, default_value_t = 60)]
         reserve: u32,
@@ -174,7 +180,7 @@ fn main() -> Result<()> {
             };
             std::process::exit(code);
         }
-        Cmd::Latenz { encoder, h265, srt_latency, runden, ohne_ton, decoder, demux, reserve, format, fps } => {
+        Cmd::Latenz { encoder, h265, srt_latency, runden, ohne_ton, decoder, demux, cbr, takt, reserve, format, fps } => {
             let opts = latency::MeasureOptions {
                 codec: if h265 { Codec::H265 } else { Codec::H264 },
                 encoder,
@@ -184,6 +190,8 @@ fn main() -> Result<()> {
                 decoder,
                 demux_latency_ms: demux,
                 output_buffer_ms: reserve,
+                cbr_kbps: cbr,
+                pace: takt,
                 width: format.split('x').next().and_then(|w| w.parse().ok()).unwrap_or(1280),
                 height: format.split('x').nth(1).and_then(|h| h.parse().ok()).unwrap_or(720),
                 fps,

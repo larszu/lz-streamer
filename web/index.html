@@ -270,6 +270,12 @@
               <label class="field"><span>Neue Datei alle (min)</span><input class="input" data-path="encoder.record.segment_minutes" data-num inputmode="numeric"></label>
             </div>
             <label class="field"><span>Ordner (leer = Aufnahmeordner)</span><input class="input" data-path="encoder.record.dir" spellcheck="false"></label>
+            <p class="group-title">Transportstrom</p>
+            <div class="row2">
+              <label class="field"><span>Konstante TS-Rate (kbit/s, 0 = variabel)</span><input class="input" data-path="encoder.ts.cbr_kbps" data-num inputmode="numeric"></label>
+              <label class="switch"><input type="checkbox" data-path="encoder.ts.pace"> Im Takt der PCR senden</label>
+            </div>
+            <p class="hint">Für Empfänger und Multiplexer, die konstante Rate erwarten; aufgefüllt wird mit Nullpaketen. Die Rate muss über Bild + Ton liegen.</p>
             <p class="group-title">Ancillary (Timecode, AFD)</p>
             <label class="switch"><input type="checkbox" data-path="encoder.anc.st2038"> Timecode und AFD als ST 2038 mitsenden</label>
             <label class="switch"><input type="checkbox" data-path="encoder.anc.stamp_timecode"> Timecode aus der Systemzeit, wenn der Eingang keinen liefert</label>
