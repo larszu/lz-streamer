@@ -17,6 +17,7 @@ pub mod gfx;
 pub mod hls;
 pub mod relay;
 pub mod rsp;
+pub mod scte35;
 pub mod hlsplaylist;
 pub mod hlsupload;
 pub mod latency;

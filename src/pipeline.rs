@@ -462,7 +462,8 @@ pub fn encoder_description(cfg: &EncoderConfig, parts: &EncoderParts) -> String 
     }
 
     d.push(format!(
-        "mpegtsmux name=mux alignment=7 pcr-interval=3600{} ! tee name=tsout allow-not-linked=true",
+        "mpegtsmux name=mux alignment=7 pcr-interval=3600{}{} ! tee name=tsout allow-not-linked=true",
+        if cfg.anc.scte35 { format!(" scte-35-pid={}", crate::scte35::PID) } else { String::new() },
         if fixed_pcr { " prog-map=\"progmap,PCR_1=(string)sink_65\"" } else { "" }
     ));
     d.extend(ts_outputs(cfg));
@@ -933,6 +934,9 @@ mod tests {
         assert!(d.contains("! mux.sink_65") && d.contains("PCR_1=(string)sink_65"), "{d}");
         let deck = ResolvedInput::Decklink { device: 0, connection: "sdi" };
         assert!(encoder_description(&cfg, &parts(&deck)).contains("output-afd-bar=true"));
+        assert!(!d.contains("scte-35-pid"));
+        cfg.anc.scte35 = true;
+        assert!(encoder_description(&cfg, &parts(&input)).contains("mpegtsmux name=mux alignment=7 pcr-interval=3600 scte-35-pid=502"));
     }
 
     #[test]

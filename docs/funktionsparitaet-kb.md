@@ -116,7 +116,7 @@ Ohne die entfallenden Punkte sind 38 von 59 Funktionen fertig (64 %), dazu 14 in
 
 | # | Funktion | Status | Umsetzung / was fehlt | Aufwand |
 |---|---|---|---|---|
-| 60 | SCTE-35/104, Werbe-Cue-Punkte | **fehlt** | Übersetzer SCTE-104 → 35 mit IDR am Splice-Punkt | L |
+| 60 | SCTE-35/104, Werbe-Cue-Punkte | Teil | SCTE-35 splice_insert per API, IDR am Splice-Punkt; SCTE-104 aus VANC fehlt (braucht DeckLink-Eingang) | L |
 | 61 | Ancillary: AFD, Timecode, Durchreichen | Teil | Timecode (ATC) und AFD als ST 2038 auf PID 0x62, Anzeige an Encoder und Decoder; Timecode aus Systemzeit für Quellen ohne. Offen: übrige VANC-Pakete roh durchreichen, Prüfung am DeckLink-Eingang | M |
 | 62 | Diskontinuität als Ereignis durch die Pipeline | fertig | HLS: `#EXT-X-DISCONTINUITY` nach Kanal-Neustart, Sequenz läuft weiter; Standbild hält Zeitachse und Format, braucht keine Marke (`abr-leiter.md`) | – |
 | 63 | Cloud-Anbindung (Geräteregistrierung, CDN-Logins) | entfällt bewusst | Fernzugriff per Tunnel; Geräteseite in lz-camera-bridge | – |
@@ -154,6 +154,10 @@ Gezählt sind die 7 fehlenden Funktionen und die drei Teilfunktionen mit dem gr�
 | YouTube-Untertitel per HTTP POST (U8, #17): Folgenummer, UTC-Zeitstempel, Herzschlag, Antwortzeit von YouTube im Status; Ingest-URL maskiert | `youtube_captions_posted_with_sequence`, Unit-Tests in `ytcaptions.rs`, `relay.rs` |
 
 | Timecode/AFD als ST 2038 (KB-61, #28): Pakete nach SMPTE 291 mit Prüfsumme, ATC nach 12M-2, AFD nach 2016-3; GStreamers `st2038ancdemux` erkennt sie; Timecode erscheint am Decoder, im TS Datenstrom „VANC“ auf 0x62 | `timecode_as_st2038_reaches_decoder`, Unit-Tests in `anc.rs`, `pipeline.rs` |
+
+| SCTE-35 (KB-60, #27): Cue per Befehl, splice_insert auf 0x1F6 (PMT-Typ 0x86) mit Ereignisnummer und Splice-PTS, IDR-Bild genau an dieser PTS | `scte35_cue_with_idr_at_splice_point`, Unit-Test in `pipeline.rs` |
+
+Offen bei #27: SCTE-104 aus dem VANC des DeckLink-Eingangs lesen und übersetzen (braucht Hardware) und Gegenprobe mit TSDuck (hier nicht installiert; der Test zerlegt den TS selbst).
 
 Offen bei #28: Timecode und AFD von einem echten DeckLink-Eingang (`output-afd-bar`, Timecode-Meta) sowie das rohe Durchreichen aller übrigen VANC-Pakete (`output-vanc` → `st2038extractor`) – braucht angeschlossene Hardware.
 

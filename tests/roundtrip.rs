@@ -1645,3 +1645,127 @@ fn timecode_as_st2038_reaches_decoder() {
     assert!(streams.contains("data,VANC,0x62"), "{streams}");
     assert!(pcr.starts_with("65"), "{pcr}");
 }
+
+/// PES einer PID: (PTS, Nutzlast)
+type PesList = Vec<(Option<u64>, Vec<u8>)>;
+
+/// TS zerlegen: PES je PID (PTS, Nutzlast) und Sections je PID.
+struct TsParts {
+    pes: std::collections::HashMap<u16, PesList>,
+    sections: std::collections::HashMap<u16, Vec<Vec<u8>>>,
+    /// PID → stream_type aus der PMT
+    types: std::collections::HashMap<u16, u8>,
+}
+
+fn parse_ts(data: &[u8]) -> TsParts {
+    use std::collections::HashMap;
+    let mut cur: HashMap<u16, Vec<u8>> = HashMap::new();
+    let mut parts = TsParts { pes: HashMap::new(), sections: HashMap::new(), types: HashMap::new() };
+    let mut pmt_pid = None;
+    let pes_of = |buf: &[u8]| -> Option<(Option<u64>, Vec<u8>)> {
+        if buf.len() < 9 || buf[0..3] != [0, 0, 1] {
+            return None;
+        }
+        let hl = buf[8] as usize;
+        let pts = (buf[7] & 0x80 != 0).then(|| {
+            let b = &buf[9..14];
+            ((b[0] as u64 >> 1) & 7) << 30 | (b[1] as u64) << 22 | (b[2] as u64 >> 1) << 15 | (b[3] as u64) << 7 | b[4] as u64 >> 1
+        });
+        Some((pts, buf.get(9 + hl..)?.to_vec()))
+    };
+    for pkt in data.as_chunks::<188>().0.iter().filter(|p| p[0] == 0x47) {
+        let pusi = pkt[1] & 0x40 != 0;
+        let pid = ((pkt[1] as u16 & 0x1f) << 8) | pkt[2] as u16;
+        let afc = (pkt[3] >> 4) & 3;
+        if afc & 1 == 0 {
+            continue;
+        }
+        let start = if afc == 3 { 5 + pkt[4] as usize } else { 4 };
+        if start >= 188 {
+            continue;
+        }
+        let payload = &pkt[start..];
+        let is_psi = pid == 0 || Some(pid) == pmt_pid || pid == 0x1f6;
+        if is_psi {
+            if !pusi {
+                continue;
+            }
+            let sec = &payload[1 + payload[0] as usize..];
+            if sec.len() < 3 || sec[0] == 0xff {
+                continue;
+            }
+            let len = ((sec[1] as usize & 0x0f) << 8 | sec[2] as usize) + 3;
+            let sec = &sec[..len.min(sec.len())];
+            if pid == 0 && sec.len() >= 16 {
+                pmt_pid = Some(((sec[10] as u16 & 0x1f) << 8) | sec[11] as u16);
+            } else if Some(pid) == pmt_pid {
+                let pil = ((sec[10] as usize & 0x0f) << 8) | sec[11] as usize;
+                let mut i = 12 + pil;
+                while i + 5 <= sec.len() - 4 {
+                    let es = ((sec[i + 1] as u16 & 0x1f) << 8) | sec[i + 2] as u16;
+                    parts.types.insert(es, sec[i]);
+                    i += 5 + (((sec[i + 3] as usize & 0x0f) << 8) | sec[i + 4] as usize);
+                }
+            } else {
+                parts.sections.entry(pid).or_default().push(sec.to_vec());
+            }
+            continue;
+        }
+        if pusi {
+            if let Some(p) = cur.remove(&pid).and_then(|buf| pes_of(&buf)) {
+                parts.pes.entry(pid).or_default().push(p);
+            }
+            cur.insert(pid, payload.to_vec());
+        } else if let Some(buf) = cur.get_mut(&pid) {
+            buf.extend_from_slice(payload);
+        }
+    }
+    parts
+}
+
+/// H.264-Zugriffseinheit enthält ein IDR-Bild (NAL-Typ 5)?
+fn has_idr(au: &[u8]) -> bool {
+    au.windows(4).any(|w| w[0..3] == [0, 0, 1] && w[3] & 0x1f == 5)
+}
+
+/// #27: Cue per Befehl → SCTE-35 splice_insert auf PID 0x1F6; an der Splice-PTS liegt ein IDR-Bild.
+#[test]
+fn scte35_cue_with_idr_at_splice_point() {
+    use lz_streamer::scte35::{Cue, CueKind};
+    init();
+    let mut cfg = encoder_cfg(free_port(), SrtMode::Listener);
+    cfg.anc.scte35 = true;
+    // langes GOP, damit ein IDR am Splice-Punkt nicht zufällig ist
+    cfg.video.gop_ms = 10_000;
+    let mut sent = false;
+    let ts = capture_udp_ts(&mut cfg, 6, "scte", |enc, t| {
+        if !sent && t > Duration::from_millis(1500) {
+            enc.command(&ChildCmd::Scte35 { cue: Cue { kind: CueKind::Out, preroll_ms: 1000, duration_s: 30.0, event_id: Some(4711) } });
+            sent = true;
+        }
+    });
+    let data = std::fs::read(&ts).unwrap();
+    let _ = std::fs::remove_file(&ts);
+    let parts = parse_ts(&data);
+    assert_eq!(parts.types.get(&0x1f6), Some(&0x86), "keine SCTE-35-PID in der PMT: {:?}", parts.types);
+    // splice_info_section mit splice_insert (Befehl 5)
+    let sec = parts.sections.get(&0x1f6).and_then(|v| v.iter().find(|s| s[0] == 0xfc && s.get(13) == Some(&5))).expect("kein splice_insert").clone();
+    let pts_adj = ((sec[4] as u64 & 1) << 32) | u32::from_be_bytes(sec[5..9].try_into().unwrap()) as u64;
+    let cmd = &sec[14..];
+    let id = u32::from_be_bytes(cmd[0..4].try_into().unwrap());
+    assert_eq!(id, 4711);
+    assert_eq!(cmd[4] & 0x80, 0, "abgesagt");
+    let flags = cmd[5];
+    assert!(flags & 0x80 != 0 && flags & 0x40 != 0, "out_of_network/program_splice fehlt: {flags:#x}");
+    let t = &cmd[6..11];
+    assert!(t[0] & 0x80 != 0, "keine Splice-Zeit");
+    let splice = ((((t[0] as u64 & 1) << 32) | u32::from_be_bytes(t[1..5].try_into().unwrap()) as u64) + pts_adj) & ((1 << 33) - 1);
+    let video = parts.pes.get(&0x41).expect("kein Bild auf 0x41");
+    // Bild an der Splice-PTS (höchstens ein halbes Bild daneben)
+    let at = video.iter().filter_map(|(p, d)| p.map(|p| (p as i64 - splice as i64, d))).min_by_key(|(d, _)| d.abs()).expect("keine Bilder");
+    let idr_pts: Vec<i64> = video.iter().filter(|(_, d)| has_idr(d)).filter_map(|(p, _)| p.map(|p| p as i64 - splice as i64)).collect();
+    assert!(at.0.abs() <= 1800, "nächstes Bild {} Ticks vom Splice-Punkt", at.0);
+    assert!(has_idr(at.1), "am Splice-Punkt kein IDR; IDR liegen bei {idr_pts:?} Ticks");
+    let idrs = video.iter().filter(|(_, d)| has_idr(d)).count();
+    assert!(idrs <= 3, "zu viele IDR ({idrs}), Nachweis wertlos");
+}

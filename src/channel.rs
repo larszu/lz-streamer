@@ -51,6 +51,9 @@ pub struct ChannelStatus {
     /// Ancillary: Timecode und AFD
     #[serde(default)]
     pub anc: Option<crate::anc::AncStatus>,
+    /// gesendete SCTE-35-Cues
+    #[serde(default)]
+    pub scte35: Option<crate::scte35::CueStatus>,
     pub luma: Option<f64>,
     pub uptime_s: f64,
     /// Empfangsstelle bzw. Standort-Decoder: Zuspieler und Ziele
@@ -226,6 +229,8 @@ pub enum ChildCmd {
     /// Empfangsstelle: auf die Soll-Verzögerung zurückspringen
     #[serde(rename = "catch_up")]
     CatchUp,
+    /// SCTE-35-Cue setzen (Encoder mit `anc.scte35`)
+    Scte35 { cue: crate::scte35::Cue },
     Stop,
 }
 
@@ -300,6 +305,28 @@ pub struct Channel {
     uploader: Option<crate::hlsupload::Uploader>,
     /// Timecode/AFD (Encoder: vom Eingang, Decoder: aus ST 2038)
     anc: Arc<Mutex<Option<crate::anc::AncStatus>>>,
+    scte: Option<crate::scte35::CueStatus>,
+    next_cue_id: u32,
+    /// Laufzeit und Dauer des letzten Bilds vor dem Encoder (Splice-Punkt aufs Bildraster)
+    frame_clock: FrameClock,
+}
+
+type FrameClock = Arc<Mutex<Option<(gst::ClockTime, gst::ClockTime)>>>;
+
+fn hook_frame_clock(pipeline: &gst::Pipeline, clock: &FrameClock) {
+    let Some(pad) = pipeline.by_name("venc").and_then(|e| e.static_pad("sink")) else { return };
+    let c = clock.clone();
+    pad.add_probe(gst::PadProbeType::BUFFER, move |pad, info| {
+        if let Some(gst::PadProbeData::Buffer(buf)) = &info.data {
+            let rt = pad
+                .sticky_event::<gst::event::Segment>(0)
+                .and_then(|e| e.segment().downcast_ref::<gst::ClockTime>().and_then(|seg| buf.pts().and_then(|p| seg.to_running_time(p))));
+            if let (Some(rt), Some(d)) = (rt, buf.duration()) {
+                *c.lock().unwrap() = Some((rt, d));
+            }
+        }
+        gst::PadProbeReturn::Ok
+    });
 }
 
 /// Decoder mit Quelle „Empfangsstelle“
@@ -919,6 +946,10 @@ impl Channel {
             if cfg.anc.st2038 || cfg.anc.stamp_timecode {
                 hook_anc_encoder(&pipeline, &anc_status);
             }
+            let frame_clock: FrameClock = Arc::default();
+            if cfg.anc.scte35 {
+                hook_frame_clock(&pipeline, &frame_clock);
+            }
             let cc = Arc::new(CaptionCounter { youtube: crate::ytcaptions::YtSender::spawn(&cfg.captions.youtube), ..Default::default() });
             count_captions(&venc.static_pad("sink").unwrap(), &cc);
             hook_recording_cues(&pipeline, &cc, "");
@@ -1054,6 +1085,9 @@ impl Channel {
                         abr,
                         publisher: publisher.take(),
                         anc: anc_status.clone(),
+                        scte: None,
+                        next_cue_id: 0,
+                        frame_clock: frame_clock.clone(),
                         uploader: (cfg.hls.enabled && !cfg.hls.upload_url.trim().is_empty() && !cfg.hls.dir.trim().is_empty()).then(|| {
                             crate::hlsupload::Uploader::start(
                                 PathBuf::from(cfg.hls.dir.trim()),
@@ -1182,6 +1216,9 @@ impl Channel {
             publisher: None,
             uploader: None,
             anc: Arc::default(),
+            scte: None,
+            next_cue_id: 0,
+            frame_clock: Arc::default(),
         })
     }
 
@@ -1424,6 +1461,9 @@ impl Channel {
             publisher: None,
             uploader: None,
             anc,
+            scte: None,
+            next_cue_id: 0,
+            frame_clock: Arc::default(),
         })
     }
 
@@ -1494,6 +1534,7 @@ impl Channel {
                 event(&self.events, "info", if *lost { "Signalverlust nachgestellt" } else { "Eingang wieder freigegeben" });
             }
             ChildCmd::Keyframe => self.force_keyframe(),
+            ChildCmd::Scte35 { cue } => self.send_cue(cue),
             ChildCmd::Caption { text } => self.push_caption(text),
             ChildCmd::Caption2 { text } => self.push_caption2(text),
             ChildCmd::Control { path, cfg } => self.apply_control(path, cfg),
@@ -1562,6 +1603,40 @@ impl Channel {
 
     pub fn force_keyframe(&self) {
         force_keyframe(&self.pipeline);
+    }
+
+    /// SCTE-35-Cue: Splice-Punkt = jetzt + Vorlauf (Laufzeit). mpegtsmux setzt die
+    /// PTS, der Encoder legt an genau diese Stelle ein IDR-Bild.
+    fn send_cue(&mut self, cue: &crate::scte35::Cue) {
+        let Some(mux) = self.pipeline.by_name("mux").filter(|m| m.property::<u32>("scte-35-pid") != 0) else {
+            event(&self.events, "warn", "SCTE-35 ist aus (Ancillary → SCTE-35-PID)");
+            return;
+        };
+        let Some(now) = self.pipeline.current_running_time() else { return };
+        let mut splice = now + crate::scte35::effective_preroll(cue);
+        // auf den Zeitpunkt eines Bilds legen, sonst läge das IDR bis zu ein Bild dahinter
+        if let Some((last, dur)) = *self.frame_clock.lock().unwrap() {
+            if dur.nseconds() > 0 && splice > last {
+                let n = (splice - last).nseconds().div_ceil(dur.nseconds());
+                splice = last + dur * n;
+            }
+        }
+        self.next_cue_id += 1;
+        let id = cue.event_id.unwrap_or(self.next_cue_id);
+        if let Some(sink) = self.pipeline.by_name("venc").and_then(|e| e.static_pad("sink")) {
+            let ev = gstreamer_video::DownstreamForceKeyUnitEvent::builder().running_time(splice).all_headers(true).build();
+            sink.send_event(ev);
+        }
+        if crate::scte35::send(&mux, cue, id, splice) {
+            let s = self.scte.get_or_insert_with(Default::default);
+            s.sent += 1;
+            s.last_event_id = Some(id);
+            s.last_splice_ms = Some(splice.mseconds());
+            s.last_kind = Some(cue.kind);
+            event(&self.events, "info", format!("SCTE-35 {} (Nr. {id}) in {} ms", if cue.kind == crate::scte35::CueKind::Out { "Werbung" } else { "Rückkehr" }, (splice - now).mseconds()));
+        } else {
+            event(&self.events, "warn", "SCTE-35-Cue nicht gesendet");
+        }
     }
 
     pub fn stop(&mut self) {
@@ -1890,6 +1965,7 @@ impl Channel {
             abr: self.abr.iter().map(|r| AbrStatus { resolution: r.resolution.clone(), bitrate_kbps: r.bitrate_kbps, fps: (r.fps * 10.0).round() / 10.0 }).collect(),
             hls_upload: self.uploader.as_ref().map(|u| u.status()),
             anc: self.anc.lock().unwrap().clone(),
+            scte35: self.scte.clone(),
         };
         out.splice(0..0, self.events.lock().unwrap().drain(..));
         out.push(ChildMsg::Status(status));

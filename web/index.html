@@ -269,6 +269,7 @@
             <p class="group-title">Ancillary (Timecode, AFD)</p>
             <label class="switch"><input type="checkbox" data-path="encoder.anc.st2038"> Timecode und AFD als ST 2038 mitsenden</label>
             <label class="switch"><input type="checkbox" data-path="encoder.anc.stamp_timecode"> Timecode aus der Systemzeit, wenn der Eingang keinen liefert</label>
+            <label class="switch"><input type="checkbox" data-path="encoder.anc.scte35"> SCTE-35-Werbemarken im TS (PID 0x1F6)</label>
             <p class="hint">Timecode und AFD kommen vom DeckLink-Eingang; der Decoder zeigt sie an. Eigene PID 0x62, das Bild trägt dann fest PID 0x41 und die PCR.</p>
             <p class="group-title">Untertitel (CEA-608/708)</p>
             <div class="row2">
