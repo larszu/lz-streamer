@@ -484,6 +484,8 @@ pub enum OutputType {
     Srt,
     Udp,
     Rtp,
+    /// RIST (Simple Profile) mit Wiederholung; mehrere Wege gleichzeitig (Redundanz)
+    Rist,
 }
 
 /// Weiterer Ausgang desselben Transportstroms (wie die Mehrfachausgänge des Vorbilds).
@@ -498,6 +500,39 @@ pub struct ExtraOutput {
     pub host: String,
     pub port: u16,
     pub ttl: u32,
+    /// RIST: weitere Wege `host:port, host:port`; dasselbe Paket geht über jeden Weg
+    #[serde(default)]
+    pub rist_paths: String,
+    /// RIST: Puffer für Wiederholungen beim Sender (ms)
+    #[serde(default = "default_rist_buffer")]
+    pub rist_buffer_ms: u32,
+}
+
+fn default_rist_buffer() -> u32 {
+    1000
+}
+
+/// RIST-Wege als `host:port,host:port` für `bonding-addresses`; Ports gerade (RTCP = Port + 1).
+pub fn rist_paths(first: Option<(&str, u16)>, more: &str) -> String {
+    let mut v: Vec<String> = first.map(|(h, p)| format!("{}:{p}", if h.trim().is_empty() { "127.0.0.1" } else { h.trim() })).into_iter().collect();
+    v.extend(more.split([',', ';', ' ']).map(str::trim).filter(|s| s.contains(':')).map(str::to_string));
+    v.join(",")
+}
+
+/// Decoder: RIST empfangen, auf einem oder mehreren Wegen
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct RistInput {
+    /// Empfangswege `adresse:port, …` (Port gerade); `0.0.0.0:5004` = alle Schnittstellen
+    pub paths: String,
+    /// Empfangspuffer für Wiederholungen (ms)
+    pub buffer_ms: u32,
+}
+
+impl Default for RistInput {
+    fn default() -> Self {
+        Self { paths: "0.0.0.0:5004".into(), buffer_ms: 400 }
+    }
 }
 
 impl Default for ExtraOutput {
@@ -510,6 +545,8 @@ impl Default for ExtraOutput {
             host: "239.0.0.1".into(),
             port: 5000,
             ttl: 16,
+            rist_paths: String::new(),
+            rist_buffer_ms: default_rist_buffer(),
         }
     }
 }
@@ -589,6 +626,10 @@ pub struct SrtConfig {
     pub latency_ms: u32,
     pub passphrase: String,
     pub streamid: String,
+    /// SRT-FEC (libsrt-Paketfilter), z. B. `fec,cols:10,rows:5`; beide Seiten
+    /// brauchen denselben Filter, leer = aus
+    #[serde(default)]
+    pub fec: String,
 }
 
 impl Default for SrtConfig {
@@ -600,11 +641,18 @@ impl Default for SrtConfig {
             latency_ms: 120,
             passphrase: String::new(),
             streamid: String::new(),
+            fec: String::new(),
         }
     }
 }
 
 impl SrtConfig {
+    /// URI-Zusatz für den Paketfilter (FEC), leer ohne
+    fn fec_query(&self) -> String {
+        let f = self.fec.trim();
+        if f.is_empty() { String::new() } else { format!("&packetfilter={}", url_escape(f)) }
+    }
+
     /// Host für den Caller-Modus; leer heißt „dieser Rechner“.
     pub fn effective_host(&self) -> &str {
         let h = self.host.trim();
@@ -616,13 +664,13 @@ impl SrtConfig {
             SrtMode::Caller => {
                 let h = self.effective_host();
                 let h = if h.contains(':') && !h.starts_with('[') { format!("[{h}]") } else { h.to_string() };
-                format!("srt://{h}:{}?mode=caller", self.port)
+                format!("srt://{h}:{}?mode=caller{}", self.port, self.fec_query())
             }
-            SrtMode::Listener => format!("srt://:{}?mode=listener", self.port),
+            SrtMode::Listener => format!("srt://:{}?mode=listener{}", self.port, self.fec_query()),
             SrtMode::Rendezvous => {
                 let h = self.effective_host();
                 let h = if h.contains(':') && !h.starts_with('[') { format!("[{h}]") } else { h.to_string() };
-                format!("srt://{h}:{}?mode=rendezvous", self.port)
+                format!("srt://{h}:{}?mode=rendezvous{}", self.port, self.fec_query())
             }
         }
     }
@@ -919,6 +967,9 @@ pub struct DecoderConfig {
     pub source: crate::rsp::DecoderSource,
     pub relay: crate::rsp::PullConfig,
     pub srt: SrtConfig,
+    /// Quelle RIST: Empfangswege und Puffer
+    #[serde(default)]
+    pub rist: RistInput,
     pub output: OutputKind,
     pub device: u32,
     /// DeckLink-Ausgabemodus, z. B. "1080p50"; "auto" nimmt das Format des Stroms.
@@ -949,6 +1000,7 @@ impl Default for DecoderConfig {
             source: crate::rsp::DecoderSource::Srt,
             relay: crate::rsp::PullConfig::default(),
             srt: SrtConfig { mode: SrtMode::Caller, ..SrtConfig::default() },
+            rist: RistInput::default(),
             output: OutputKind::Window,
             device: 0,
             deck_mode: "auto".into(),
@@ -1102,6 +1154,17 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn srt_fec_and_rist_paths() {
+        let mut s = SrtConfig { mode: SrtMode::Listener, port: 9000, ..Default::default() };
+        assert_eq!(s.uri(), "srt://:9000?mode=listener");
+        s.fec = "fec,cols:10,rows:5".into();
+        assert!(s.uri().starts_with("srt://:9000?mode=listener&packetfilter=fec"), "{}", s.uri());
+        assert_eq!(rist_paths(Some(("10.0.0.1", 5004)), "10.1.0.1:5004, 10.2.0.1:6000;x"), "10.0.0.1:5004,10.1.0.1:5004,10.2.0.1:6000");
+        assert_eq!(rist_paths(Some(("", 5004)), ""), "127.0.0.1:5004");
+        assert_eq!(rist_paths(None, &RistInput::default().paths), "0.0.0.0:5004");
+    }
 
     #[test]
     fn empty_json_gives_defaults() {

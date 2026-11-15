@@ -518,6 +518,13 @@ pub fn ts_outputs(cfg: &EncoderConfig) -> Vec<String> {
                 o.port,
                 o.ttl
             ),
+            // jeder Weg bekommt jedes Paket (broadcast): fällt einer aus, läuft der Strom über die anderen
+            OutputType::Rist => format!(
+                "{q} ! rtpmp2tpay ! ristsink name=out{j} bonding-addresses={} bonding-method=broadcast sender-buffer={} multicast-ttl={}",
+                quote(&crate::config::rist_paths(Some((&o.host, o.port)), &o.rist_paths)),
+                o.rist_buffer_ms.clamp(50, 10_000),
+                o.ttl
+            ),
         });
     }
     d
@@ -962,6 +969,15 @@ mod tests {
         assert!(!d.contains("scte-35-pid"));
         cfg.anc.scte35 = true;
         assert!(encoder_description(&cfg, &parts(&input)).contains("mpegtsmux name=mux alignment=7 pcr-interval=3600 scte-35-pid=502"));
+    }
+
+    #[test]
+    fn rist_output_broadcasts_over_all_paths() {
+        use crate::config::{ExtraOutput, OutputType};
+        let mut cfg = EncoderConfig::default();
+        cfg.outputs = vec![ExtraOutput { kind: OutputType::Rist, host: "10.0.0.1".into(), port: 5004, rist_paths: "10.1.0.1:5004".into(), ..Default::default() }];
+        let d = ts_outputs(&cfg).join("  ");
+        assert!(d.contains("rtpmp2tpay ! ristsink name=out0 bonding-addresses=\"10.0.0.1:5004,10.1.0.1:5004\" bonding-method=broadcast sender-buffer=1000"), "{d}");
     }
 
     #[test]

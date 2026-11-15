@@ -375,12 +375,14 @@ $('#plugin-scan').onclick = async () => { await fetch('/api/plugins/scan', { met
 const outputFields = [
   { key: 'enabled', label: 'An', type: 'check' },
   { key: 'name', label: 'Name' },
-  { key: 'kind', label: 'Art', type: 'select', options: [['srt', 'SRT'], ['udp', 'UDP (TS)'], ['rtp', 'RTP (TS)']], rerender: true },
+  { key: 'kind', label: 'Art', type: 'select', options: [['srt', 'SRT'], ['udp', 'UDP (TS)'], ['rtp', 'RTP (TS)'], ['rist', 'RIST']], rerender: true },
   { key: 'mode', label: 'SRT-Modus', type: 'select', options: [['caller', 'An Ziel senden'], ['listener', 'Auf Gegenstelle warten']], show: o => o.kind === 'srt', get: o => o.srt.mode, set: (o, v) => { o.srt.mode = v; } },
   { key: 'shost', label: 'Ziel', show: o => o.kind === 'srt', get: o => o.srt.host, set: (o, v) => { o.srt.host = v; } },
   { key: 'sport', label: 'Port', show: o => o.kind === 'srt', get: o => o.srt.port, set: (o, v) => { o.srt.port = parseInt(v, 10) || 0; } },
   { key: 'host', label: 'Ziel (auch Multicast)', show: o => o.kind !== 'srt' },
   { key: 'port', label: 'Port', num: true, show: o => o.kind !== 'srt' },
+  { key: 'sfec', label: 'SRT-FEC', show: o => o.kind === 'srt', get: o => o.srt.fec || '', set: (o, v) => { o.srt.fec = v; } },
+  { key: 'rist_paths', label: 'Weitere Wege (Host:Port, …)', show: o => o.kind === 'rist' },
 ];
 function renderEditors() {
   rowEditor($('#replacements'), cfg.encoder.captions.asr.replacements, [{ key: 'from', label: 'erkannt' }, { key: 'to', label: 'geschrieben' }],
