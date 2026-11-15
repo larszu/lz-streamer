@@ -319,6 +319,40 @@ pub struct VideoConfig {
     /// freie Zusatzparameter für den Encoder: `name=wert name=wert`
     #[serde(default)]
     pub extra: String,
+    /// Farbunterabtastung und Bittiefe des kodierten Bilds
+    #[serde(default)]
+    pub chroma: Chroma,
+    /// Übertragungskennlinie (SDR oder HDR), wird im Strom gekennzeichnet
+    #[serde(default)]
+    pub transfer: Transfer,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub enum Chroma {
+    #[default]
+    #[serde(rename = "420-8")]
+    C420_8,
+    #[serde(rename = "420-10")]
+    C420_10,
+    #[serde(rename = "422-10")]
+    C422_10,
+}
+
+impl Chroma {
+    pub fn ten_bit(self) -> bool {
+        self != Chroma::C420_8
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum Transfer {
+    #[default]
+    Sdr,
+    /// HDR10 / PQ (SMPTE ST 2084), BT.2020
+    Pq,
+    /// HLG (ARIB STD-B67), BT.2020
+    Hlg,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -413,6 +447,8 @@ impl Default for VideoConfig {
             entropy: Entropy::Auto,
             interlaced: false,
             extra: String::new(),
+            chroma: Chroma::default(),
+            transfer: Transfer::default(),
         }
     }
 }

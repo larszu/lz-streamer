@@ -157,6 +157,10 @@ Gezählt sind die 7 fehlenden Funktionen und die drei Teilfunktionen mit dem gr�
 
 | SCTE-35 (KB-60, #27): Cue per Befehl, splice_insert auf 0x1F6 (PMT-Typ 0x86) mit Ereignisnummer und Splice-PTS, IDR-Bild genau an dieser PTS | `scte35_cue_with_idr_at_splice_point`, Unit-Test in `pipeline.rs` |
 
+| 10 bit/4:2:2/HDR (F-03, #34): H.265 4:2:2 10 bit PQ und 4:2:0 10 bit HLG mit VideoToolbox, 4:2:2 10 bit mit x265, H.264 4:2:2 10 bit mit x264; ffprobe prüft pix_fmt, Kennlinie, Primärfarben | `ten_bit_422_and_hdr_flags_in_stream`, Unit-Test in `caps.rs` |
+
+Offen bei #34: HDR-Metadaten (Mastering Display, Content Light Level) aus der Quelle durchreichen und 10-bit-Eingang am DeckLink prüfen (braucht Hardware); NVENC (Blackwell 4:2:2) und Intel Arc hier nicht vorhanden.
+
 Offen bei #27: SCTE-104 aus dem VANC des DeckLink-Eingangs lesen und übersetzen (braucht Hardware) und Gegenprobe mit TSDuck (hier nicht installiert; der Test zerlegt den TS selbst).
 
 Offen bei #28: Timecode und AFD von einem echten DeckLink-Eingang (`output-afd-bar`, Timecode-Meta) sowie das rohe Durchreichen aller übrigen VANC-Pakete (`output-vanc` → `st2038extractor`) – braucht angeschlossene Hardware.
