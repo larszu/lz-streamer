@@ -99,6 +99,7 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/api/signal", post(signal))
         .route("/api/keyframe", post(keyframe))
         .route("/api/caption", post(caption))
+        .route("/api/scte35", post(scte35))
         .route("/api/control", get(controls).post(control))
         .route("/api/devices/refresh", post(refresh_devices))
         .route("/api/devices/uvc", get(uvc_devices))
@@ -422,6 +423,11 @@ struct CaptionReq {
 async fn caption(State(app): S, Json(r): Json<CaptionReq>) -> impl IntoResponse {
     let cmd = if r.second { ChildCmd::Caption2 { text: r.text } } else { ChildCmd::Caption { text: r.text } };
     Json(json!({"ok": app.sup.command(&cmd).await}))
+}
+
+/// SCTE-35-Cue: `{"kind":"out","duration_s":30,"preroll_ms":4000}` bzw. `{"kind":"in"}`
+async fn scte35(State(app): S, Json(cue): Json<crate::scte35::Cue>) -> impl IntoResponse {
+    Json(json!({"ok": app.sup.command(&ChildCmd::Scte35 { cue }).await}))
 }
 
 #[derive(Deserialize)]

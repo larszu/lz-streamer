@@ -695,6 +695,8 @@ pub struct AncConfig {
     pub st2038: bool,
     /// Timecode aus der Systemzeit erzeugen, wenn der Eingang keinen liefert
     pub stamp_timecode: bool,
+    /// SCTE-35-PID (0x1F6) im TS; Cues per `POST /api/scte35`
+    pub scte35: bool,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
