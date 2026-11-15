@@ -36,6 +36,8 @@ pub struct App {
     pub certs: Arc<crate::tls::CertStore>,
     /// Oberfläche läuft über HTTPS (Sitzungs-Cookie nur verschlüsselt)
     pub https: std::sync::atomic::AtomicBool,
+    /// weitere Kanäle (je eigener Aufpasser)
+    pub channels: Arc<crate::supervisor::ChannelSet>,
 }
 
 impl App {
@@ -53,7 +55,14 @@ impl App {
             plugin_scanning: Arc::default(),
             certs,
             https: Default::default(),
+            channels: Arc::default(),
         })
+    }
+
+    /// Weitere Kanäle aus der Konfiguration anlegen bzw. angleichen
+    pub async fn sync_channels(&self, first_run: bool) {
+        let cfg = self.sup.config().await;
+        self.channels.sync(&self.sup, &cfg.channels, first_run).await;
     }
 }
 
@@ -100,6 +109,10 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/api/keyframe", post(keyframe))
         .route("/api/caption", post(caption))
         .route("/api/scte35", post(scte35))
+        .route("/api/channels", get(channels_list))
+        .route("/api/channels/{n}/start", post(channel_start))
+        .route("/api/channels/{n}/stop", post(channel_stop))
+        .route("/api/channels/{n}/preview.jpg", get(channel_preview))
         .route("/api/control", get(controls).post(control))
         .route("/api/devices/refresh", post(refresh_devices))
         .route("/api/devices/uvc", get(uvc_devices))
@@ -384,8 +397,44 @@ async fn get_config(State(app): S) -> impl IntoResponse {
 async fn put_config(State(app): S, Json(mut cfg): Json<Config>) -> Response {
     crate::relay::keep_secrets(&mut cfg, &app.sup.config().await);
     match app.sup.set_config(cfg).await {
-        Ok(()) => ok(),
+        Ok(()) => {
+            app.sync_channels(false).await;
+            ok()
+        }
         Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    }
+}
+
+/// weitere Kanäle mit Zustand (`n` in den Pfaden zählt ab 0 in `channels`)
+async fn channels_list(State(app): S) -> impl IntoResponse {
+    Json(json!({"channels": app.channels.overview().await}))
+}
+
+async fn channel_start(State(app): S, Path(n): Path<usize>) -> Response {
+    match app.channels.get(n).await {
+        Some(s) => {
+            s.start().await;
+            ok()
+        }
+        None => err(StatusCode::NOT_FOUND, "kein solcher Kanal"),
+    }
+}
+
+async fn channel_stop(State(app): S, Path(n): Path<usize>) -> Response {
+    match app.channels.get(n).await {
+        Some(s) => {
+            s.stop().await;
+            ok()
+        }
+        None => err(StatusCode::NOT_FOUND, "kein solcher Kanal"),
+    }
+}
+
+async fn channel_preview(State(app): S, Path(n): Path<usize>) -> Response {
+    let Some(s) = app.channels.get(n).await else { return err(StatusCode::NOT_FOUND, "kein solcher Kanal") };
+    match tokio::fs::read(&s.preview_path).await {
+        Ok(b) => ([(header::CONTENT_TYPE, "image/jpeg"), (header::CACHE_CONTROL, "no-store")], b).into_response(),
+        Err(_) => StatusCode::NO_CONTENT.into_response(),
     }
 }
 

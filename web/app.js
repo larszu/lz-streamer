@@ -411,8 +411,43 @@ $('#add-output').onclick = () => {
   cfg.encoder.outputs.push({ enabled: true, name: `Ausgang ${cfg.encoder.outputs.length + 2}`, kind: 'srt', srt: { mode: 'caller', host: '', port: 9001, latency_ms: 120, passphrase: '', streamid: '' }, host: '239.0.0.1', port: 5000, ttl: 16 });
   renderEditors(); changed('encoder.outputs', cfg.encoder.outputs);
 };
+// ---------------- Weitere Kanäle
+const channelFields = [
+  { key: 'autostart', label: 'Mitstarten', type: 'check' },
+  { key: 'name', label: 'Name' },
+  { key: 'input', label: 'Eingang', type: 'select', options: [['test', 'Testbild'], ['decklink', 'DeckLink'], ['uvc', 'USB-Video'], ['srt', 'SRT'], ['udp', 'UDP'], ['file', 'Datei']], get: c => c.encoder.input.kind, set: (c, v) => { c.encoder.input.kind = v; } },
+  { key: 'device', label: 'Gerät Nr.', get: c => c.encoder.input.device ?? 0, set: (c, v) => { c.encoder.input.device = parseInt(v, 10) || 0; } },
+  { key: 'mode', label: 'SRT-Modus', type: 'select', options: [['listener', 'Auf Gegenstelle warten'], ['caller', 'An Ziel senden']], get: c => c.encoder.srt.mode, set: (c, v) => { c.encoder.srt.mode = v; } },
+  { key: 'host', label: 'Ziel', get: c => c.encoder.srt.host, set: (c, v) => { c.encoder.srt.host = v; } },
+  { key: 'port', label: 'SRT-Port', get: c => c.encoder.srt.port, set: (c, v) => { c.encoder.srt.port = parseInt(v, 10) || 0; } },
+  { key: 'rate', label: 'kbit/s', get: c => c.encoder.video.bitrate_kbps, set: (c, v) => { c.encoder.video.bitrate_kbps = parseInt(v, 10) || 0; } },
+];
+function renderChannelEditor() {
+  if (!cfg.channels) cfg.channels = [];
+  rowEditor($('#channels'), cfg.channels, channelFields, () => changed('channels', cfg.channels), 'Entfernen');
+}
+$('#add-channel').onclick = () => {
+  if (!cfg.channels) cfg.channels = [];
+  const enc = structuredClone(cfg.encoder);
+  enc.outputs = []; enc.rtmp.enabled = false; enc.hls.enabled = false; enc.record.enabled = false; enc.rsp.enabled = false;
+  enc.srt.port = (cfg.encoder.srt.port || 9000) + cfg.channels.length + 1;
+  cfg.channels.push({ name: `Kanal ${cfg.channels.length + 2}`, autostart: false, role: 'encoder', encoder: enc, decoder: structuredClone(cfg.decoder) });
+  renderChannelEditor(); changed('channels', cfg.channels);
+};
+async function pollChannels() {
+  try {
+    const r = await fetch('/api/channels');
+    if (!r.ok) return;
+    const list = (await r.json()).channels || [];
+    $('#channels-state').innerHTML = list.map(c => `<li><span>${esc(c.name)} <small>${esc(c.phase)}${c.status ? ` · ${fmt0.format(c.status.fps)} Bilder/s · ${fmt0.format(c.status.bitrate_kbps)} kbit/s` : ''}${c.restarts ? ` · ${c.restarts} Neustarts` : ''}${c.last_error ? ` · ${esc(c.last_error)}` : ''}</small></span>
+      <button class="btn btn--soft" data-ch="${c.index}" data-act="${c.running ? 'stop' : 'start'}">${c.running ? 'Stoppen' : 'Starten'}</button></li>`).join('');
+    $$('#channels-state [data-ch]').forEach(b => b.onclick = async () => { await api('POST', `/api/channels/${b.dataset.ch}/${b.dataset.act}`); pollChannels(); });
+  } catch { /* Dienst kurz weg */ }
+}
+setInterval(pollChannels, 2000);
+pollChannels();
 const _fillForm = fillForm;
-fillForm = function () { _fillForm(); if (!['#tracks', '#outputs', '#replacements'].some(id => $(id).contains(document.activeElement))) renderEditors(); };
+fillForm = function () { _fillForm(); if (!['#tracks', '#outputs', '#replacements'].some(id => $(id).contains(document.activeElement))) renderEditors(); if (!$('#channels').contains(document.activeElement)) renderChannelEditor(); };
 
 // ================================================================ Ansichten
 let view = 'betrieb';

@@ -32,6 +32,9 @@ pub struct Snapshot {
     pub last_error: Option<String>,
     pub events: Vec<Event>,
     pub ever_connected: bool,
+    /// Prozess-ID des laufenden Kanals
+    #[serde(default)]
+    pub pid: Option<u32>,
 }
 
 struct State {
@@ -45,6 +48,7 @@ struct State {
     events: VecDeque<Event>,
     stdin: Option<ChildStdin>,
     ever_connected: bool,
+    pid: Option<u32>,
 }
 
 pub struct Supervisor {
@@ -78,7 +82,8 @@ const SILENT_SECS: u64 = 6;
 impl Supervisor {
     pub fn new(config: Config, config_path: PathBuf, run_dir: PathBuf, record_dir: PathBuf) -> Arc<Self> {
         let _ = std::fs::create_dir_all(&run_dir);
-        let exe = std::env::current_exe().expect("eigener Programmpfad");
+        // Tests starten Kanäle mit dem fertigen Programm statt mit sich selbst
+        let exe = std::env::var_os("LZS_CHANNEL_EXE").map(PathBuf::from).unwrap_or_else(|| std::env::current_exe().expect("eigener Programmpfad"));
         Arc::new(Self {
             state: Mutex::new(State {
                 config,
@@ -91,6 +96,7 @@ impl Supervisor {
                 events: VecDeque::new(),
                 stdin: None,
                 ever_connected: false,
+                pid: None,
             }),
             wake: Notify::new(),
             exe,
@@ -165,7 +171,9 @@ impl Supervisor {
         }
         std::fs::write(&self.config_path, json)?;
         let mut st = self.state.lock().await;
-        let changed = st.config != cfg;
+        // weitere Kanäle laufen unter eigenen Aufpassern: ihre Änderung startet diesen Kanal nicht neu
+        let strip = |c: &Config| Config { channels: Vec::new(), ..c.clone() };
+        let changed = strip(&st.config) != strip(&cfg);
         st.config = cfg;
         if changed && st.desired {
             st.generation += 1;
@@ -235,6 +243,7 @@ impl Supervisor {
             last_error: st.last_error.clone(),
             events: st.events.iter().cloned().collect(),
             ever_connected: st.ever_connected,
+            pid: st.pid,
         }
     }
 
@@ -297,7 +306,11 @@ impl Supervisor {
             };
             let started = Instant::now();
             let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
-            self.state.lock().await.stdin = child.stdin.take();
+            {
+                let mut st = self.state.lock().await;
+                st.stdin = child.stdin.take();
+                st.pid = child.id();
+            }
 
             let mut last_line = Instant::now();
             let mut last_bytes = (0u64, Instant::now());
@@ -354,6 +367,7 @@ impl Supervisor {
             let mut st = self.state.lock().await;
             st.stdin = None;
             st.status = None;
+            st.pid = None;
             let code = exit.and_then(|s| s.code());
             if st.generation != generation || !st.desired {
                 backoff = Duration::from_secs(1);
@@ -375,5 +389,65 @@ impl Supervisor {
             }
             backoff = (backoff * 2).min(Duration::from_secs(10));
         }
+    }
+}
+
+/// Weitere Kanäle: je einer mit eigenem Aufpasser, Laufordner und Vorschaubild.
+#[derive(Default)]
+pub struct ChannelSet {
+    list: Mutex<Vec<(crate::config::ExtraChannel, Arc<Supervisor>)>>,
+}
+
+impl ChannelSet {
+    /// An die Konfiguration angleichen: neue Kanäle anlegen (und bei `autostart`
+    /// starten), geänderte neu konfigurieren, entfernte stoppen.
+    pub async fn sync(&self, main: &Supervisor, wanted: &[crate::config::ExtraChannel], first_run: bool) {
+        let mut list = self.list.lock().await;
+        while list.len() > wanted.len() {
+            let (_, sup) = list.pop().unwrap();
+            sup.stop().await;
+        }
+        for (i, ch) in wanted.iter().enumerate() {
+            if let Some((old, sup)) = list.get_mut(i) {
+                if old != ch {
+                    let _ = sup.set_config(ch.config()).await;
+                    *old = ch.clone();
+                }
+                continue;
+            }
+            let dir = main.run_dir.join(format!("kanal-{}", i + 2));
+            let sup = Supervisor::new(ch.config(), dir.join("config.json"), dir, main.record_dir.join(format!("kanal-{}", i + 2)));
+            tokio::spawn(sup.clone().run());
+            if ch.autostart && first_run {
+                sup.start().await;
+            }
+            list.push((ch.clone(), sup));
+        }
+    }
+
+    pub async fn get(&self, i: usize) -> Option<Arc<Supervisor>> {
+        self.list.lock().await.get(i).map(|(_, s)| s.clone())
+    }
+
+    /// Name, Rolle und Zustand je weiterem Kanal
+    pub async fn overview(&self) -> Vec<serde_json::Value> {
+        let list = self.list.lock().await.clone();
+        let mut out = Vec::new();
+        for (i, (ch, sup)) in list.iter().enumerate() {
+            let s = sup.snapshot().await;
+            out.push(serde_json::json!({
+                "index": i,
+                "number": i + 2,
+                "name": if ch.name.trim().is_empty() { format!("Kanal {}", i + 2) } else { ch.name.clone() },
+                "role": ch.role,
+                "running": s.running,
+                "phase": s.phase,
+                "restarts": s.restarts,
+                "last_error": s.last_error,
+                "pid": s.pid,
+                "status": s.status,
+            }));
+        }
+        out
     }
 }
