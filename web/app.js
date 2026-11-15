@@ -731,6 +731,13 @@ function renderYoutubeCc(st) {
   if (!y) return;
   $('#stage-sub').textContent += ` · YouTube-Untertitel: ${y.last_error ? `Fehler (${y.last_error})` : `${y.sent} angenommen`}`;
 }
+function renderAnc(st) {
+  const a = st.runtime.status?.anc;
+  if (!a || (!a.timecode && !a.afd)) return;
+  $('#stage-sub').textContent += ` · ${[a.timecode && `TC ${a.timecode}`, a.afd].filter(Boolean).join(' · ')}`;
+}
+const _render4c = render;
+render = function (st) { _render4c(st); renderAnc(st); };
 const _render4b = render;
 render = function (st) { _render4b(st); renderYoutubeCc(st); };
 const _render4 = render;

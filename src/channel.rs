@@ -48,6 +48,9 @@ pub struct ChannelStatus {
     pub captions: CaptionStatus,
     /// eingebrannte Grafik
     pub graphics: Option<GfxStatus>,
+    /// Ancillary: Timecode und AFD
+    #[serde(default)]
+    pub anc: Option<crate::anc::AncStatus>,
     pub luma: Option<f64>,
     pub uptime_s: f64,
     /// Empfangsstelle bzw. Standort-Decoder: Zuspieler und Ziele
@@ -295,6 +298,8 @@ pub struct Channel {
     abr: Vec<AbrRung>,
     publisher: Option<crate::hlsplaylist::Publisher>,
     uploader: Option<crate::hlsupload::Uploader>,
+    /// Timecode/AFD (Encoder: vom Eingang, Decoder: aus ST 2038)
+    anc: Arc<Mutex<Option<crate::anc::AncStatus>>>,
 }
 
 /// Decoder mit Quelle „Empfangsstelle“
@@ -518,6 +523,82 @@ fn count_bytes(pad: &gst::Pad, counters: &Arc<Counters>) {
             _ => 0,
         };
         c.bytes.fetch_add(n as u64, Ordering::Relaxed);
+        gst::PadProbeReturn::Ok
+    });
+}
+
+/// Encoder: je Rohbild vor dem Encoder Timecode- und AFD-Meta lesen, anzeigen
+/// und – falls `ancsrc` existiert – als ST-2038-Pakete in den TS geben.
+fn hook_anc_encoder(pipeline: &gst::Pipeline, status: &Arc<Mutex<Option<crate::anc::AncStatus>>>) {
+    use gst::glib::translate::IntoGlib;
+    let Some(pad) = pipeline.by_name("vencq").and_then(|q| q.static_pad("sink")) else { return };
+    let src = pipeline.by_name("ancsrc").and_then(|s| s.downcast::<gst_app::AppSrc>().ok());
+    let st = status.clone();
+    pad.add_probe(gst::PadProbeType::BUFFER, move |pad, info| {
+        let Some(gst::PadProbeData::Buffer(buf)) = &info.data else { return gst::PadProbeReturn::Ok };
+        let tc = buf.meta::<gstreamer_video::VideoTimeCodeMeta>().map(|m| {
+            let t = m.tc();
+            crate::anc::Timecode {
+                hours: t.hours() as u8,
+                minutes: t.minutes() as u8,
+                seconds: t.seconds() as u8,
+                frames: t.frames() as u8,
+                drop_frame: t.flags().contains(gstreamer_video::VideoTimeCodeFlags::DROP_FRAME),
+            }
+        });
+        let wide = pad
+            .current_caps()
+            .and_then(|c| c.structure(0).and_then(|s| Some((s.get::<i32>("width").ok()?, s.get::<i32>("height").ok()?))))
+            .is_none_or(|(w, h)| w * 9 >= h * 16);
+        let afd = buf.meta::<gstreamer_video::VideoAFDMeta>().map(|m| (m.afd().into_glib() as u8, wide));
+        let mut packets = Vec::new();
+        if let Some(tc) = &tc {
+            packets.push(crate::anc::atc_packet(tc, 9));
+        }
+        if let Some((code, w)) = afd {
+            packets.push(crate::anc::afd_packet(code, w, 11));
+        }
+        let mut s = st.lock().unwrap();
+        let s = s.get_or_insert_with(Default::default);
+        s.timecode = tc.map(|t| t.to_string());
+        s.afd = afd.map(|(c, w)| crate::anc::afd_label(c, w));
+        if let (Some(src), false) = (&src, packets.is_empty()) {
+            let rt = pad
+                .sticky_event::<gst::event::Segment>(0)
+                .and_then(|e| e.segment().downcast_ref::<gst::ClockTime>().and_then(|seg| buf.pts().and_then(|p| seg.to_running_time(p))));
+            if let Some(rt) = rt {
+                // ein Puffer je Zeile (alignment=line)
+                for p in &packets {
+                    let mut b = gst::Buffer::from_slice(crate::anc::st2038_encode(std::slice::from_ref(p)));
+                    b.get_mut().unwrap().set_pts(rt);
+                    if src.push_buffer(b).is_ok() {
+                        s.packets += 1;
+                    }
+                }
+            }
+        }
+        gst::PadProbeReturn::Ok
+    });
+}
+
+/// Decoder: ST-2038-Pakete aus dem TS zerlegen und Timecode/AFD anzeigen.
+fn hook_anc_decoder(pad: &gst::Pad, status: &Arc<Mutex<Option<crate::anc::AncStatus>>>) {
+    let st = status.clone();
+    pad.add_probe(gst::PadProbeType::BUFFER, move |_, info| {
+        let Some(gst::PadProbeData::Buffer(buf)) = &info.data else { return gst::PadProbeReturn::Ok };
+        let Ok(map) = buf.map_readable() else { return gst::PadProbeReturn::Ok };
+        let packets = crate::anc::st2038_decode(&map);
+        let mut s = st.lock().unwrap();
+        let s = s.get_or_insert_with(Default::default);
+        for p in &packets {
+            if let Some(tc) = crate::anc::parse_atc(p) {
+                s.timecode = Some(tc.to_string());
+            }
+            if let Some((c, w)) = crate::anc::parse_afd(p) {
+                s.afd = Some(crate::anc::afd_label(c, w));
+            }
+        }
+        s.packets += packets.len() as u64;
         gst::PadProbeReturn::Ok
     });
 }
@@ -834,6 +915,10 @@ impl Channel {
             let abr = setup_abr(&pipeline, cfg, enc.factory, &events);
             hook_preview(&pipeline, opts.preview_path.clone());
             configure_audio(&pipeline, cfg);
+            let anc_status: Arc<Mutex<Option<crate::anc::AncStatus>>> = Arc::default();
+            if cfg.anc.st2038 || cfg.anc.stamp_timecode {
+                hook_anc_encoder(&pipeline, &anc_status);
+            }
             let cc = Arc::new(CaptionCounter { youtube: crate::ytcaptions::YtSender::spawn(&cfg.captions.youtube), ..Default::default() });
             count_captions(&venc.static_pad("sink").unwrap(), &cc);
             hook_recording_cues(&pipeline, &cc, "");
@@ -968,6 +1053,7 @@ impl Channel {
                         net_in: None,
                         abr,
                         publisher: publisher.take(),
+                        anc: anc_status.clone(),
                         uploader: (cfg.hls.enabled && !cfg.hls.upload_url.trim().is_empty() && !cfg.hls.dir.trim().is_empty()).then(|| {
                             crate::hlsupload::Uploader::start(
                                 PathBuf::from(cfg.hls.dir.trim()),
@@ -1095,6 +1181,7 @@ impl Channel {
             abr: Vec::new(),
             publisher: None,
             uploader: None,
+            anc: Arc::default(),
         })
     }
 
@@ -1136,6 +1223,8 @@ impl Channel {
         let t2 = tracks.clone();
         let cc: Arc<CaptionCounter> = Arc::default();
         let cc2 = cc.clone();
+        let anc: Arc<Mutex<Option<crate::anc::AncStatus>>> = Arc::default();
+        let anc2 = anc.clone();
         let ts_off = if from_relay { 0 } else { -(cfg.srt.latency_ms as i64) * 1_000_000 };
         demux.connect_pad_added(move |_, pad| {
             let Some(pipeline) = weak.upgrade() else { return };
@@ -1218,6 +1307,10 @@ impl Channel {
                     }
                     select_audio(&asel, &mut t2.lock().unwrap(), &cfg2.audio_language, cfg2.audio_track);
                     return;
+                }
+                "meta/x-st-2038" => {
+                    hook_anc_decoder(pad, &anc2);
+                    "fakesink sync=false async=false".to_string()
                 }
                 _ => "fakesink sync=false".to_string(),
             };
@@ -1330,6 +1423,7 @@ impl Channel {
             abr: Vec::new(),
             publisher: None,
             uploader: None,
+            anc,
         })
     }
 
@@ -1795,6 +1889,7 @@ impl Channel {
             }),
             abr: self.abr.iter().map(|r| AbrStatus { resolution: r.resolution.clone(), bitrate_kbps: r.bitrate_kbps, fps: (r.fps * 10.0).round() / 10.0 }).collect(),
             hls_upload: self.uploader.as_ref().map(|u| u.status()),
+            anc: self.anc.lock().unwrap().clone(),
         };
         out.splice(0..0, self.events.lock().unwrap().drain(..));
         out.push(ChildMsg::Status(status));

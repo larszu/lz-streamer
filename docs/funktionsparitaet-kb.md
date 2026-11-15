@@ -117,7 +117,7 @@ Ohne die entfallenden Punkte sind 38 von 59 Funktionen fertig (64 %), dazu 14 in
 | # | Funktion | Status | Umsetzung / was fehlt | Aufwand |
 |---|---|---|---|---|
 | 60 | SCTE-35/104, Werbe-Cue-Punkte | **fehlt** | Übersetzer SCTE-104 → 35 mit IDR am Splice-Punkt | L |
-| 61 | Ancillary: AFD, Timecode, Durchreichen | **fehlt** | VANC-Parser aus lz-scopes übernehmen, ST 2038 | M |
+| 61 | Ancillary: AFD, Timecode, Durchreichen | Teil | Timecode (ATC) und AFD als ST 2038 auf PID 0x62, Anzeige an Encoder und Decoder; Timecode aus Systemzeit für Quellen ohne. Offen: übrige VANC-Pakete roh durchreichen, Prüfung am DeckLink-Eingang | M |
 | 62 | Diskontinuität als Ereignis durch die Pipeline | fertig | HLS: `#EXT-X-DISCONTINUITY` nach Kanal-Neustart, Sequenz läuft weiter; Standbild hält Zeitachse und Format, braucht keine Marke (`abr-leiter.md`) | – |
 | 63 | Cloud-Anbindung (Geräteregistrierung, CDN-Logins) | entfällt bewusst | Fernzugriff per Tunnel; Geräteseite in lz-camera-bridge | – |
 | 64 | Metriken in Zeitreihen-DB | fertig | `/metrics` im Prometheus-Format (Bitrate, SRT-RTT, Verluste, Wiederholungen, Lautheit je Spur, CPU/GPU, Bilder/s, Neustarts, Signal, Alarme); Influx-Line-Protocol per HTTP-Push | – |
@@ -152,6 +152,10 @@ Gezählt sind die 7 fehlenden Funktionen und die drei Teilfunktionen mit dem gr�
 | DVB-Untertitel (U7, #16): Datei → `dvbsubenc` → PID 0x60 mit Sprachkennung, Lösch-Seiten, PCR bleibt auf dem Bild | `dvb_subtitles_in_ts_with_language`, Unit-Test `dvb_subtitles_branch` |
 
 | YouTube-Untertitel per HTTP POST (U8, #17): Folgenummer, UTC-Zeitstempel, Herzschlag, Antwortzeit von YouTube im Status; Ingest-URL maskiert | `youtube_captions_posted_with_sequence`, Unit-Tests in `ytcaptions.rs`, `relay.rs` |
+
+| Timecode/AFD als ST 2038 (KB-61, #28): Pakete nach SMPTE 291 mit Prüfsumme, ATC nach 12M-2, AFD nach 2016-3; GStreamers `st2038ancdemux` erkennt sie; Timecode erscheint am Decoder, im TS Datenstrom „VANC“ auf 0x62 | `timecode_as_st2038_reaches_decoder`, Unit-Tests in `anc.rs`, `pipeline.rs` |
+
+Offen bei #28: Timecode und AFD von einem echten DeckLink-Eingang (`output-afd-bar`, Timecode-Meta) sowie das rohe Durchreichen aller übrigen VANC-Pakete (`output-vanc` → `st2038extractor`) – braucht angeschlossene Hardware.
 
 Offen bei #17: Abnahme an einem echten YouTube-Testlivestream (braucht Kanal und Ingest-URL).
 
