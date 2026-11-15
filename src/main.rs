@@ -289,6 +289,7 @@ async fn serve(port: u16, bind: String, cfg_path: PathBuf, autostart: bool, http
     let app = App::new(sup.clone(), ops.clone(), caps, devices);
     lz_streamer::relay::start_uploader(app.clone());
     tokio::spawn(sup.clone().run());
+    app.sync_channels(true).await;
     tokio::spawn(ops.clone().monitor(sup.clone()));
     tokio::spawn(ops.clone().scheduler(sup.clone()));
     tokio::spawn(ops.clone().influx_push(sup.clone()));

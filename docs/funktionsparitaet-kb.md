@@ -33,7 +33,7 @@ Ohne die entfallenden Punkte sind 38 von 59 Funktionen fertig (64 %), dazu 14 in
 | # | Funktion im Vorbild | Status | Umsetzung / was fehlt | Aufwand |
 |---|---|---|---|---|
 | 1 | Kanalübersicht mit Kachel und Start/Stopp | fertig | Startseite mit Vorschau, Ampel, Start/Stopp | – |
-| 2 | Mehrere Kanäle parallel | **fehlt** | ein Kanal je Instanz; zweite Instanz per `--port/--config` | L |
+| 2 | Mehrere Kanäle parallel | fertig | weitere Kanäle je eigener Prozess und Aufpasser, gemeinsame API und Karte | – |
 | 3 | Assistent „neuer Kanal“ in 4 Schritten | fertig (anders) | ohne Pflichtfelder: Eingang wird erkannt, Ziel eintragen, Start; Profile als Vorlagen | – |
 | 4 | Kanal exportieren, importieren, duplizieren | Teil | Profile sichern/laden, `GET/PUT /api/config` als Export/Import; kein Datei-Dialog | S |
 | 5 | Kanal-Vorlagen (Codec × Auflösung × AAC) | fertig | 5 mitgelieferte Profile + eigene | – |
@@ -128,7 +128,6 @@ Gezählt sind die 7 fehlenden Funktionen und die drei Teilfunktionen mit dem gr�
 
 | Punkt | Warum noch nicht |
 |---|---|
-| Mehrkanal (#2) | Umbau von Aufpasser, Statusmodell und Oberfläche auf Kanallisten; eigener PR |
 | CEA-608/708 (#20), SCTE (#60), Ancillary (#61) | braucht VANC aus dem DeckLink-Eingang; ohne angestecktes Gerät nicht prüfbar |
 | DASH (#40) | `dashsink` legt jede Stufe als eigenes AdaptationSet ohne Sprachkennung an; sinnvoll ist ein eigenes MPD über die CMAF-Segmente |
 | 1080i-Quelle an echter Hardware (Deinterlacing #17, Halbbild-Ausgabe #26) | Messung mit echtem SDI-Eingang steht aus |
@@ -174,6 +173,10 @@ Gezählt sind die 7 fehlenden Funktionen und die drei Teilfunktionen mit dem gr�
 | `--cbr 12000 --takt` | 212–226 ms | 31–36 ms |
 
 CBR und PCR-Takt ändern die Gesamtlatenz nicht messbar: was der Muxer früher abgibt, wartet danach im SRT-/Demux-Puffer. Die erhofften 37–51 ms und das Ziel < 130 ms erreicht dieser Schritt nicht; dafür bräuchte es ein eigenes Pacing-Element mit T-STD-Puffermodell und kleinerem Demux-Puffer am Decoder. Eine CBR-Rate unter Bild + Ton bringt den Takt aus dem Tritt (`--cbr 6000` bei 8000 kbit/s: Weißsprung kommt nicht an), daher der Hinweis in der Oberfläche.
+
+| Mehrere Kanäle (KB-02, #20): weitere Kanäle je eigener Kindprozess und Aufpasser, gemeinsame API und Karte; Absturz eines Kanals stört den anderen nicht | `tests/channels.rs` `two_channels_1080p50_and_crash_isolation` |
+
+Offen bei #20: Die weiteren Kanäle haben in der Oberfläche nur die Grundeinstellungen (Eingang, Ziel, Rate) und den Zustand; Grafik, Untertitel-Eingabe und Pegel sind dem Hauptkanal vorbehalten. Feste Ports (OSC 4211, Grafik-Renderer) gibt es nur einmal.
 
 Offen bei #32: T-STD-Pufferprüfung, eigenes PCR-Pacing-Element, Latenzziel < 130 ms, Gegenprobe mit TSDuck.
 

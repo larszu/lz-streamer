@@ -513,9 +513,11 @@ pub fn allowed(role: Role, method: &str, path: &str) -> bool {
         return true;
     }
     let operator_ok = ["/api/start", "/api/stop", "/api/signal", "/api/keyframe", "/api/caption", "/api/logout", "/api/rsp/mark", "/api/rsp/catchup"];
+    // weitere Kanäle starten/stoppen darf der Bediener wie den Hauptkanal
+    let channel_cmd = path.starts_with("/api/channels/") && (path.ends_with("/start") || path.ends_with("/stop"));
     match role {
         Role::Admin => true,
-        Role::Operator => operator_ok.contains(&path),
+        Role::Operator => operator_ok.contains(&path) || channel_cmd,
         Role::Observer => path == "/api/logout",
     }
 }

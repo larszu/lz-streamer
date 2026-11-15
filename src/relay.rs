@@ -698,6 +698,11 @@ pub fn mask_config(cfg: &mut crate::config::Config) {
     m(&mut cfg.encoder.rsp.token);
     m(&mut cfg.decoder.relay.token);
     m(&mut cfg.encoder.captions.youtube.url);
+    for c in &mut cfg.channels {
+        m(&mut c.encoder.rsp.token);
+        m(&mut c.encoder.captions.youtube.url);
+        m(&mut c.decoder.relay.token);
+    }
     for d in &mut cfg.relay.destinations {
         m(&mut d.key);
     }
@@ -713,6 +718,18 @@ pub fn keep_secrets(new: &mut crate::config::Config, old: &crate::config::Config
     }
     if new.encoder.captions.youtube.url == MASK {
         new.encoder.captions.youtube.url = old.encoder.captions.youtube.url.clone();
+    }
+    for (i, c) in new.channels.iter_mut().enumerate() {
+        let Some(o) = old.channels.get(i) else { continue };
+        for (n, o) in [
+            (&mut c.encoder.rsp.token, &o.encoder.rsp.token),
+            (&mut c.encoder.captions.youtube.url, &o.encoder.captions.youtube.url),
+            (&mut c.decoder.relay.token, &o.decoder.relay.token),
+        ] {
+            if n == MASK {
+                *n = o.clone();
+            }
+        }
     }
     for (i, d) in new.relay.destinations.iter_mut().enumerate() {
         if d.key == MASK {
@@ -733,5 +750,13 @@ mod tests {
         assert_eq!(shown.encoder.captions.youtube.url, super::MASK);
         super::keep_secrets(&mut shown, &old);
         assert_eq!(shown.encoder.captions.youtube.url, old.encoder.captions.youtube.url);
+        // auch in weiteren Kanälen
+        old.channels = vec![crate::config::ExtraChannel::default()];
+        old.channels[0].encoder.rsp.token = "geheim2".into();
+        let mut shown = old.clone();
+        super::mask_config(&mut shown);
+        assert_eq!(shown.channels[0].encoder.rsp.token, super::MASK);
+        super::keep_secrets(&mut shown, &old);
+        assert_eq!(shown.channels[0].encoder.rsp.token, "geheim2");
     }
 }

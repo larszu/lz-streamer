@@ -488,6 +488,26 @@ pub enum OutputType {
     Rist,
 }
 
+/// Weiterer Kanal: eigene Rolle und Einstellungen, eigener Prozess unter
+/// einem eigenen Aufpasser. Stürzt er ab, läuft der Hauptkanal weiter.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(default)]
+pub struct ExtraChannel {
+    pub name: String,
+    /// beim Start der Instanz mitstarten
+    pub autostart: bool,
+    pub role: Role,
+    pub encoder: EncoderConfig,
+    pub decoder: DecoderConfig,
+}
+
+impl ExtraChannel {
+    /// Konfiguration für den Kindprozess dieses Kanals
+    pub fn config(&self) -> Config {
+        Config { role: self.role, encoder: self.encoder.clone(), decoder: self.decoder.clone(), ..Config::default() }
+    }
+}
+
 /// Weiterer Ausgang desselben Transportstroms (wie die Mehrfachausgänge des Vorbilds).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
@@ -1036,6 +1056,9 @@ pub struct Config {
     pub encoder: EncoderConfig,
     pub decoder: DecoderConfig,
     pub relay: crate::rsp::RelayConfig,
+    /// weitere Kanäle in derselben Instanz, je ein eigener Kindprozess
+    #[serde(default)]
+    pub channels: Vec<ExtraChannel>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
