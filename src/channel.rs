@@ -859,6 +859,8 @@ impl Channel {
             // Halbbild-Kodierung kann hier nur x264
             candidates.retain(|e| e.factory == "x264enc");
         }
+        // 10 bit bzw. 4:2:2: nur Encoder, die das können (z. B. H.264 → x264 statt VideoToolbox)
+        candidates.retain(|e| caps::supports_chroma(e.factory, cfg.video.chroma));
         if candidates.is_empty() {
             bail!("Kein Encoder für {:?} gefunden", cfg.video.codec);
         }

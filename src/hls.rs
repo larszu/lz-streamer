@@ -381,9 +381,10 @@ pub fn rung_branches(cfg: &EncoderConfig, src: &str, encoder: &str, tail: &dyn F
             format!(
                 "{src}. ! queue name=vrq{i} max-size-buffers=3 max-size-bytes=0 max-size-time=0 \
                  ! videoscale n-threads={n} method=bilinear ! video/x-raw,width={},height={},pixel-aspect-ratio=1/1 \
-                 ! {encoder} name=venc_r{i} ! {pcaps}{parser} config-interval=-1{} ! {QUEUE} ! {} ! {}",
+                 ! {}{encoder} name=venc_r{i} ! {pcaps}{parser} config-interval=-1{} ! {QUEUE} ! {} ! {}",
                 r.width,
                 r.height,
+                crate::caps::encoder_input(encoder, cfg.video.chroma),
                 tail(i),
                 video_caps(cfg),
                 sink(cfg, &format!("hlsv{i}"), &format!("v{i}"))

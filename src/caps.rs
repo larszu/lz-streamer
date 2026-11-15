@@ -179,9 +179,13 @@ pub fn extra_props(s: &str) -> Vec<(String, String)> {
 
 /// Caps hinter dem Encoder für Profil und Level (leer, wenn nichts gewählt).
 pub fn profile_caps(v: &crate::config::VideoConfig) -> String {
+    use crate::config::Chroma;
     let mut f = Vec::new();
     if !v.profile.is_empty() {
         f.push(format!("profile={}", v.profile));
+    } else if v.codec == Codec::H265 && v.chroma.ten_bit() {
+        // VideoToolbox braucht das Profil, sonst kodiert es 8 bit
+        f.push(format!("profile={}", if v.chroma == Chroma::C422_10 { "main-422-10" } else { "main-10" }));
     }
     if !v.level.is_empty() {
         f.push(format!("level=(string){}", v.level));
@@ -194,6 +198,32 @@ pub fn profile_caps(v: &crate::config::VideoConfig) -> String {
         Codec::H265 => "video/x-h265",
     };
     format!("{media},{} ! ", f.join(","))
+}
+
+/// Kann der Encoder diese Unterabtastung/Bittiefe? (hier geprüft: VideoToolbox
+/// HEVC 4:2:0 und 4:2:2 10 bit, x264/x265 alle, NVENC HEVC 4:2:0 10 bit)
+pub fn supports_chroma(factory: &str, chroma: crate::config::Chroma) -> bool {
+    use crate::config::Chroma;
+    match chroma {
+        Chroma::C420_8 => true,
+        Chroma::C420_10 => matches!(factory, "x264enc" | "x265enc" | "vtenc_h265" | "vtenc_h265_hw" | "nvh265enc"),
+        Chroma::C422_10 => matches!(factory, "x264enc" | "x265enc" | "vtenc_h265" | "vtenc_h265_hw"),
+    }
+}
+
+/// Wandler vor dem Encoder bei 10 bit: jeder Encoder will sein eigenes Format.
+/// VideoToolbox nimmt 4:2:2 10 bit nur aus AYUV64 an und tastet selbst ab.
+pub fn encoder_input(factory: &str, chroma: crate::config::Chroma) -> &'static str {
+    use crate::config::Chroma;
+    let vt = factory.starts_with("vtenc_");
+    match (chroma, vt) {
+        (Chroma::C420_8, _) => "",
+        (Chroma::C420_10, true) => "videoconvert ! video/x-raw,format=P010_10LE ! ",
+        (Chroma::C422_10, true) => "videoconvert ! video/x-raw,format=AYUV64 ! ",
+        (Chroma::C420_10, false) if factory.starts_with("nv") => "videoconvert ! video/x-raw,format=P010_10LE ! ",
+        (Chroma::C420_10, false) => "videoconvert ! video/x-raw,format=I420_10LE ! ",
+        (Chroma::C422_10, false) => "videoconvert ! video/x-raw,format=I422_10LE ! ",
+    }
 }
 
 pub fn parser_for(codec: Codec) -> &'static str {
@@ -270,6 +300,23 @@ impl Capabilities {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ten_bit_formats_and_profiles() {
+        use crate::config::{Chroma, VideoConfig};
+        assert!(!supports_chroma("vtenc_h264_hw", Chroma::C420_10) && supports_chroma("x264enc", Chroma::C422_10));
+        assert!(supports_chroma("vtenc_h265_hw", Chroma::C422_10) && !supports_chroma("nvh265enc", Chroma::C422_10));
+        assert_eq!(encoder_input("vtenc_h265_hw", Chroma::C422_10), "videoconvert ! video/x-raw,format=AYUV64 ! ");
+        assert_eq!(encoder_input("x265enc", Chroma::C420_10), "videoconvert ! video/x-raw,format=I420_10LE ! ");
+        assert_eq!(encoder_input("x264enc", Chroma::C420_8), "");
+        let mut v = VideoConfig { codec: Codec::H265, chroma: Chroma::C422_10, ..Default::default() };
+        assert_eq!(profile_caps(&v), "video/x-h265,profile=main-422-10 ! ");
+        v.profile = "main-10".into();
+        assert_eq!(profile_caps(&v), "video/x-h265,profile=main-10 ! ", "eigenes Profil geht vor");
+        v.codec = Codec::H264;
+        v.profile.clear();
+        assert_eq!(profile_caps(&v), "", "x264 wählt das Profil aus dem Format");
+    }
 
     #[test]
     fn auto_prefers_hardware_order() {

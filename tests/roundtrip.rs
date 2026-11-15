@@ -1769,3 +1769,33 @@ fn scte35_cue_with_idr_at_splice_point() {
     let idrs = video.iter().filter(|(_, d)| has_idr(d)).count();
     assert!(idrs <= 3, "zu viele IDR ({idrs}), Nachweis wertlos");
 }
+
+/// #34: 10 bit, 4:2:2 und HDR-Kennzeichnung kommen im Strom an (ffprobe).
+#[test]
+fn ten_bit_422_and_hdr_flags_in_stream() {
+    use lz_streamer::config::{Chroma, Transfer};
+    init();
+    let cases = [
+        // Hardware zuerst (VideoToolbox, falls vorhanden), dann Software
+        (Codec::H265, "auto", Chroma::C422_10, Transfer::Pq, "yuv422p10le", "smpte2084"),
+        (Codec::H265, "auto", Chroma::C420_10, Transfer::Hlg, "yuv420p10le", "arib-std-b67"),
+        (Codec::H265, "x265enc", Chroma::C422_10, Transfer::Hlg, "yuv422p10le", "arib-std-b67"),
+        // H.264 mit 4:2:2 10 bit: VideoToolbox kann das nicht, gewählt wird x264
+        (Codec::H264, "auto", Chroma::C422_10, Transfer::Pq, "yuv422p10le", "smpte2084"),
+    ];
+    for (codec, encoder, chroma, transfer, pix, trc) in cases {
+        if encoder == "x265enc" && !lz_streamer::caps::element_available("x265enc") {
+            continue;
+        }
+        let mut cfg = encoder_cfg(free_port(), SrtMode::Listener);
+        cfg.video.codec = codec;
+        cfg.video.encoder = encoder.into();
+        cfg.video.chroma = chroma;
+        cfg.video.transfer = transfer;
+        let ts = capture_udp_ts(&mut cfg, 3, "hdr", |_, _| {});
+        let info = ffprobe_csv(&ts, &["-select_streams", "v:0", "-show_entries", "stream=pix_fmt,color_transfer,color_primaries"]);
+        let _ = std::fs::remove_file(&ts);
+        let want = format!("{pix},{trc},bt2020");
+        assert!(info.lines().any(|l| l.trim() == want), "{codec:?}/{encoder}/{chroma:?}: {info} statt {want}");
+    }
+}

@@ -74,11 +74,34 @@ pub fn interlaced_output(cfg: &EncoderConfig) -> bool {
     cfg.video.interlaced && cfg.video.codec == Codec::H264
 }
 
+/// Rohformat der Kette zwischen Eingang und Encoder.
+pub fn raw_format(cfg: &EncoderConfig) -> &'static str {
+    match cfg.video.chroma {
+        crate::config::Chroma::C420_8 => "NV12",
+        crate::config::Chroma::C420_10 => "P010_10LE",
+        crate::config::Chroma::C422_10 => "I422_10LE",
+    }
+}
+
+/// Kennzeichnung: BT.2100 mit PQ bzw. HLG; SDR bleibt, wie die Quelle es meldet.
+/// videoconvert passt dabei nur die Matrix an, die Kennlinie wird nicht umgerechnet.
+fn colorimetry(cfg: &EncoderConfig) -> &'static str {
+    match cfg.video.transfer {
+        crate::config::Transfer::Sdr => "",
+        crate::config::Transfer::Pq => ",colorimetry=bt2100-pq",
+        crate::config::Transfer::Hlg => ",colorimetry=bt2100-hlg",
+    }
+}
+
 fn raw_caps(cfg: &EncoderConfig) -> String {
     let v = &cfg.video;
     format!(
-        "video/x-raw,format=NV12,width={},height={},framerate={}/1,pixel-aspect-ratio=1/1,interlace-mode=progressive",
-        v.width, v.height, v.fps
+        "video/x-raw,format={},width={},height={},framerate={}/1,pixel-aspect-ratio=1/1,interlace-mode=progressive{}",
+        raw_format(cfg),
+        v.width,
+        v.height,
+        v.fps,
+        colorimetry(cfg)
     )
 }
 
@@ -122,7 +145,7 @@ pub fn primary_video(cfg: &EncoderConfig, input: &ResolvedInput) -> String {
     match input {
         ResolvedInput::Test => {
             let (w, h) = test_source_size(cfg);
-            let src_caps = format!("video/x-raw,format=NV12,width={w},height={h},framerate={}/1,pixel-aspect-ratio=1/1", cfg.video.fps);
+            let src_caps = format!("video/x-raw,format={},width={w},height={h},framerate={}/1,pixel-aspect-ratio=1/1", raw_format(cfg), cfg.video.fps);
             let scale = if (w, h) == (cfg.video.width, cfg.video.height) && crop.is_empty() {
                 String::new()
             } else {
@@ -153,10 +176,11 @@ pub fn primary_video(cfg: &EncoderConfig, input: &ResolvedInput) -> String {
         ),
         ResolvedInput::Decklink { device, connection } => format!(
             "decklinkvideosrc name=capsrc device-number={device} connection={connection} mode=auto \
-             drop-no-signal-frames=true{}{} ! {deint}{crop} ! {} \
+             drop-no-signal-frames=true{}{}{} ! {deint}{crop} ! {} \
              ! videorate max-duplication-time=100000000 ! {caps}",
             if cfg.captions.source == CaptionSource::Sdi { " output-cc=true" } else { "" },
             if cfg.anc.st2038 { " output-afd-bar=true" } else { "" },
+            if cfg.video.chroma.ten_bit() { " video-format=10bit-yuv" } else { "" },
             scaler(cfg)
         ),
     }
@@ -333,7 +357,8 @@ pub fn encoder_description(cfg: &EncoderConfig, parts: &EncoderParts) -> String 
     let pcaps = crate::caps::profile_caps(&cfg.video);
     // Halbbilder: je zwei Vollbilder → ein Bild mit zwei Halbbildern, oberes zuerst
     let il = interlace_chain(cfg);
-    d.push(format!("{enc_src}{il} ! {} name=venc ! {pcaps}{parser} config-interval=-1{inserter} ! tee name=ve", parts.encoder));
+    let enc_in = crate::caps::encoder_input(parts.encoder, cfg.video.chroma);
+    d.push(format!("{enc_src}{il} ! {enc_in}{} name=venc ! {pcaps}{parser} config-interval=-1{inserter} ! tee name=ve", parts.encoder));
     // HLS: Bild-Rendition (die Ton-Renditionen folgen bei den Tonspuren)
     d.extend(crate::hls::branches(cfg).into_iter().take(1));
     // ABR-Leiter: weitere Bildstufen aus demselben Rohbild wie der Haupt-Encoder
