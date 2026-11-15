@@ -36,6 +36,7 @@ pub mod supervisor;
 pub mod tls;
 pub mod upload;
 pub mod vad;
+pub mod ytcaptions;
 
 /// 4181–4198 belegt die AV-Suite, 4199 lz-nvx-toolbox.
 pub const DEFAULT_PORT: u16 = 4200;

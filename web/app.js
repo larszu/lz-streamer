@@ -726,6 +726,13 @@ function renderAsr(st) {
   const sub = $('#stage-sub');
   sub.textContent += ` · Spracherkennung: ${a.state}${a.last_delay_ms != null ? `, Verzug ${fmt.format(a.last_delay_ms / 1000)} s` : ''}`;
 }
+function renderYoutubeCc(st) {
+  const y = st.runtime.status?.captions?.youtube;
+  if (!y) return;
+  $('#stage-sub').textContent += ` · YouTube-Untertitel: ${y.last_error ? `Fehler (${y.last_error})` : `${y.sent} angenommen`}`;
+}
+const _render4b = render;
+render = function (st) { _render4b(st); renderYoutubeCc(st); };
 const _render4 = render;
 render = function (st) { _render4(st); renderAsr(st); };
 
@@ -1007,5 +1014,5 @@ function renderUploads(st) {
   for (const d of u.done.slice(0, 5)) rows.push(`<li><span>${esc(d.file)} → ${esc(d.target)} <small>fertig ${new Date(d.at_ms).toLocaleTimeString('de-DE')} · ${bytes(d.bytes)} in ${fmt0.format(d.seconds)} s</small></span></li>`);
   $('#up-status').innerHTML = rows.join('') || '<li class="empty">Nichts in der Warteschlange.</li>';
 }
-const _render9 = render;
-render = function (st) { _render9(st); renderUploads(st); };
+const _render9u = render;
+render = function (st) { _render9u(st); renderUploads(st); };

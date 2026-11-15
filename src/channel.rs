@@ -74,6 +74,9 @@ pub struct CaptionStatus {
     pub present: bool,
     /// zuletzt gesendeter bzw. empfangener Text
     pub text: Option<String>,
+    /// Untertitel per HTTP POST an YouTube
+    #[serde(default)]
+    pub youtube: Option<crate::ytcaptions::YoutubeStatus>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -104,6 +107,8 @@ struct CaptionCounter {
     muted: AtomicBool,
     /// Anzeigedauer je eingespeistem Text (tttocea608 löscht danach)
     durations: Mutex<std::collections::HashMap<String, u64>>,
+    /// dieselben Zeilen zusätzlich per HTTP POST an YouTube
+    youtube: Option<crate::ytcaptions::YtSender>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -333,6 +338,9 @@ fn push_caption_to(pipeline: &gst::Pipeline, appsrc: &str, cc: &CaptionCounter, 
     b.set_pts(pts);
     b.set_duration(gst::ClockTime::from_mseconds(ms));
     let _ = src.push_buffer(buf);
+    if let Some(y) = &cc.youtube {
+        y.send(text, Duration::from_nanos(pts.saturating_sub(rt).nseconds()));
+    }
     {
         let mut d = cc.durations.lock().unwrap();
         if d.len() > 64 {
@@ -826,7 +834,7 @@ impl Channel {
             let abr = setup_abr(&pipeline, cfg, enc.factory, &events);
             hook_preview(&pipeline, opts.preview_path.clone());
             configure_audio(&pipeline, cfg);
-            let cc: Arc<CaptionCounter> = Arc::default();
+            let cc = Arc::new(CaptionCounter { youtube: crate::ytcaptions::YtSender::spawn(&cfg.captions.youtube), ..Default::default() });
             count_captions(&venc.static_pad("sink").unwrap(), &cc);
             hook_recording_cues(&pipeline, &cc, "");
             if let Some(v2) = pipeline.by_name("venc2") {
@@ -1762,6 +1770,7 @@ impl Channel {
                 frames: self.cc.frames.load(Ordering::Relaxed),
                 present: self.cc.last.lock().unwrap().is_some_and(|t| t.elapsed() < Duration::from_secs(2)),
                 text: self.cc.text.lock().unwrap().clone(),
+                youtube: self.cc.youtube.as_ref().map(|y| y.status.lock().unwrap().clone()),
             },
             luma: self.counters.luma(),
             uptime_s: self.started.elapsed().as_secs_f64().round(),

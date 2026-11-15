@@ -151,6 +151,10 @@ Gezählt sind die 7 fehlenden Funktionen und die drei Teilfunktionen mit dem gr�
 |---|---|
 | DVB-Untertitel (U7, #16): Datei → `dvbsubenc` → PID 0x60 mit Sprachkennung, Lösch-Seiten, PCR bleibt auf dem Bild | `dvb_subtitles_in_ts_with_language`, Unit-Test `dvb_subtitles_branch` |
 
+| YouTube-Untertitel per HTTP POST (U8, #17): Folgenummer, UTC-Zeitstempel, Herzschlag, Antwortzeit von YouTube im Status; Ingest-URL maskiert | `youtube_captions_posted_with_sequence`, Unit-Tests in `ytcaptions.rs`, `relay.rs` |
+
+Offen bei #17: Abnahme an einem echten YouTube-Testlivestream (braucht Kanal und Ingest-URL).
+
 Offen bei #16: Abnahme an VLC und einem Fernseher mit DVB-IPTV sowie Descriptor-Prüfung mit TSDuck (hier nicht installiert; ffprobe liest Sprache und PID).
 
 ## Neu in PR #2

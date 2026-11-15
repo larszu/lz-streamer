@@ -288,6 +288,12 @@
               <label class="switch"><input type="checkbox" data-path="encoder.captions.dvb.enabled"> Zusätzlich als DVB-Untertitel im TS</label>
               <label class="field"><span>Sprachkennung DVB (ISO 639-2)</span><input class="input" data-path="encoder.captions.dvb.language" placeholder="deu"></label>
             </div>
+            <div class="row2">
+              <label class="switch"><input type="checkbox" data-path="encoder.captions.youtube.enabled"> Zusätzlich per HTTP an YouTube</label>
+              <label class="field"><span>Versatz (ms)</span><input class="input" data-path="encoder.captions.youtube.offset_ms" data-num inputmode="numeric"></label>
+            </div>
+            <label class="field"><span>YouTube-Untertitel-URL (YouTube Studio → Livestream → Untertitel → HTTP POST)</span><input class="input" data-path="encoder.captions.youtube.url" spellcheck="false" placeholder="http://upload.youtube.com/closedcaption?cid=…"></label>
+            <p class="hint">Nur nötig, wenn YouTube die 608-Untertitel im Strom nicht zeigt. Gilt für Live-Text und Spracherkennung; YouTube zeigt die Zeilen nur mit 30 oder 60 s Verzögerung des Streams.</p>
             <p class="hint">DVB-Untertitel sind für IPTV- und Multicast-Empfänger (Fernseher, VLC) und laufen auf SRT/UDP/RTP mit, nicht über RTMP. Die zweite Sprache nimmt die Kennung der zweiten Spur.</p>
             <p class="hint">Mit Spracherkennung übersetzt Whisper ins Englische; bei Live-Text kommt die zweite Sprache aus dem zweiten Eingabefeld. YouTube und viele Player zeigen nur die erste Spur (CC1).</p>
             <div data-show-mode="encoder.captions.source=speech">
