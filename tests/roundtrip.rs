@@ -1544,3 +1544,68 @@ fn dvb_subtitles_in_ts_with_language() {
     assert!(sizes.iter().filter(|&&s| s > 100).count() >= 2, "{sizes:?}");
     assert!(sizes.iter().any(|&s| s < 100), "keine Löschseite: {sizes:?}");
 }
+
+/// Kleiner HTTP-Ersatz: nimmt POSTs an und legt (Anfragezeile, Körper) ab.
+fn http_post_stub() -> (u16, std::sync::Arc<std::sync::Mutex<Vec<(String, String)>>>) {
+    use std::io::{BufRead, BufReader, Read, Write};
+    let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = l.local_addr().unwrap().port();
+    let got: std::sync::Arc<std::sync::Mutex<Vec<(String, String)>>> = Default::default();
+    let g = got.clone();
+    std::thread::spawn(move || {
+        for s in l.incoming().flatten() {
+            let mut r = BufReader::new(s.try_clone().unwrap());
+            let mut first = String::new();
+            let _ = r.read_line(&mut first);
+            let mut len = 0usize;
+            loop {
+                let mut h = String::new();
+                if r.read_line(&mut h).unwrap_or(0) == 0 || h == "\r\n" {
+                    break;
+                }
+                if let Some(v) = h.to_ascii_lowercase().strip_prefix("content-length:") {
+                    len = v.trim().parse().unwrap_or(0);
+                }
+            }
+            let mut body = vec![0; len];
+            let _ = r.read_exact(&mut body);
+            g.lock().unwrap().push((first.trim().to_string(), String::from_utf8_lossy(&body).into_owned()));
+            let mut s = s;
+            let _ = s.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 24\r\nConnection: close\r\n\r\n2026-11-15T10:00:00.000\n");
+        }
+    });
+    (port, got)
+}
+
+/// #17: Live-Untertitel gehen zusätzlich per HTTP POST an die YouTube-Ingest-URL.
+#[test]
+fn youtube_captions_posted_with_sequence() {
+    use lz_streamer::config::CaptionSource;
+    init();
+    let (hport, got) = http_post_stub();
+    let port = free_port();
+    let mut cfg = encoder_cfg(port, SrtMode::Listener);
+    cfg.captions.source = CaptionSource::Live;
+    cfg.captions.youtube.enabled = true;
+    cfg.captions.youtube.url = format!("http://127.0.0.1:{hport}/closedcaption?cid=test");
+    let mut enc = Channel::start_encoder(&cfg, &[], &ChannelOptions::default()).unwrap();
+    let mut dec = Channel::start_decoder(&decoder_cfg(port, SrtMode::Caller), &ChannelOptions::default()).unwrap();
+    run_until(&mut enc, &mut dec, Duration::from_secs(10), |_, d| d.frames >= 25);
+    let before = std::time::SystemTime::now();
+    enc.command(&ChildCmd::Caption { text: "Erste Zeile".into() });
+    enc.command(&ChildCmd::Caption { text: "Zweite Zeile".into() });
+    let (e, _) = run_until(&mut enc, &mut dec, Duration::from_secs(10), |e, _| e.captions.youtube.as_ref().is_some_and(|y| y.sent >= 2));
+    enc.stop();
+    let y = e.captions.youtube.unwrap();
+    assert_eq!(y.failed, 0, "{y:?}");
+    assert_eq!(y.server_time.as_deref(), Some("2026-11-15T10:00:00.000"));
+    let got = got.lock().unwrap().clone();
+    assert!(got[0].0.starts_with("POST /closedcaption?cid=test&seq=1 "), "{got:?}");
+    assert!(got[1].0.contains("&seq=2 "), "{got:?}");
+    let (ts, text) = got[0].1.split_once('\n').unwrap();
+    assert_eq!(text, "Erste Zeile\n");
+    // Zeitstempel UTC, kurz nach dem Absenden (Einspeisen 300 ms in der Zukunft)
+    let at = chrono::NaiveDateTime::parse_from_str(ts, "%Y-%m-%dT%H:%M:%S%.3f").unwrap().and_utc();
+    let lead = at.timestamp_millis() - chrono::DateTime::<chrono::Utc>::from(before).timestamp_millis();
+    assert!((0..2000).contains(&lead), "Zeitstempel {ts} weicht {lead} ms ab");
+}

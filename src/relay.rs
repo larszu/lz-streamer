@@ -697,6 +697,7 @@ pub fn mask_config(cfg: &mut crate::config::Config) {
     };
     m(&mut cfg.encoder.rsp.token);
     m(&mut cfg.decoder.relay.token);
+    m(&mut cfg.encoder.captions.youtube.url);
     for d in &mut cfg.relay.destinations {
         m(&mut d.key);
     }
@@ -710,10 +711,27 @@ pub fn keep_secrets(new: &mut crate::config::Config, old: &crate::config::Config
     if new.decoder.relay.token == MASK {
         new.decoder.relay.token = old.decoder.relay.token.clone();
     }
+    if new.encoder.captions.youtube.url == MASK {
+        new.encoder.captions.youtube.url = old.encoder.captions.youtube.url.clone();
+    }
     for (i, d) in new.relay.destinations.iter_mut().enumerate() {
         if d.key == MASK {
             // gleiche Position oder gleicher Name
             d.key = old.relay.destinations.get(i).filter(|o| o.name == d.name).or_else(|| old.relay.destinations.iter().find(|o| o.name == d.name)).map(|o| o.key.clone()).unwrap_or_default();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn youtube_url_masked_and_kept() {
+        let mut old = crate::config::Config::default();
+        old.encoder.captions.youtube.url = "http://upload.youtube.com/closedcaption?cid=geheim".into();
+        let mut shown = old.clone();
+        super::mask_config(&mut shown);
+        assert_eq!(shown.encoder.captions.youtube.url, super::MASK);
+        super::keep_secrets(&mut shown, &old);
+        assert_eq!(shown.encoder.captions.youtube.url, old.encoder.captions.youtube.url);
     }
 }

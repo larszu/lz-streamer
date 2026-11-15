@@ -778,6 +778,9 @@ pub struct CaptionConfig {
     /// zusätzlich als DVB-Untertitel (Bitmap) im Transportstrom
     #[serde(default)]
     pub dvb: DvbSubtitles,
+    /// zusätzlich per HTTP POST an YouTube (Live-Text und Spracherkennung)
+    #[serde(default)]
+    pub youtube: crate::ytcaptions::YoutubeCaptions,
 }
 
 /// DVB-Untertitel (EN 300 743) für IPTV-/Multicast-Empfänger: derselbe Text,

@@ -347,3 +347,16 @@ async fn upload_secrets_never_returned() {
     let (_, v, _) = call(&r, "GET", "/api/uploads", None, None).await;
     assert_eq!(v["targets"][0]["has_secret"], false);
 }
+
+/// Die Oberfläche muss sich parsen lassen: ein doppelt deklarierter Bezeichner legt sie ganz still.
+#[test]
+fn web_scripts_parse() {
+    if std::process::Command::new("node").arg("--version").output().is_err() {
+        eprintln!("node fehlt – Test übersprungen");
+        return;
+    }
+    for f in ["web/app.js"] {
+        let out = std::process::Command::new("node").args(["--check", f]).output().unwrap();
+        assert!(out.status.success(), "{f}: {}", String::from_utf8_lossy(&out.stderr));
+    }
+}
