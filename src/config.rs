@@ -770,6 +770,18 @@ pub struct EncoderConfig {
     /// Ancillary: Timecode und AFD als ST 2038 im TS
     #[serde(default)]
     pub anc: AncConfig,
+    /// Transportstrom: konstante Rate, PCR-getaktetes Senden
+    #[serde(default)]
+    pub ts: TsOutputConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(default)]
+pub struct TsOutputConfig {
+    /// Gesamtrate des TS in kbit/s, aufgefüllt mit Nullpaketen (0 = variabel)
+    pub cbr_kbps: u32,
+    /// TS-Ausgänge senden im Takt der PCR statt so schnell wie möglich
+    pub pace: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -1085,6 +1097,13 @@ impl Config {
                 let e = &self.encoder;
                 if e.srt.mode == SrtMode::Caller && e.srt.host.trim().is_empty() {
                     h.push(warn("Kein Ziel eingetragen – gesendet wird an diesen Rechner (127.0.0.1)."));
+                }
+                if e.ts.cbr_kbps > 0 {
+                    let audio: u32 = if e.audio.enabled { crate::audio::effective_tracks(&e.audio.tracks).iter().map(|t| t.bitrate_kbps).sum() } else { 0 };
+                    let need = (e.video.bitrate_kbps + audio) * 115 / 100;
+                    if e.ts.cbr_kbps < need {
+                        h.push(warn(&format!("TS-Rate {} kbit/s ist knapp: Bild und Ton brauchen mit Verpackung etwa {need} kbit/s.", e.ts.cbr_kbps)));
+                    }
                 }
                 if e.srt.mode == SrtMode::Listener {
                     h.push(info(&format!("Wartet auf Port {} auf eine Gegenstelle (Listener).", e.srt.port)));

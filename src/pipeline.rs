@@ -487,7 +487,9 @@ pub fn encoder_description(cfg: &EncoderConfig, parts: &EncoderParts) -> String 
     }
 
     d.push(format!(
-        "mpegtsmux name=mux alignment=7 pcr-interval=3600{}{} ! tee name=tsout allow-not-linked=true",
+        "mpegtsmux name=mux alignment=7 pcr-interval=3600{}{}{} ! tee name=tsout allow-not-linked=true",
+        // konstante Rate: mpegtsmux füllt mit Nullpaketen auf und stempelt jeden Puffer mit seiner PCR-Zeit
+        if cfg.ts.cbr_kbps > 0 { format!(" bitrate={}", cfg.ts.cbr_kbps as u64 * 1000) } else { String::new() },
         if cfg.anc.scte35 { format!(" scte-35-pid={}", crate::scte35::PID) } else { String::new() },
         if fixed_pcr { " prog-map=\"progmap,PCR_1=(string)sink_65\"" } else { "" }
     ));
@@ -497,9 +499,11 @@ pub fn encoder_description(cfg: &EncoderConfig, parts: &EncoderParts) -> String 
 
 /// Ausgänge hinter dem TS-Verteiler `tsout`: SRT-Ziel und weitere Ausgänge.
 pub fn ts_outputs(cfg: &EncoderConfig) -> Vec<String> {
+    // PCR-getaktet: die Senken warten auf die Zeit jedes Puffers (mit CBR = PCR-Zeit)
+    let sync = cfg.ts.pace;
     let mut d = vec![format!(
         "tsout. ! queue max-size-buffers=0 max-size-bytes=0 max-size-time=1000000000 ! srtsink name=srtout uri={} latency={} \
-         wait-for-connection=false async=false sync=false",
+         wait-for-connection=false async=false sync={sync}",
         quote(&cfg.srt.uri()),
         cfg.srt.latency_ms
     )];
@@ -507,13 +511,13 @@ pub fn ts_outputs(cfg: &EncoderConfig) -> Vec<String> {
         let q = "tsout. ! queue leaky=downstream max-size-buffers=0 max-size-bytes=0 max-size-time=1000000000";
         d.push(match o.kind {
             OutputType::Srt => format!(
-                "{q} ! srtsink name=out{j} uri={} latency={} wait-for-connection=false async=false sync=false",
+                "{q} ! srtsink name=out{j} uri={} latency={} wait-for-connection=false async=false sync={sync}",
                 quote(&o.srt.uri()),
                 o.srt.latency_ms
             ),
-            OutputType::Udp => format!("{q} ! udpsink name=out{j} host={} port={} ttl-mc={} sync=false async=false", quote(&o.host), o.port, o.ttl),
+            OutputType::Udp => format!("{q} ! udpsink name=out{j} host={} port={} ttl-mc={} sync={sync} async=false", quote(&o.host), o.port, o.ttl),
             OutputType::Rtp => format!(
-                "{q} ! rtpmp2tpay ! udpsink name=out{j} host={} port={} ttl-mc={} sync=false async=false",
+                "{q} ! rtpmp2tpay ! udpsink name=out{j} host={} port={} ttl-mc={} sync={sync} async=false",
                 quote(&o.host),
                 o.port,
                 o.ttl
@@ -974,10 +978,27 @@ mod tests {
     #[test]
     fn rist_output_broadcasts_over_all_paths() {
         use crate::config::{ExtraOutput, OutputType};
-        let mut cfg = EncoderConfig::default();
-        cfg.outputs = vec![ExtraOutput { kind: OutputType::Rist, host: "10.0.0.1".into(), port: 5004, rist_paths: "10.1.0.1:5004".into(), ..Default::default() }];
+        let cfg = EncoderConfig {
+            outputs: vec![ExtraOutput { kind: OutputType::Rist, host: "10.0.0.1".into(), port: 5004, rist_paths: "10.1.0.1:5004".into(), ..Default::default() }],
+            ..Default::default()
+        };
         let d = ts_outputs(&cfg).join("  ");
         assert!(d.contains("rtpmp2tpay ! ristsink name=out0 bonding-addresses=\"10.0.0.1:5004,10.1.0.1:5004\" bonding-method=broadcast sender-buffer=1000"), "{d}");
+    }
+
+    #[test]
+    fn cbr_and_pcr_pacing() {
+        let mut cfg = EncoderConfig::default();
+        let d = encoder_description(&cfg, &parts(&ResolvedInput::Test));
+        assert!(d.contains("pcr-interval=3600 ! tee name=tsout") && d.contains("srtsink name=srtout") && d.contains("async=false sync=false"));
+        cfg.ts.cbr_kbps = 12000;
+        cfg.ts.pace = true;
+        let d = encoder_description(&cfg, &parts(&ResolvedInput::Test));
+        assert!(d.contains("mpegtsmux name=mux alignment=7 pcr-interval=3600 bitrate=12000000"), "{d}");
+        assert!(d.contains("wait-for-connection=false async=false sync=true"), "{d}");
+        assert!(crate::config::Config { encoder: cfg.clone(), ..Default::default() }.hints().iter().all(|h| !h.text.contains("TS-Rate")));
+        cfg.ts.cbr_kbps = 6000;
+        assert!(crate::config::Config { encoder: cfg, ..Default::default() }.hints().iter().any(|h| h.text.contains("TS-Rate")));
     }
 
     #[test]

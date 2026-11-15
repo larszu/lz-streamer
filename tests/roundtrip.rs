@@ -1975,3 +1975,116 @@ fn srt_fec_reduces_retransmissions_under_loss() {
     assert!(plain >= 20, "Verlust-Proxy wirkt nicht ({plain} Wiederholungen)");
     assert!(fec * 3 < plain, "FEC spart keine Wiederholungen: {fec} gegen {plain}");
 }
+
+/// Teil von ETSI TR 101 290 (Prio 1/2), ohne TSDuck: Kontinuitätszähler, PAT/PMT-
+/// Abstand, PCR-Abstand; dazu Rate zwischen erster und letzter PCR und Nullpakete.
+#[derive(Debug, Default)]
+struct TsCheck {
+    cc_errors: u32,
+    max_pat_gap_ms: f64,
+    max_pmt_gap_ms: f64,
+    max_pcr_gap_ms: f64,
+    rate_kbps: f64,
+    null_packets: u64,
+    packets: u64,
+}
+
+fn check_ts(data: &[u8]) -> TsCheck {
+    use std::collections::HashMap;
+    let mut c = TsCheck::default();
+    let mut cc: HashMap<u16, u8> = HashMap::new();
+    let (mut pmt_pid, mut pcr_pid) = (None, None);
+    let mut last_pcr: Option<u64> = None;
+    let mut first_pcr: Option<(u64, usize)> = None;
+    let mut last_pcr_pos = (0u64, 0usize);
+    let (mut last_pat, mut last_pmt): (Option<u64>, Option<u64>) = (None, None);
+    let gap = |a: u64, b: u64| (b.saturating_sub(a)) as f64 / 27_000.0;
+    for (i, pkt) in data.as_chunks::<188>().0.iter().enumerate() {
+        if pkt[0] != 0x47 {
+            continue;
+        }
+        c.packets += 1;
+        let pid = ((pkt[1] as u16 & 0x1f) << 8) | pkt[2] as u16;
+        if pid == 0x1fff {
+            c.null_packets += 1;
+            continue;
+        }
+        let afc = (pkt[3] >> 4) & 3;
+        let counter = pkt[3] & 0x0f;
+        let discontinuity = afc & 2 != 0 && pkt[4] > 0 && pkt[5] & 0x80 != 0;
+        if afc & 1 != 0 {
+            if let Some(prev) = cc.get(&pid)
+                && !discontinuity
+                && counter != (prev + 1) & 0x0f
+                && counter != *prev
+            {
+                c.cc_errors += 1;
+            }
+            cc.insert(pid, counter);
+        }
+        if afc & 2 != 0 && pkt[4] >= 7 && pkt[5] & 0x10 != 0 && (pcr_pid.is_none() || pcr_pid == Some(pid)) {
+            let b = &pkt[6..12];
+            let base = (b[0] as u64) << 25 | (b[1] as u64) << 17 | (b[2] as u64) << 9 | (b[3] as u64) << 1 | (b[4] as u64) >> 7;
+            let ext = ((b[4] as u64 & 1) << 8) | b[5] as u64;
+            let pcr = base * 300 + ext;
+            if Some(pid) == pcr_pid {
+                if let Some(l) = last_pcr {
+                    c.max_pcr_gap_ms = c.max_pcr_gap_ms.max(gap(l, pcr));
+                }
+                last_pcr = Some(pcr);
+                first_pcr.get_or_insert((pcr, i));
+                last_pcr_pos = (pcr, i);
+            }
+        }
+        let pusi = pkt[1] & 0x40 != 0;
+        if pusi && afc & 1 != 0 {
+            let start = if afc == 3 { 5 + pkt[4] as usize } else { 4 };
+            if start >= 188 {
+                continue;
+            }
+            let sec = &pkt[start + 1 + pkt[start] as usize..];
+            if pid == 0 && sec.len() > 12 {
+                pmt_pid = Some(((sec[10] as u16 & 0x1f) << 8) | sec[11] as u16);
+                if let (Some(a), Some(now)) = (last_pat, last_pcr) {
+                    c.max_pat_gap_ms = c.max_pat_gap_ms.max(gap(a, now));
+                }
+                last_pat = last_pcr.or(last_pat);
+            } else if Some(pid) == pmt_pid && sec.len() > 10 {
+                pcr_pid = Some(((sec[8] as u16 & 0x1f) << 8) | sec[9] as u16);
+                if let (Some(a), Some(now)) = (last_pmt, last_pcr) {
+                    c.max_pmt_gap_ms = c.max_pmt_gap_ms.max(gap(a, now));
+                }
+                last_pmt = last_pcr.or(last_pmt);
+            }
+        }
+    }
+    if let Some((p0, i0)) = first_pcr {
+        let (p1, i1) = last_pcr_pos;
+        if p1 > p0 {
+            c.rate_kbps = ((i1 - i0) * 188 * 8) as f64 / ((p1 - p0) as f64 / 27_000_000.0) / 1000.0;
+        }
+    }
+    c
+}
+
+/// #32: Broadcast-TS mit konstanter Rate (Nullpakete) und PCR-Takt; Prüfung
+/// nach TR 101 290 Prio 1/2 (Teil), Rate auf ±2 % genau.
+#[test]
+fn cbr_ts_with_pcr_pacing_passes_tr101290_subset() {
+    init();
+    let mut cfg = encoder_cfg(free_port(), SrtMode::Listener);
+    cfg.ts.cbr_kbps = 3000;
+    cfg.ts.pace = true;
+    let ts = capture_udp_ts(&mut cfg, 6, "cbr", |_, _| {});
+    let data = std::fs::read(&ts).unwrap();
+    let _ = std::fs::remove_file(&ts);
+    // Anlauf abschneiden
+    let data = &data[data.len().min(188 * 2000) / 188 * 188..];
+    let c = check_ts(data);
+    eprintln!("{c:?}");
+    assert_eq!(c.cc_errors, 0, "{c:?}");
+    assert!(c.max_pat_gap_ms <= 500.0 && c.max_pmt_gap_ms <= 500.0, "{c:?}");
+    assert!(c.max_pcr_gap_ms <= 40.0, "{c:?}");
+    assert!(c.null_packets > 0, "keine Nullpakete: {c:?}");
+    assert!((c.rate_kbps - 3000.0).abs() < 60.0, "Rate {} kbit/s statt 3000", c.rate_kbps);
+}
