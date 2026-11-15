@@ -1138,7 +1138,10 @@ impl DestPipe {
         let src = "appsrc name=src is-live=true format=bytes do-timestamp=true block=false max-bytes=16000000";
         match self.cfg.kind {
             DestKind::Rtmp => format!(
-                "{src} ! tsparse set-timestamps=true ! tsdemux name=d  flvmux name=fm streamable=true latency=200000000 ! rtmp2sink name=out async=false sync=false location={}",
+                "{src} ! tsparse set-timestamps=true ! tsdemux name=d \
+                 queue name=vq max-size-buffers=0 max-size-bytes=0 max-size-time=2000000000 ! h264parse ! video/x-h264,stream-format=avc,alignment=au ! fm.video \
+                 queue name=aq max-size-buffers=0 max-size-bytes=0 max-size-time=2000000000 ! aacparse ! audio/mpeg,mpegversion=4,stream-format=raw ! fm.audio \
+                 flvmux name=fm streamable=true latency=200000000 ! rtmp2sink name=out async=false sync=false location={}",
                 crate::pipeline::quote(&self.cfg.rtmp_url())
             ),
             DestKind::Srt => format!(
@@ -1170,35 +1173,36 @@ impl DestPipe {
             }
         }
         if self.cfg.kind == DestKind::Rtmp {
-            // Bild und erste Tonspur an den FLV-Muxer, weitere Tonspuren verwerfen
-            if let (Some(d), Some(fm)) = (p.by_name("d"), p.by_name("fm")) {
+            // Bild und erste Tonspur an die festen Zweige vor dem FLV-Muxer, weitere Tonspuren verwerfen.
+            // Die Zweige stehen schon vor dem ersten Paket: ein Muxer-Pad erst im Streaming-Thread
+            // anzufordern blieb hängen, flvmux bekam nie Daten.
+            if let (Some(d), Some(vq), Some(aq)) = (p.by_name("d"), p.by_name("vq"), p.by_name("aq")) {
                 let pw = p.downgrade();
-                let audio_done = Arc::new(AtomicBool::new(false));
                 d.connect_pad_added(move |_, pad| {
-                    let Some(p) = pw.upgrade() else { return };
-                    let caps = pad.current_caps().or_else(|| Some(pad.query_caps(None)));
-                    let name = caps.as_ref().and_then(|c| c.structure(0)).map(|s| s.name().to_string()).unwrap_or_default();
-                    let desc = if name == "video/x-h264" {
-                        "queue max-size-buffers=0 max-size-bytes=0 max-size-time=2000000000 ! h264parse ! video/x-h264,stream-format=avc,alignment=au"
-                    } else if name == "audio/mpeg" && !audio_done.swap(true, Ordering::Relaxed) {
-                        "queue max-size-buffers=0 max-size-bytes=0 max-size-time=2000000000 ! aacparse ! audio/mpeg,mpegversion=4,stream-format=raw"
-                    } else {
-                        "queue ! fakesink sync=false async=false"
+                    let caps = pad.current_caps().unwrap_or_else(|| pad.query_caps(None));
+                    let name = caps.structure(0).map(|s| s.name().to_string()).unwrap_or_default();
+                    let target = match name.as_str() {
+                        "video/x-h264" => vq.static_pad("sink"),
+                        "audio/mpeg" => aq.static_pad("sink"),
+                        _ => None,
                     };
-                    let Ok(bin) = gst::parse::bin_from_description(desc, true) else { return };
-                    if p.add(&bin).is_err() {
+                    // Programmwechsel im TS (neue PMT): neue Pads ersetzen die alten,
+                    // die tsdemux erst danach entfernt. Sonst bliebe der Ton am alten Pad hängen.
+                    let same_program = |peer: &gst::Pad| peer.name().split('_').nth(1) == pad.name().split('_').nth(1);
+                    if let Some(sink) = target.filter(|s| s.peer().is_none_or(|peer| !same_program(&peer))) {
+                        if let Some(old) = sink.peer() {
+                            let _ = old.unlink(&sink);
+                        }
+                        let _ = pad.link(&sink);
                         return;
                     }
-                    let to_mux = !desc.contains("fakesink");
-                    if to_mux {
-                        let pad_name = if name.starts_with("video") { "video" } else { "audio" };
-                        if let (Some(src), Some(sink)) = (bin.static_pad("src"), fm.request_pad_simple(pad_name)) {
-                            let _ = src.link(&sink);
+                    let Some(p) = pw.upgrade() else { return };
+                    let Ok(bin) = gst::parse::bin_from_description("queue ! fakesink sync=false async=false", true) else { return };
+                    if p.add(&bin).is_ok() {
+                        let _ = bin.sync_state_with_parent();
+                        if let Some(sink) = bin.static_pad("sink") {
+                            let _ = pad.link(&sink);
                         }
-                    }
-                    let _ = bin.sync_state_with_parent();
-                    if let Some(sink) = bin.static_pad("sink") {
-                        let _ = pad.link(&sink);
                     }
                 });
             }
