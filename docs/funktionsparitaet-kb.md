@@ -86,7 +86,7 @@ Ohne die entfallenden Punkte sind 38 von 59 Funktionen fertig (64 %), dazu 14 in
 | 37 | SRT Overhead-Bandbreite | Teil | libsrt-Vorgabe, nicht einstellbar | S |
 | 38 | TS über UDP/RTP (auch Multicast) | fertig | als weitere Ausgänge | – |
 | 39 | Mehrere Ausgänge je Kanal | fertig | beliebig viele SRT/UDP/RTP + RTMP | – |
-| 40 | HLS/DASH/CMAF | Teil | HLS (TS oder CMAF) mit ABR-Stufen, allen Tonspuren, 608 als CC, Upload per HTTP PUT; geprüft mit hls.js in Chrome. Offen: Safari-Abnahme, DASH (`abr-leiter.md`) | S |
+| 40 | HLS/DASH/CMAF | Teil | HLS (TS oder CMAF) mit ABR-Stufen, allen Tonspuren, 608 als CC, Upload per HTTP PUT; geprüft mit hls.js in Chrome. Bei CMAF zusätzlich DASH (`/hls/index.mpd`, Stufen als Representations, Tonspuren mit `lang`). Offen: Safari-Abnahme, DASH-Wiedergabe mit dash.js (`abr-leiter.md`) | S |
 | 41 | Aufnahme (Archiv) | fertig | parallel, TS oder fragmentiertes MP4, Segmente, alle Tonspuren | – |
 | 42 | Aufnahmen-Seite (Liste, Download) | fertig | Liste, Download, Löschen | – |
 
@@ -129,7 +129,7 @@ Gezählt sind die 7 fehlenden Funktionen und die drei Teilfunktionen mit dem gr�
 | Punkt | Warum noch nicht |
 |---|---|
 | CEA-608/708 (#20), SCTE (#60), Ancillary (#61) | braucht VANC aus dem DeckLink-Eingang; ohne angestecktes Gerät nicht prüfbar |
-| DASH (#40) | `dashsink` legt jede Stufe als eigenes AdaptationSet ohne Sprachkennung an; sinnvoll ist ein eigenes MPD über die CMAF-Segmente |
+| DASH-Wiedergabe (#40) | Manifest steht und löst auf lesbare Segmente auf; mit dash.js in Chrome nicht geprüft (dash.js liegt nicht vor) |
 | 1080i-Quelle an echter Hardware (Deinterlacing #17, Halbbild-Ausgabe #26) | Messung mit echtem SDI-Eingang steht aus |
 
 ## Netz-Eingänge (#13)
