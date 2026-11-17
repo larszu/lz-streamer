@@ -188,7 +188,7 @@ pub fn active(cfg: &EncoderConfig) -> bool {
 
 impl DashWriter {
     pub fn new(cfg: &EncoderConfig) -> Self {
-        let reps = crate::hls::rendition_names(cfg).into_iter().map(|name| Rep { name, ..Default::default() }).collect();
+        let reps = crate::hls::rendition_names(cfg).into_iter().filter(|n| !n.starts_with('s')).map(|name| Rep { name, ..Default::default() }).collect();
         Self { dir: PathBuf::from(cfg.hls.dir.trim()), cfg: cfg.clone(), reps, ast: None, last: Vec::new() }
     }
 

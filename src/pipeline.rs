@@ -597,7 +597,8 @@ pub fn caption_branch(cfg: &EncoderConfig) -> Option<String> {
     // die zweite auf CC3 (Feld 2).
     let second = c.second_active();
     let lang = |n: &str, src: &str, pad: &str| {
-        let (tap, side) = if cfg.record.enabled {
+        // zurücklesen für die Dateien neben der Aufnahme und für HLS-WebVTT
+        let (tap, side) = if cfg.record.enabled || cfg.hls.enabled && !cfg.hls.dir.trim().is_empty() {
             (
                 format!("tee name=ccrt{n} ! "),
                 format!(

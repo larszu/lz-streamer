@@ -5,6 +5,9 @@
 
 use std::path::Path;
 
+/// Zeilen einer Sprache, geteilt zwischen 608-Rücklesen, Aufnahme und HLS
+pub type CueStore = std::sync::Arc<std::sync::Mutex<Vec<Cue>>>;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Cue {
     /// Laufzeit der Pipeline, ns
