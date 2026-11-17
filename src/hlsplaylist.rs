@@ -141,6 +141,8 @@ pub struct Publisher {
     handle: Option<std::thread::JoinHandle<()>>,
 }
 
+pub type Task = Box<dyn FnMut() + Send>;
+
 /// Rohname → veröffentlichter Name: `v1.raw.m3u8` → `v1.m3u8`
 pub fn published_name(raw: &str) -> Option<String> {
     raw.strip_suffix(".raw.m3u8").map(|b| format!("{b}.m3u8"))
@@ -154,8 +156,9 @@ fn write_atomic(path: &Path, text: &str) {
 }
 
 impl Publisher {
-    /// `names`: Basisnamen der Renditionen (`v`, `v1`, `a0` …)
-    pub fn start(dir: PathBuf, names: Vec<String>, keep: usize, resume: bool) -> Self {
+    /// `names`: Basisnamen der Renditionen (`v`, `v1`, `a0` …); `tasks` laufen
+    /// in jedem Durchgang mit (DASH-Manifest, Untertitel-Segmente)
+    pub fn start(dir: PathBuf, names: Vec<String>, keep: usize, resume: bool, mut tasks: Vec<Task>) -> Self {
         let stop = Arc::new(AtomicBool::new(false));
         let s2 = stop.clone();
         let mut lists: Vec<(String, Playlist)> = names
@@ -171,6 +174,9 @@ impl Publisher {
                 let mut last: Vec<String> = vec![String::new(); lists.len()];
                 let mut grace: VecDeque<(u32, String)> = VecDeque::new();
                 while !s2.load(Ordering::Relaxed) {
+                    for t in tasks.iter_mut() {
+                        t();
+                    }
                     for (i, (n, p)) in lists.iter_mut().enumerate() {
                         let Ok(raw) = std::fs::read_to_string(dir.join(format!("{n}.raw.m3u8"))) else { continue };
                         if raw == last[i] {

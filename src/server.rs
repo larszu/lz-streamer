@@ -784,6 +784,10 @@ async fn hls_file(State(app): S, Path(name): Path<String>) -> Response {
         "video/mp4"
     } else if n.ends_with(".ts") {
         "video/mp2t"
+    } else if n.ends_with(".mpd") {
+        "application/dash+xml"
+    } else if n.ends_with(".vtt") {
+        "text/vtt; charset=utf-8"
     } else {
         return err(StatusCode::NOT_FOUND, "nicht gefunden");
     };
@@ -792,7 +796,7 @@ async fn hls_file(State(app): S, Path(name): Path<String>) -> Response {
         Ok(b) => (
             [
                 (header::CONTENT_TYPE, ct),
-                (header::CACHE_CONTROL, if n.ends_with(".m3u8") { "no-store" } else { "max-age=60" }),
+                (header::CACHE_CONTROL, if n.ends_with(".m3u8") || n.ends_with(".mpd") { "no-store" } else { "max-age=60" }),
                 (header::ACCESS_CONTROL_ALLOW_ORIGIN, "*"),
             ],
             b,

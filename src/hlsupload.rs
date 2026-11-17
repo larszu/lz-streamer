@@ -119,8 +119,8 @@ impl Sync {
         let Ok(rd) = std::fs::read_dir(&self.dir) else { return };
         let mut lists: Vec<String> =
             rd.flatten().map(|e| e.file_name().to_string_lossy().to_string()).filter(|n| (n.ends_with(".m3u8") && !n.ends_with(".raw.m3u8")) || n.ends_with(".mpd")).collect();
-        // Medien-Playlists vor der Master-Playlist
-        lists.sort_by_key(|n| (n == "index.m3u8", n.clone()));
+        // Medien-Playlists vor Master-Playlist und Manifest
+        lists.sort_by_key(|n| (n == "index.m3u8" || n.ends_with(".mpd"), n.clone()));
         for list in lists {
             let Ok(text) = std::fs::read_to_string(self.dir.join(&list)) else { continue };
             if self.sent.get(&list) == Some(&text) {

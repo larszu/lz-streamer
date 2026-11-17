@@ -193,8 +193,14 @@ pub fn codec_string(cfg: &EncoderConfig) -> String {
 }
 
 fn codec_string_for(cfg: &EncoderConfig, height: u32) -> String {
+    let v = video_codec(cfg, height);
+    if cfg.audio.enabled { format!("{v},mp4a.40.2") } else { v }
+}
+
+/// Codec-Kennung nur des Bilds einer Stufe
+pub fn video_codec(cfg: &EncoderConfig, height: u32) -> String {
     let cmaf = cfg.hls.format == SegmentFormat::Cmaf;
-    let v = match cfg.video.codec {
+    match cfg.video.codec {
         Codec::H264 => {
             let p = match cfg.video.profile.as_str() {
                 "baseline" => "42E01F",
@@ -208,8 +214,7 @@ fn codec_string_for(cfg: &EncoderConfig, height: u32) -> String {
             let p = if cfg.video.profile == "main-10" { "2.4.L153.B0" } else { "1.6.L153.B0" };
             format!("{}.{p}", if cmaf { "hev1" } else { "hvc1" })
         }
-    };
-    if cfg.audio.enabled { format!("{v},mp4a.40.2") } else { v }
+    }
 }
 
 /// Zweistelliger Sprachcode für die Playlist (BCP 47)
@@ -298,7 +303,7 @@ pub fn prepare_dir(cfg: &EncoderConfig) -> std::io::Result<bool> {
     for e in std::fs::read_dir(dir)?.flatten() {
         let p = e.path();
         let name = e.file_name().to_string_lossy().to_string();
-        let media = p.extension().is_some_and(|x| x == "m4s" || x == "m3u8" || x == "mp4" || x == "ts" || x == "tmp");
+        let media = p.extension().is_some_and(|x| x == "m4s" || x == "m3u8" || x == "mp4" || x == "ts" || x == "tmp" || x == "mpd" || x == "vtt");
         if media && !keep.contains(&name) {
             let _ = std::fs::remove_file(p);
         }
@@ -330,8 +335,9 @@ fn sink(cfg: &EncoderConfig, name: &str, base: &str) -> String {
     );
     match h.format {
         SegmentFormat::Ts => format!("hlssink3 name={name} location={} {common}", crate::pipeline::quote(&format!("{stem}_%05d.ts"))),
+        // Vorgabe wären 7,5 s Muxer-Latenz mit Takt-Abgleich: Segmente erschienen erst Sekunden später
         SegmentFormat::Cmaf => format!(
-            "hlscmafsink name={name} location={} init-location={} {common}",
+            "hlscmafsink name={name} location={} init-location={} latency=500000000 sync=false {common}",
             crate::pipeline::quote(&format!("{stem}_%05d.m4s")),
             crate::pipeline::quote(&format!("{stem}_init_%03d.mp4")),
         ),

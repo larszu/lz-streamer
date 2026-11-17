@@ -833,11 +833,17 @@ impl Channel {
             let ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
             cfg_run.hls.generation = format!("{:x}", ms % 0xff_ffff_ffff);
             let resume = crate::hls::prepare_dir(&cfg_run).with_context(|| format!("HLS-Ordner {}", cfg.hls.dir))?;
+            let mut tasks: Vec<crate::hlsplaylist::Task> = Vec::new();
+            if crate::dash::active(&cfg_run) {
+                let mut w = crate::dash::DashWriter::new(&cfg_run);
+                tasks.push(Box::new(move || w.tick()));
+            }
             publisher = Some(crate::hlsplaylist::Publisher::start(
                 PathBuf::from(cfg.hls.dir.trim()),
                 crate::hls::rendition_names(&cfg_run),
                 cfg.hls.playlist_length.max(3) as usize,
                 resume,
+                tasks,
             ));
         }
         let cfg = &cfg_run;
