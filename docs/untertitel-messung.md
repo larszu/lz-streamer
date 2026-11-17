@@ -182,3 +182,21 @@ Zum Vergleich ohne zweite Sprache: Zeile am Decoder 7,6 s im Median, WER 0,13.
 - **Behoben:** Die Untertiteldateien machten bei Roll-up aus jedem Zeichenschritt eine eigene Zeile, im Messlauf 858 Einträge. Eine wachsende Zeile bleibt jetzt eine Zeile, im Messlauf 73 Einträge.
 
 Messbefehl: wie oben, zusätzlich `--zweitsprache $D/de_de.ref.en.txt --zweitmodell base`.
+
+## Einbrennen per OGraf (U3)
+
+Stand: 17.11.2026, MacBook Pro M1 Pro, Release-Bau. Renderer aus `lz-vision-mixer/renderer` (Electron, `npm install && npm run build`), eingetragen als `encoder.graphics.renderer`. Aus dem Quellstand startet ihn ein kleines Skript, das `node_modules/electron/dist/Electron.app/Contents/MacOS/Electron <renderer-ordner> "$@"` aufruft; die gepackte App lässt sich direkt als `.app` eintragen.
+
+Aufbau: Testbild 1080p50, H.264 VideoToolbox 8 Mbit/s, SRT-Listener, Untertitelquelle „Live“, Einbrennen „alle“. Alle 2 s ein `POST /api/caption`.
+
+| Abnahme | Ergebnis |
+|---|---|
+| Renderer verbindet sich und lädt `lz-captions` | Ebene 1 `playing`, Bibliothek mit fünf Grafiken |
+| Untertitel im Bild | im SRT-Ausgang (aus dem TS dekodiert, Ausschnitt unten) und im Vorschaubild |
+| 1080p50 ohne Bildverlust | 50,4 Bilder/s über 15 s mit wechselnden Zeilen |
+| Renderer-Absturz (`kill -9`) | Bild läuft mit 50,3 Bilder/s weiter, kein Kanalneustart; Renderer nach 5 s neu gestartet und wieder verbunden |
+| Snapshot-Test des Vorschaubilds | `graphics_burn_in_and_renderer_loss` (untere Bildhälfte heller), `graphics_burn_in_1080p50_keeps_frame_rate` (50,0 Bilder/s) |
+
+![Untertitel aus lz-captions im SRT-Ausgang](u3-einbrennen.png)
+
+Unter Volllast fremder Prozesse (Lastmittel > 60) fiel der Debug-Bau auf 1–2 Bilder/s; der Release-Bau hielt dabei 48–50 Bilder/s.
