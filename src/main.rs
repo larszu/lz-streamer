@@ -36,6 +36,9 @@ enum Cmd {
         /// Oberfläche über HTTPS (auch in der Verwaltung einstellbar)
         #[arg(long)]
         https: bool,
+        /// OSC-Empfang (Untertitel, Grafik, Schalter), z. B. 0.0.0.0:4211 für Companion auf einem anderen Rechner
+        #[arg(long, default_value = "127.0.0.1:4211")]
+        osc: String,
     },
     /// Einen Kanal direkt ausführen (so startet der Aufpasser seine Kindprozesse)
     Channel {
@@ -165,7 +168,7 @@ fn main() -> Result<()> {
         .init();
     gst::init().context("GStreamer lässt sich nicht starten – ist es installiert?")?;
     let cli = Cli::parse();
-    match cli.cmd.unwrap_or(Cmd::Serve { port: lz_streamer::DEFAULT_PORT, bind: "127.0.0.1".into(), config: None, autostart: false, https: false }) {
+    match cli.cmd.unwrap_or(Cmd::Serve { port: lz_streamer::DEFAULT_PORT, bind: "127.0.0.1".into(), config: None, autostart: false, https: false, osc: "127.0.0.1:4211".into() }) {
         Cmd::Channel { config, preview } => {
             let cfg: Config = serde_json::from_slice(&std::fs::read(&config)?)?;
             let opts = ChannelOptions { preview_path: preview };
@@ -263,12 +266,12 @@ fn main() -> Result<()> {
             }
             Ok(())
         }
-        Cmd::Serve { port, bind, config, autostart, https } => serve(port, bind, config_path(config), autostart, https),
+        Cmd::Serve { port, bind, config, autostart, https, osc } => serve(port, bind, config_path(config), autostart, https, osc),
     }
 }
 
 #[tokio::main]
-async fn serve(port: u16, bind: String, cfg_path: PathBuf, autostart: bool, https: bool) -> Result<()> {
+async fn serve(port: u16, bind: String, cfg_path: PathBuf, autostart: bool, https: bool, osc: String) -> Result<()> {
     let cfg = load_config(&cfg_path);
     let run_dir = std::env::temp_dir().join(format!("lz-streamer-{port}"));
     let data = lz_streamer::admin::DataDir::new(cfg_path.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| PathBuf::from(".")));
@@ -315,7 +318,7 @@ async fn serve(port: u16, bind: String, cfg_path: PathBuf, autostart: bool, http
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         }
     };
-    tokio::spawn(lz_streamer::renderer::osc_listener("127.0.0.1:4211".into(), app.clone()));
+    tokio::spawn(lz_streamer::renderer::osc_listener(osc, app.clone()));
     tokio::spawn(lz_streamer::renderer::keep_running(sup.clone(), format!("ws://127.0.0.1:{port}/renderer")));
     // Der Renderer bleibt bei HTTPS im Klartext: lokal nimmt derselbe Port beides an
     server::run(listener, app, https, shutdown).await
