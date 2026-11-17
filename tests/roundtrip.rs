@@ -1058,6 +1058,62 @@ fn hls_output_with_two_languages() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// KB-40/#23: CMAF-Segmente, dazu `index.mpd`: ein AdaptationSet Bild mit allen Stufen,
+/// je Tonspur eines mit `lang`; jede Representation löst über ihr SegmentTemplate
+/// auf Init- und Mediensegment auf, die ffprobe liest. (ffprobe liest das MPD selbst
+/// nicht: dem Homebrew-Bau fehlt libxml2 und damit der DASH-Demuxer.)
+#[test]
+fn dash_manifest_over_cmaf_segments() {
+    init();
+    let port = free_port();
+    let dir = std::env::temp_dir().join(format!("lzs-dash-{port}"));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut cfg = encoder_cfg(port, SrtMode::Listener);
+    three_languages(&mut cfg);
+    cfg.audio.tracks.truncate(2);
+    cfg.video.width = 1280;
+    cfg.video.height = 720;
+    cfg.video.bitrate_kbps = 3000;
+    cfg.hls.enabled = true;
+    cfg.hls.format = lz_streamer::hls::SegmentFormat::Cmaf;
+    cfg.hls.dir = dir.to_string_lossy().to_string();
+    cfg.hls.segment_s = 1;
+    let mut enc = Channel::start_encoder(&cfg, &[], &ChannelOptions::default()).unwrap();
+    let end = Instant::now() + Duration::from_secs(8);
+    while Instant::now() < end {
+        status(&mut enc);
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    let mpd = std::fs::read_to_string(dir.join("index.mpd")).expect("index.mpd fehlt");
+    eprintln!("{mpd}");
+    assert!(mpd.contains("type=\"dynamic\"") && mpd.contains("availabilityStartTime=\"20"), "{mpd}");
+    let sets: Vec<&str> = mpd.split("<AdaptationSet ").skip(1).collect();
+    assert_eq!(sets.len(), 3, "{mpd}");
+    assert!(sets[0].contains("contentType=\"video\"") && sets[0].matches("<Representation ").count() == 3, "{}", sets[0]);
+    assert!(sets[1].contains("lang=\"de\"") && sets[2].contains("lang=\"en\""), "{mpd}");
+    let mut probed = Vec::new();
+    for rep in mpd.split("<Representation ").skip(1) {
+        let attr = |k: &str| rep.split(&format!(" {k}=\"")).nth(1).and_then(|r| r.split('"').next()).map(str::to_string);
+        let number: u64 = attr("startNumber").unwrap().parse().unwrap();
+        let seg = attr("media").unwrap().replace("$Number%05d$", &format!("{number:05}"));
+        let out = std::process::Command::new("ffprobe")
+            .args(["-v", "error", "-show_entries", "stream=codec_name,width,height", "-of", "csv=p=0"])
+            .arg(format!("concat:{}|{}", dir.join(attr("initialization").unwrap()).display(), dir.join(&seg).display()))
+            .output()
+            .unwrap();
+        let got = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        let want = match (attr("width"), attr("height")) {
+            (Some(w), Some(h)) => format!("h264,{w},{h}"),
+            _ => "aac".to_string(),
+        };
+        assert_eq!(got, want, "{seg}");
+        probed.push(got);
+    }
+    enc.stop();
+    assert_eq!(probed, ["h264,1280,720", "h264,854,480", "h264,640,360", "aac", "aac"]);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// Pollt beliebig viele Kanäle, bis `done` die Status (in derselben Reihenfolge) akzeptiert.
 #[track_caller]
 fn run_all(chs: &mut [&mut Channel], timeout: Duration, mut done: impl FnMut(&[ChannelStatus]) -> bool) -> Vec<ChannelStatus> {

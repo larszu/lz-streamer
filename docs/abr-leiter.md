@@ -61,8 +61,22 @@ Gemessen am 14.11.2026, Systemlast durch andere Prozesse gering (Last 5–20):
 | hls.js 1.6.16 in Chrome (headless, Remote-Debugging) | spielt ab; drei Stufen, zwei Sprachen, CC1 als Textspur; Wechsel von Stufe und Tonspur wirkt; läuft über Kanal-Neustart weiter |
 | Safari (eingebaut, `/hls-test?nativ`) | offen: Safari ließ sich nicht fernsteuern („Entfernte Automation erlauben“ ist aus); von Hand prüfen |
 
+## DASH
+
+Bei CMAF-Segmenten schreibt der Fortschreiber zusätzlich `index.mpd` (`/hls/index.mpd`). Es beschreibt dieselben Dateien wie die HLS-Playlists:
+
+- ein AdaptationSet Bild, darin jede Stufe als Representation (umschaltbar, Keyframes deckungsgleich),
+- je Tonspur ein AdaptationSet mit `lang`, `Label` und Rolle (`main` für die erste),
+- `type="dynamic"`, SegmentTemplate mit `$Number$` und SegmentTimeline; `t` und `d` stammen aus den Segmenten (tfdt, Bilddauern), die Zeitskala aus dem Init-Segment,
+- `availabilityStartTime` aus `PROGRAM-DATE-TIME` des ersten Segments, je Representation ein fester `presentationTimeOffset`; `UTCTiming` direkt im Manifest,
+- eine Period je Kanalstart.
+
+`dashsink` taugt dafür nicht: jede Spur wird ein eigenes AdaptationSet ohne Sprachkennung, und sein mp4-Muxer ist als nicht funktionsfähig markiert. `hlscmafsink` läuft mit 0,5 s Muxer-Latenz und ohne Takt-Abgleich; mit der Vorgabe (7,5 s, Abgleich am Takt) erschienen die Segmente erst Sekunden später.
+
+Prüfung (`dash_manifest_over_cmaf_segments`): drei Stufen und zwei Sprachen im Manifest; für jede Representation ergeben Init- und Mediensegment laut SegmentTemplate in ffprobe den angegebenen Codec und die Größe. ffprobe liest das MPD selbst nicht, dem Homebrew-Bau fehlt libxml2.
+
 ## Offen
 
 - **Safari-Abnahme** von Hand.
 - **2160p50 mit drei Stufen** in Echtzeit (siehe Messung).
-- **DASH:** `dashsink` (gst-plugins-bad 1.28) legt jede Spur als eigenes AdaptationSet ohne Sprachkennung an, die Bildstufen wären also nicht als Leiter umschaltbar, und der mp4-Muxer ist als „deprecated, non-functional“ markiert. Sinnvoller ist ein eigenes MPD über die CMAF-Segmente von `hlscmafsink` (gleiche Segmente für HLS und DASH).
+- **DASH-Wiedergabe** mit dash.js in Chrome (dash.js liegt nicht vor).
