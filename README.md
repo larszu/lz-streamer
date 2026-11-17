@@ -210,6 +210,8 @@ lz-streamer serve ── axum (REST + Weboberfläche, eingebettet) ── Aufpas
       static_configs: [{ targets: ["streamer.local:4200"] }]
       basic_auth: { username: prometheus, password: "…" }
   ```
+
+  Datenraten stehen in Byte/s (`lzs_bitrate_bytes_per_second`, `lzs_srt_bandwidth_bytes_per_second`), in Grafana also `* 8` für bit/s. Geprüft mit Prometheus 3 gegen einen laufenden Kanal ([Messung](docs/funktionsparitaet-kb.md#prometheus-64)).
 - **Influx:** Mit einer Schreibadresse (z. B. `http://influx:8086/api/v2/write?org=technik&bucket=streamer`) schickt lz-streamer im eingestellten Takt Influx-Line-Protocol, Messung `lz_streamer`, Tag `host`. Das Token geht als `Authorization: Token …` mit. Ein Ausfall erscheint einmal im Ereignisprotokoll, die Rückkehr ebenso.
 - **Alarme per Mail:** SMTP mit STARTTLS (587), TLS (465) oder unverschlüsselt im eigenen Netz. Zur Wahl stehen „nur Fehler“ und eine Entwarnung, wenn ein Alarm erledigt ist. Jeder Alarm kommt einmal bei Beginn; alle neuen Alarme eines Prüfdurchlaufs stehen in einer Mail. „Testmail senden“ prüft die Einstellungen sofort.
 - **Zugangsdaten** für Mail und Influx stehen nur in `verwaltung.json` im Datenverzeichnis. `GET /api/settings`, das Diagnose-Paket und die Oberfläche geben Passwort und Token nie zurück. Ein leeres Feld beim Speichern lässt den gespeicherten Wert stehen.

@@ -68,7 +68,7 @@ pub fn collect(snap: &Snapshot, cfg: &Config, sys: &SystemInfo, alarms: &[Active
             g("lzs_signal_ok", "Eingangssignal vorhanden (1) oder verloren (0)", vec![], (s.signal == "ok") as u8 as f64);
         }
         g("lzs_standby", "Standbild läuft statt Eingang", vec![], s.standby as u8 as f64);
-        g("lzs_bitrate_bits_per_second", "Ausgangsbitrate", vec![], s.bitrate_kbps * 1000.0);
+        g("lzs_bitrate_bytes_per_second", "Ausgangsdatenrate", vec![], s.bitrate_kbps * 125.0);
         g("lzs_frames_per_second", "gemessene Bildrate", vec![], s.fps);
         if cfg.role == Role::Encoder {
             g("lzs_frames_per_second_target", "eingestellte Bildrate", vec![], cfg.encoder.video.fps as f64);
@@ -79,7 +79,7 @@ pub fn collect(snap: &Snapshot, cfg: &Config, sys: &SystemInfo, alarms: &[Active
             g("lzs_srt_rtt_seconds", "SRT-Umlaufzeit (größte aller Gegenstellen)", vec![], r / 1000.0);
         }
         if let Some(b) = s.srt.bandwidth_mbps {
-            g("lzs_srt_bandwidth_bits_per_second", "von SRT geschätzte Bandbreite", vec![], b * 1e6);
+            g("lzs_srt_bandwidth_bytes_per_second", "von SRT geschätzte Bandbreite", vec![], b * 125_000.0);
         }
         for o in &s.outputs {
             let l = || vec![("output", o.name.clone())];
@@ -294,8 +294,8 @@ mod tests {
         let (snap, cfg, sys, alarms) = sample_state();
         let t = prometheus(&collect(&snap, &cfg, &sys, &alarms));
         for line in [
-            "# TYPE lzs_bitrate_bits_per_second gauge",
-            "lzs_bitrate_bits_per_second 8000000",
+            "# TYPE lzs_bitrate_bytes_per_second gauge",
+            "lzs_bitrate_bytes_per_second 1000000",
             "lzs_srt_rtt_seconds 0.0025",
             "# TYPE lzs_srt_packets_lost_total counter",
             "lzs_srt_packets_lost_total 7",
@@ -314,6 +314,13 @@ mod tests {
         }
         // jede Metrik genau ein HELP/TYPE
         assert_eq!(t.matches("# TYPE lzs_audio_short_term_lufs ").count(), 1);
+        // Namensregeln wie `promtool check metrics`: Basiseinheit Byte, Zähler auf _total
+        for l in t.lines().filter(|l| l.starts_with("# TYPE ")) {
+            let mut w = l.split_whitespace().skip(2);
+            let (name, kind) = (w.next().unwrap(), w.next().unwrap());
+            assert!(!name.contains("_bits") && !name.contains("milliseconds"), "keine Basiseinheit: {name}");
+            assert_eq!(kind == "counter", name.ends_with("_total"), "{l}");
+        }
         // gestoppter Kanal: keine Kanalwerte, aber Systemwerte
         let idle = prometheus(&collect(&Snapshot::default(), &cfg, &sys, &[]));
         assert!(idle.contains("lzs_running 0") && idle.contains("lzs_cpu_percent") && !idle.contains("lzs_bitrate"));
@@ -325,7 +332,7 @@ mod tests {
         let t = influx(&collect(&snap, &cfg, &sys, &alarms), "regie pc", 1_000);
         let first = t.lines().next().unwrap();
         assert!(first.starts_with("lz_streamer,host=regie\\ pc running=1,"), "{first}");
-        assert!(first.contains("bitrate_bits_per_second=8000000,") && first.contains("restarts_total=2i") && first.ends_with(" 1000"), "{first}");
+        assert!(first.contains("bitrate_bytes_per_second=1000000,") && first.contains("restarts_total=2i") && first.ends_with(" 1000"), "{first}");
         assert!(t.contains("lz_streamer,host=regie\\ pc,track=1,name=Deutsch\\ \"Saal\",language=deu audio_short_term_lufs=-23.1,"), "{t}");
         assert!(!t.contains("info="));
     }

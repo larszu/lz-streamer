@@ -174,6 +174,22 @@ Gezählt sind die 7 fehlenden Funktionen und die drei Teilfunktionen mit dem gr�
 
 CBR und PCR-Takt ändern die Gesamtlatenz nicht messbar: was der Muxer früher abgibt, wartet danach im SRT-/Demux-Puffer. Die erhofften 37–51 ms und das Ziel < 130 ms erreicht dieser Schritt nicht; dafür bräuchte es ein eigenes Pacing-Element mit T-STD-Puffermodell und kleinerem Demux-Puffer am Decoder. Eine CBR-Rate unter Bild + Ton bringt den Takt aus dem Tritt (`--cbr 6000` bei 8000 kbit/s: Weißsprung kommt nicht an), daher der Hinweis in der Oberfläche.
 
+### Prometheus (#64)
+
+Prometheus 3.16 (Homebrew) liest einen laufenden Encoder (Testbild 1080p50, SRT-Listener mit einer `srtsrc`-Gegenstelle) alle 2 s:
+
+| Abnahme | Metrik | gelesen |
+|---|---|---|
+| Bitrate | `lzs_bitrate_bytes_per_second` | ≈ 600 000 (≈ 4,8 Mbit/s) |
+| RTT | `lzs_srt_rtt_seconds` | 0,00024 (lokal) |
+| Verluste | `lzs_srt_packets_lost_total`, `…_retransmitted_total`, `…_dropped_total` | 0 |
+| Lautheit | `lzs_audio_short_term_lufs{track,name,language}`, `lzs_audio_true_peak_dbtp` | −20,0 LUFS (1-kHz-Testton) |
+| CPU | `lzs_cpu_percent` | gelesen |
+
+- Ziel im Status `up`, `promtool check config` ohne Befund.
+- `promtool check metrics` bemängelte `bits` statt Basiseinheit Byte; die beiden Datenraten stehen darum in Byte/s. Ein Unit-Test hält die Namensregeln (Byte, Zähler auf `_total`).
+- Die RTT erscheint nur mit verbundener Gegenstelle.
+
 | Mehrere Kanäle (KB-02, #20): weitere Kanäle je eigener Kindprozess und Aufpasser, gemeinsame API und Karte; Absturz eines Kanals stört den anderen nicht | `tests/channels.rs` `two_channels_1080p50_and_crash_isolation` |
 
 Offen bei #20: Die weiteren Kanäle haben in der Oberfläche nur die Grundeinstellungen (Eingang, Ziel, Rate) und den Zustand; Grafik, Untertitel-Eingabe und Pegel sind dem Hauptkanal vorbehalten. Feste Ports (OSC 4211, Grafik-Renderer) gibt es nur einmal.
