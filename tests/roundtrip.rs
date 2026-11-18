@@ -2144,3 +2144,22 @@ fn cbr_ts_with_pcr_pacing_passes_tr101290_subset() {
     assert!(c.null_packets > 0, "keine Nullpakete: {c:?}");
     assert!((c.rate_kbps - 3000.0).abs() < 60.0, "Rate {} kbit/s statt 3000", c.rate_kbps);
 }
+
+/// Ohne feste Rate schreibt mpegtsmux die PCR nur zu Bildbeginn; auch dann
+/// höchstens 40 ms Abstand (TR 101 290 2.3), bei 25p und 50p.
+#[test]
+fn vbr_ts_pcr_gap_at_most_40ms() {
+    init();
+    for fps in [25, 50] {
+        let mut cfg = encoder_cfg(free_port(), SrtMode::Listener);
+        cfg.video.fps = fps;
+        let ts = capture_udp_ts(&mut cfg, 4, "vbr", |_, _| {});
+        let data = std::fs::read(&ts).unwrap();
+        let _ = std::fs::remove_file(&ts);
+        let data = &data[data.len().min(188 * 500) / 188 * 188..];
+        let c = check_ts(data);
+        eprintln!("{fps}p: {c:?}");
+        assert_eq!(c.cc_errors, 0, "{c:?}");
+        assert!(c.max_pcr_gap_ms > 0.0 && c.max_pcr_gap_ms <= 40.5, "{fps}p: PCR-Abstand {} ms", c.max_pcr_gap_ms);
+    }
+}

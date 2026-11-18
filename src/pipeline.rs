@@ -220,7 +220,7 @@ pub fn passthrough_source(kind: InputKind, uri: &str) -> String {
             quote(&uri.replacen("rtp://", "udp://", 1))
         ),
         _ => format!(
-            "mpegtsmux name=pmux alignment=7 pcr-interval=3600  \
+            "mpegtsmux name=pmux alignment=7 pcr-interval=1800  \
              rtmp2src name=netsrc location={} ! queue name=netq max-size-buffers=0 max-size-bytes=0 max-size-time=1000000000 \
              ! flvdemux name=fdx  fdx.video ! queue ! h264parse config-interval=-1 ! pmux.  fdx.audio ! queue ! aacparse ! pmux.  pmux.",
             quote(uri)
@@ -487,7 +487,11 @@ pub fn encoder_description(cfg: &EncoderConfig, parts: &EncoderParts) -> String 
     }
 
     d.push(format!(
-        "mpegtsmux name=mux alignment=7 pcr-interval=3600{}{}{} ! tee name=tsout allow-not-linked=true",
+        // pcr-interval in 90 kHz: mpegtsmux schreibt die PCR erst, wenn mehr als
+        // dieser Abstand vergangen ist, und ohne feste Rate nur mit neuen
+        // Puffern. 3600 (40 ms) ergab 60 ms bei 50p und 80 ms bei 25p; 1800
+        // hält ≈ 21 ms (TR 101 290 2.3: ≤ 40 ms).
+        "mpegtsmux name=mux alignment=7 pcr-interval=1800{}{}{} ! tee name=tsout allow-not-linked=true",
         // konstante Rate: mpegtsmux füllt mit Nullpaketen auf und stempelt jeden Puffer mit seiner PCR-Zeit
         if cfg.ts.cbr_kbps > 0 { format!(" bitrate={}", cfg.ts.cbr_kbps as u64 * 1000) } else { String::new() },
         if cfg.anc.scte35 { format!(" scte-35-pid={}", crate::scte35::PID) } else { String::new() },
@@ -972,7 +976,7 @@ mod tests {
         assert!(encoder_description(&cfg, &parts(&deck)).contains("output-afd-bar=true"));
         assert!(!d.contains("scte-35-pid"));
         cfg.anc.scte35 = true;
-        assert!(encoder_description(&cfg, &parts(&input)).contains("mpegtsmux name=mux alignment=7 pcr-interval=3600 scte-35-pid=502"));
+        assert!(encoder_description(&cfg, &parts(&input)).contains("mpegtsmux name=mux alignment=7 pcr-interval=1800 scte-35-pid=502"));
     }
 
     #[test]
@@ -990,11 +994,11 @@ mod tests {
     fn cbr_and_pcr_pacing() {
         let mut cfg = EncoderConfig::default();
         let d = encoder_description(&cfg, &parts(&ResolvedInput::Test));
-        assert!(d.contains("pcr-interval=3600 ! tee name=tsout") && d.contains("srtsink name=srtout") && d.contains("async=false sync=false"));
+        assert!(d.contains("pcr-interval=1800 ! tee name=tsout") && d.contains("srtsink name=srtout") && d.contains("async=false sync=false"));
         cfg.ts.cbr_kbps = 12000;
         cfg.ts.pace = true;
         let d = encoder_description(&cfg, &parts(&ResolvedInput::Test));
-        assert!(d.contains("mpegtsmux name=mux alignment=7 pcr-interval=3600 bitrate=12000000"), "{d}");
+        assert!(d.contains("mpegtsmux name=mux alignment=7 pcr-interval=1800 bitrate=12000000"), "{d}");
         assert!(d.contains("wait-for-connection=false async=false sync=true"), "{d}");
         assert!(crate::config::Config { encoder: cfg.clone(), ..Default::default() }.hints().iter().all(|h| !h.text.contains("TS-Rate")));
         cfg.ts.cbr_kbps = 6000;
