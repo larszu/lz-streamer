@@ -219,8 +219,8 @@ fn main() -> Result<()> {
                 s.source_ms, s.encode_ms, s.mux_ms, s.transport_decode_ms, s.output_ms
             );
             println!(
-                "Verworfene Bilder am Decoder (> 20 ms zu spät): {}{}",
-                r.dropped_frames,
+                "Zu spät gezeigte Bilder am Decoder (> 20 ms): {}{}",
+                r.late_frames,
                 r.mux_delay_ms.map(|d| format!(" · eigener Mux, PCR→PTS {d} ms")).unwrap_or_default()
             );
             Ok(())

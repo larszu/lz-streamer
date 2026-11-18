@@ -172,10 +172,10 @@ Der TS kommt aus dem eigenen Mux `lztsmux` (`src/tsmux.rs`). Er schreibt jedes B
 | Mux | Median | davon Mux |
 |---|---|---|
 | `mpegtsmux` | 176–193 ms | 54–65 ms |
-| eigener | 114–138 ms, Mittel 127 ms | 0 ms |
-| eigener, CBR 12 000 kbit/s | 166–193 ms | 0 ms (Warten in der Rate) |
+| eigener | 113–116 ms | 0 ms |
+| eigener, CBR 12 000 kbit/s | 163–190 ms | 0 ms (Warten in der Rate) |
 
-Gemessen wird beim Zeigen; zu späte Bilder verwirft die Senke. Einzelheiten und Prüfung nach TR 101 290: [vergleich-hardware-latenz.md §5.1, §5.4](vergleich-hardware-latenz.md#51-gemessen-aufgeschlüsselt-m).
+Gemessen wird beim Zeigen; kein Bild kam mehr als 20 ms zu spät. Einzelheiten und Prüfung nach TR 101 290: [vergleich-hardware-latenz.md §5.1, §5.4](vergleich-hardware-latenz.md#51-gemessen-aufgeschlüsselt-m).
 
 Offen bei #32: Multiplex- und Elementarpuffer (MB/EB) des T-STD werden nicht geprüft, nur der Transportpuffer; Abnahme an einem echten IRD.
 

@@ -2,8 +2,9 @@
 //! selben Prozess über eine echte SRT-Verbindung auf diesem Rechner. Das
 //! Testbild springt von Schwarz auf Weiß; gemessen wird, bis die mittlere
 //! Helligkeit an der taktsynchronen Senke des Decoders beim Zeigen über 50 %
-//! steigt. Bilder, die mehr als 20 ms zu spät kommen, verwirft die Senke wie ein
-//! Bildschirm. Nicht enthalten: Kamera, Capture-Karte, Bildschirm, Netz.
+//! steigt. Bilder, die mehr als 20 ms zu spät gezeigt werden, zählt der Bericht
+//! (ein Bildschirm würde sie verwerfen). Nicht enthalten: Kamera, Capture-Karte,
+//! Bildschirm, Netz.
 
 use std::time::{Duration, Instant};
 
@@ -28,8 +29,8 @@ pub struct LatencyReport {
     pub decoder_pipeline_ms: Option<f64>,
     /// Median je Station
     pub stages: StageBreakdown,
-    /// am Decoder verworfene Bilder (kamen mehr als 20 ms zu spät)
-    pub dropped_frames: u64,
+    /// am Decoder mehr als 20 ms zu spät gezeigte Bilder (ein Bildschirm verwürfe sie)
+    pub late_frames: u64,
     /// eigener Mux: Abstand PCR → PTS, den er gelernt hat
     pub mux_delay_ms: Option<u32>,
 }
@@ -261,7 +262,7 @@ pub fn measure(opts: &MeasureOptions) -> Result<LatencyReport> {
         std::thread::sleep(Duration::from_millis(300));
     }
     let (el, dl) = (pipeline_latency_ms(enc.pipeline()), pipeline_latency_ms(dec.pipeline()));
-    let dropped = dec.pipeline().by_name("vsink").and_then(|v| v.property::<gst::Structure>("stats").get::<u64>("dropped").ok()).unwrap_or(0);
+    let late = dec.counters().late_frames.load(std::sync::atomic::Ordering::Relaxed);
     let mux_delay_ms = enc.pipeline().by_name("mux").filter(|m| m.has_property("current-delay")).map(|m| m.property::<u32>("current-delay"));
     enc.stop();
     dec.stop();
@@ -284,7 +285,7 @@ pub fn measure(opts: &MeasureOptions) -> Result<LatencyReport> {
         encoder_pipeline_ms: el,
         decoder_pipeline_ms: dl,
         stages,
-        dropped_frames: dropped,
+        late_frames: late,
         mux_delay_ms,
     })
 }

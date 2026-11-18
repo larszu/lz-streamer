@@ -243,6 +243,8 @@ pub struct Counters {
     has_luma: AtomicBool,
     luma_rise: Mutex<Option<Instant>>,
     resolution: Mutex<Option<(i32, i32)>>,
+    /// Bilder, die mehr als 20 ms nach ihrer Zeit gezeigt wurden (nur Ausgabe „keine“)
+    pub late_frames: AtomicU64,
 }
 
 impl Counters {
@@ -647,17 +649,34 @@ fn count_frames(pad: &gst::Pad, counters: &Arc<Counters>) {
     });
 }
 
-/// Helligkeit beim Zeigen (`handoff` kommt nach dem Takt-Warten, verworfene Bilder fehlen)
+/// Helligkeit beim Zeigen (`handoff` kommt nach dem Takt-Warten). Bilder, die mehr
+/// als 20 ms nach ihrer Zeit kommen, zählt `late_frames` – ein Bildschirm würde
+/// sie verwerfen.
 fn measure_luma(sink: &gst::Element, counters: &Arc<Counters>) {
     let c = counters.clone();
     sink.connect("handoff", false, move |args| {
-        if let Some(b) = args.get(1).and_then(|v| v.get::<gst::Buffer>().ok())
-            && let Ok(map) = b.map_readable()
-        {
-            let s = map.as_slice();
-            if !s.is_empty() {
-                let sum: u64 = s.iter().map(|&x| x as u64).sum();
-                c.set_luma(sum as f64 / s.len() as f64);
+        let sink = args.first().and_then(|v| v.get::<gst::Element>().ok());
+        let pad = args.get(2).and_then(|v| v.get::<gst::Pad>().ok());
+        if let Some(b) = args.get(1).and_then(|v| v.get::<gst::Buffer>().ok()) {
+            if let (Some(sink), Some(pad)) = (sink, pad) {
+                let rt = pad
+                    .sticky_event::<gst::event::Segment>(0)
+                    .and_then(|e| e.segment().clone().downcast::<gst::ClockTime>().ok())
+                    .and_then(|seg| seg.to_running_time(b.pts()?));
+                let lat = sink.downcast_ref::<gstreamer_base::BaseSink>().map(|s| gstreamer_base::prelude::BaseSinkExt::latency(s).nseconds() as i64).unwrap_or(0);
+                let off: i64 = sink.property("ts-offset");
+                if let (Some(rt), Some(now)) = (rt, sink.current_running_time())
+                    && now.nseconds() as i64 - (rt.nseconds() as i64 + lat + off) > 20_000_000
+                {
+                    c.late_frames.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+            if let Ok(map) = b.map_readable() {
+                let s = map.as_slice();
+                if !s.is_empty() {
+                    let sum: u64 = s.iter().map(|&x| x as u64).sum();
+                    c.set_luma(sum as f64 / s.len() as f64);
+                }
             }
         }
         None

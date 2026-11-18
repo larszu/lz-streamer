@@ -508,12 +508,12 @@ pub fn encoder_description(cfg: &EncoderConfig, parts: &EncoderParts) -> String 
 }
 
 /// Eigener Mux (`lztsmux`). Der Spielraum über der gelernten Eingangsverspätung
-/// enthält die längste SRT-Latenz: Der Decoder stellt nach SRT-Sendezeit dar und
+/// ist die längste SRT-Latenz: Der Decoder stellt nach SRT-Sendezeit dar und
 /// zieht die SRT-Latenz wieder ab (siehe `decoder_video_branch`), die Pakete kommen
-/// aber erst nach ihr an.
+/// aber erst nach ihr an. Für das Dekodieren selbst hat der Decoder seine Reserve.
 pub fn lztsmux_description(cfg: &EncoderConfig) -> String {
     let srt = cfg.outputs.iter().filter(|o| o.enabled && o.kind == OutputType::Srt).map(|o| o.srt.latency_ms).chain([cfg.srt.latency_ms]).max().unwrap_or(0);
-    let mut s = format!("lztsmux name=mux headroom={}", LZTSMUX_DECODE_MS + srt);
+    let mut s = format!("lztsmux name=mux headroom={srt}");
     if cfg.ts.delay_ms > 0 {
         s += &format!(" delay={}", cfg.ts.delay_ms);
     }
@@ -522,9 +522,6 @@ pub fn lztsmux_description(cfg: &EncoderConfig) -> String {
     }
     s
 }
-
-/// Spielraum für Demux, Decoder und Bildwechsel am Empfänger (gemessen, siehe docs)
-pub const LZTSMUX_DECODE_MS: u32 = 5;
 
 /// Ausgänge hinter dem TS-Verteiler `tsout`: SRT-Ziel und weitere Ausgänge.
 pub fn ts_outputs(cfg: &EncoderConfig) -> Vec<String> {
@@ -749,10 +746,10 @@ pub fn decoder_video_branch(
             if deck_mode.trim().is_empty() { "auto" } else { deck_mode.trim() }
         ),
         OutputKind::None => {
-            // wie ein Bildschirm: zu späte Bilder (> 20 ms) fallen weg, gemessen wird beim Zeigen
+            // gemessen wird beim Zeigen (handoff), zu späte Bilder zählt `measure_luma`
             format!(
                 "videoscale ! videoconvert ! video/x-raw,format=GRAY8,width=64,height=36 \
-                 ! fakesink name=vsink sync=true async=false max-lateness=20000000 qos=true signal-handoffs=true ts-offset={ts_offset_ns}"
+                 ! fakesink name=vsink sync=true async=false signal-handoffs=true ts-offset={ts_offset_ns}"
             )
         }
     };
@@ -891,7 +888,7 @@ mod tests {
             "vsw.sink_1",
             "x264enc name=venc",
             "h264parse config-interval=-1",
-            "lztsmux name=mux headroom=125",
+            "lztsmux name=mux headroom=120",
             "srtsink name=srtout uri=\"srt://:9000?mode=listener\" latency=120",
             "fallbackswitch name=asw",
             "avenc_aac name=aenc0 bitrate=192000",
@@ -1030,7 +1027,7 @@ mod tests {
         cfg.ts.pace = true;
         cfg.ts.delay_ms = 90;
         let d = encoder_description(&cfg, &parts(&ResolvedInput::Test));
-        assert!(d.contains("lztsmux name=mux headroom=45 delay=90 bitrate=12000000 ! tee name=tsout"), "{d}");
+        assert!(d.contains("lztsmux name=mux headroom=40 delay=90 bitrate=12000000 ! tee name=tsout"), "{d}");
         assert!(d.contains("srtsink name=srtout") && d.contains("async=false sync=false"), "der Mux taktet selbst: {d}");
         // SCTE-35 kann nur mpegtsmux
         cfg.anc.scte35 = true;
@@ -1043,7 +1040,7 @@ mod tests {
         // längste SRT-Latenz aller Ausgänge geht in den Spielraum
         cfg.ts.muxer = TsMuxer::Auto;
         cfg.outputs.push(crate::config::ExtraOutput { enabled: true, kind: OutputType::Srt, srt: crate::config::SrtConfig { latency_ms: 300, ..Default::default() }, ..Default::default() });
-        assert!(lztsmux_description(&cfg).starts_with("lztsmux name=mux headroom=305"));
+        assert!(lztsmux_description(&cfg).starts_with("lztsmux name=mux headroom=300"));
     }
 
     #[test]

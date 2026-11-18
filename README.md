@@ -36,7 +36,7 @@ Eigener Video-Encoder und -Decoder: **Eingang → Encoder → SRT** (dazu option
 - **SCTE-35-Werbemarken:** Mit eingeschalteter SCTE-35-PID (0x1F6) setzt `POST /api/scte35` einen Cue, etwa `{"kind":"out","duration_s":30,"preroll_ms":4000}` oder `{"kind":"in"}`. Der Splice-Punkt liegt nach dem Vorlauf (Vorgabe 4 s); mpegtsmux schreibt die passende PTS, der Encoder legt genau dort ein IDR-Bild.
 - **10 bit, 4:2:2 und HDR:** Farbformat 4:2:0 8 bit (Vorgabe), 4:2:0 10 bit oder 4:2:2 10 bit; Kennlinie SDR, PQ (HDR10) oder HLG mit BT.2020. H.265 kodiert VideoToolbox (4:2:2 10 bit über AYUV64) oder x265, H.264 mit 10 bit nur x264 – der wird dann automatisch gewählt. Die Kennlinie wird im Strom gekennzeichnet, nicht umgerechnet. DeckLink liefert dafür 10-bit-YUV.
 - **Mehrere Kanäle in einer Instanz:** Neben dem Hauptkanal laufen weitere Kanäle (Encoder oder Decoder, `channels` in der Konfiguration), jeder als eigener Prozess unter eigenem Aufpasser. Stürzt einer ab, startet nur er neu. Karte „Weitere Kanäle“ und API: `GET /api/channels`, `POST /api/channels/<n>/start|stop`, `GET /api/channels/<n>/preview.jpg` (`n` ab 0).
-- **Eigener TS-Multiplexer** (`lztsmux`, Vorgabe): schreibt jedes Bild sofort statt auf den Ton zu warten, PCR aus der Pipeline-Uhr, Puffer PCR → PTS selbst gelernt (`ts.delay_ms` legt ihn fest). Spart gegenüber `mpegtsmux` 50–60 ms bei SRT 40 ms. SCTE-35, ST 2038 und DVB-Untertitel kann nur `mpegtsmux`; damit wird er automatisch genommen, `ts.muxer` wählt fest. Geprüft nach TR 101 290 Prio 1/2 und mit TSDuck ([Messung](docs/vergleich-hardware-latenz.md#51-gemessen-aufgeschlüsselt-m)).
+- **Eigener TS-Multiplexer** (`lztsmux`, Vorgabe): schreibt jedes Bild sofort statt auf den Ton zu warten, PCR aus der Pipeline-Uhr, Puffer PCR → PTS selbst gelernt (`ts.delay_ms` legt ihn fest). Spart gegenüber `mpegtsmux` 60–75 ms bei SRT 40 ms. SCTE-35, ST 2038 und DVB-Untertitel kann nur `mpegtsmux`; damit wird er automatisch genommen, `ts.muxer` wählt fest. Geprüft nach TR 101 290 Prio 1/2 und mit TSDuck ([Messung](docs/vergleich-hardware-latenz.md#51-gemessen-aufgeschlüsselt-m)).
 - **Broadcast-TS:** Auf Wunsch konstante TS-Rate mit Nullpaketen (`ts.cbr_kbps`). Der eigene Mux taktet dann Paket für Paket, PCR exakt aus der Sendeposition, Tonpakete nach dem T-STD-Transportpuffer; mit `mpegtsmux` sendet `ts.pace` im Takt der PCR. Ist die Rate knapper als Bild + Ton + 15 %, erscheint ein Hinweis.
 - **Mehrere Ausgänge** aus demselben Strom: weitere SRT-Ziele (auch Rendezvous), TS über UDP/RTP (auch Multicast), RIST, dazu RTMP.
 - **Redundanz und FEC:** Ein RIST-Ausgang sendet jedes Paket über mehrere Wege (zwei Netze, zwei Leitungen); der Decoder mit Quelle „RIST“ führt sie zusammen. Fällt ein Weg aus, läuft das Bild ohne Lücke weiter. SRT kann zusätzlich FEC (libsrt-Paketfilter, z. B. `fec,cols:10,rows:5`, auf beiden Seiten gleich). SRT-Gruppen (Socket Groups) gibt es nicht: das libsrt dieser Installation ist ohne Bonding gebaut.
@@ -73,12 +73,12 @@ Eigener Video-Encoder und -Decoder: **Eingang → Encoder → SRT** (dazu option
 
 | Weg | SRT-Latenz | Median (7 Runden) |
 |---|---|---|
-| H.264 VideoToolbox → avdec_h264, eigener Mux (18.11.) | 120 ms | 204–214 ms |
-| H.264 VideoToolbox → avdec_h264, eigener Mux (18.11.) | 40 ms | 114–138 ms |
+| H.264 VideoToolbox → avdec_h264, eigener Mux (18.11.) | 120 ms | 194–197 ms |
+| H.264 VideoToolbox → avdec_h264, eigener Mux (18.11.) | 40 ms | 113–116 ms |
 | H.265 VideoToolbox → avdec_h265 | 120 ms | 220 ms |
 | H.265 VideoToolbox → vtdec_hw (Voreinstellung für H.265) | 120 ms | 549 ms |
 
-`latenz` schlüsselt zusätzlich nach Stationen auf (Quelle, Encode, Parser+Mux, SRT+Demux+Decode, Ausgabe), zählt am Decoder verworfene Bilder und misst beim Zeigen. Mit SRT 40 ms, Demux 0 und Reserve 20 sind es mit dem eigenen Mux 114–138 ms (Mittel 127 ms), mit `mpegtsmux` 176–193 ms (`--mux mpegtsmux`). Weitere Dokumente:
+`latenz` schlüsselt zusätzlich nach Stationen auf (Quelle, Encode, Parser+Mux, SRT+Demux+Decode, Ausgabe), zählt zu spät gezeigte Bilder und misst beim Zeigen. Mit SRT 40 ms, Demux 0 und Reserve 20 sind es mit dem eigenen Mux 113–116 ms, mit `mpegtsmux` 176–193 ms (`--mux mpegtsmux`). Weitere Dokumente:
 
 | Thema | Dokument |
 |---|---|

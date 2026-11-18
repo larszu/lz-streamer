@@ -11,8 +11,9 @@
 //!
 //! D ist damit der Abstand PCR → PTS, den der Empfänger als Puffer sieht. Er muss
 //! nur so groß sein wie der späteste Eingang (in der Regel der Ton) braucht, um
-//! am Mux anzukommen und gesendet zu sein. Mit `delay=0` lernt der Mux D in der
-//! ersten halben Sekunde und hebt ihn danach nur an, wenn ein Puffer zu spät käme.
+//! am Mux anzukommen und gesendet zu sein, plus `headroom` für den Empfänger. Mit
+//! `delay=0` lernt der Mux D in der ersten Sekunde, hebt ihn danach bei anhaltender
+//! Verspätung an und lässt ihn langsam zurückgleiten, wenn er größer ist als nötig.
 //!
 //! Mit `bitrate` sendet ein eigener Takt-Thread konstant Paket für Paket
 //! (Nullpakete als Füllung), die PCR-Werte entsprechen exakt der Sendeposition.
@@ -258,6 +259,9 @@ const MS: u64 = 1_000_000;
 const LEARN_MS: u64 = 1000;
 /// so weit sinkt D je Bild, wenn er größer als nötig ist
 const SLEW_NS: u64 = 200_000;
+/// Zeit, die ein Bild am Empfänger zum Dekodieren braucht (gemessen: ohne Ton kamen
+/// mit weniger als 20 ms Bilder zu spät)
+const VIDEO_DECODE_NS: u64 = 20 * MS;
 
 #[derive(Debug, Clone)]
 pub struct Settings {
@@ -752,7 +756,9 @@ mod imp {
             let nbuf = st.streams[idx].buffers;
             // Verzug: wie spät ist der Puffer, bis er gesendet ist?
             let drain = if settings.bitrate > 0 { (st.queued * PACKET * 8) as u64 * 1_000_000_000 / settings.bitrate } else { 0 };
-            let late = (now as i64 + drain as i64 - dts_rt).max(0) as u64;
+            // Bilder brauchen am Empfänger noch Dekodieren und Umwandeln, Ton kaum
+            let extra = if kind.is_video() { VIDEO_DECODE_NS } else { 0 };
+            let late = (now as i64 + drain as i64 - dts_rt).max(0) as u64 + extra;
             if settings.delay_ms == 0 && nbuf > 3 {
                 // die ersten Puffer je Eingang laufen sich noch ein und zählen nicht
                 let margin = settings.headroom_ms as u64 * MS;
@@ -770,8 +776,8 @@ mod imp {
                         (st.exceed.len() >= 3).then(|| st.exceed.iter().map(|(_, l)| *l).max().unwrap_or(late))
                     };
                     if let Some(l) = raise {
-                        // 5 ms darüber, damit kleines Zittern D nicht ständig anhebt
-                        let new = (l + margin + 5 * MS).div_ceil(MS) * MS;
+                        // 3 ms darüber, damit kleines Zittern D nicht ständig anhebt
+                        let new = (l + margin + 3 * MS).div_ceil(MS) * MS;
                         if now > learn_until {
                             st.exceed.clear();
                             gst::info!(gst::CAT_DEFAULT, imp = self, "Verzug {} → {} ms (PID {:#x})", st.delay_ns / MS, new / MS, st.streams[idx].pid);
@@ -792,7 +798,7 @@ mod imp {
                     st.window.pop_front();
                 }
                 if now > learn_until && st.pcr_index() == Some(idx) {
-                    let need = st.window.iter().map(|(_, l)| *l).max().unwrap_or(0) + margin + 5 * MS;
+                    let need = st.window.iter().map(|(_, l)| *l).max().unwrap_or(0) + margin + 3 * MS;
                     if st.delay_ns > need + MS {
                         st.delay_ns -= (st.delay_ns - need).min(SLEW_NS);
                     }
