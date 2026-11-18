@@ -54,7 +54,8 @@ Eigener Video-Encoder und -Decoder: **Eingang → Encoder → SRT** (dazu option
   - Benutzer mit Rollen (Verwalten/Bedienen/Ansehen)
   - HTTPS mit selbst signiertem oder eigenem Zertifikat (PEM), TLS 1.2/1.3
   - Beschnitt
-- **Schalter live:** Untertitel, Klare Sprache, Lautheitsregelung samt Profil, Plugin-Umgehung und Grafik lassen sich während der Sendung umschalten, ohne dass der Kanal neu startet. Das geht in der Karte „Schalter“, über `/api/control` oder per OSC, etwa aus Companion.
+- **Schalter live:** Untertitel, Klare Sprache, Lautheitsregelung samt Profil, Plugin-Umgehung und Grafik lassen sich während der Sendung umschalten, ohne dass der Kanal neu startet. Das geht in der Karte „Schalter“, über `/api/control` oder per OSC.
+- **Companion:** Das private Modul [companion-module-lz-streamer](https://github.com/larszu/companion-module-lz-streamer) schaltet alle Schalter, schickt Live-Untertitel und Grafikbefehle, startet und stoppt den Kanal, erzwingt Keyframes und setzt SCTE-35-Marken, wahlweise über REST oder OSC. Rückmeldungen und Variablen liest es aus `/api/state`. Mit Companion 5.1.3 ist jede Aktion einmal über beide Wege geschaltet und in `/api/state` geprüft.
 - **Keine Pflichtfelder:** Ein leerer Start ergibt einen SRT-Listener auf Port 9000 mit Testbild. Fehlt etwas, erscheint ein Hinweis, gesperrt wird nichts.
 
 ## HLS und ABR-Leiter
