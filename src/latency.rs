@@ -1,8 +1,9 @@
 //! Latenzmessung ohne Kamera: Encoder (Testbild) und Decoder laufen im
 //! selben Prozess über eine echte SRT-Verbindung auf diesem Rechner. Das
 //! Testbild springt von Schwarz auf Weiß; gemessen wird, bis die mittlere
-//! Helligkeit am Decoder-Ausgang (vor der Darstellung, mit Taktsynchronisation)
-//! über 50 % steigt. Nicht enthalten: Kamera, Capture-Karte, Bildschirm, Netz.
+//! Helligkeit an der taktsynchronen Senke des Decoders beim Zeigen über 50 %
+//! steigt. Bilder, die mehr als 20 ms zu spät kommen, verwirft die Senke wie ein
+//! Bildschirm. Nicht enthalten: Kamera, Capture-Karte, Bildschirm, Netz.
 
 use std::time::{Duration, Instant};
 
@@ -12,7 +13,7 @@ use gst::prelude::*;
 use serde::Serialize;
 
 use crate::channel::{Channel, ChannelOptions, ChildMsg};
-use crate::config::{Codec, DecoderConfig, EncoderConfig, InputKind, OutputKind, SrtMode};
+use crate::config::{Codec, DecoderConfig, EncoderConfig, InputKind, OutputKind, SrtMode, TsMuxer};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct LatencyReport {
@@ -27,6 +28,10 @@ pub struct LatencyReport {
     pub decoder_pipeline_ms: Option<f64>,
     /// Median je Station
     pub stages: StageBreakdown,
+    /// am Decoder verworfene Bilder (kamen mehr als 20 ms zu spät)
+    pub dropped_frames: u64,
+    /// eigener Mux: Abstand PCR → PTS, den er gelernt hat
+    pub mux_delay_ms: Option<u32>,
 }
 
 pub fn pipeline_latency_ms(p: &gst::Pipeline) -> Option<f64> {
@@ -50,11 +55,14 @@ pub struct MeasureOptions {
     /// TS mit konstanter Rate (kbit/s, 0 = variabel) und PCR-Takt
     pub cbr_kbps: u32,
     pub pace: bool,
+    pub muxer: TsMuxer,
+    /// eigener Mux: fester Abstand PCR → PTS (0 = lernen)
+    pub mux_delay_ms: u32,
 }
 
 impl Default for MeasureOptions {
     fn default() -> Self {
-        Self { codec: Codec::H264, encoder: "auto".into(), srt_latency_ms: 120, port: 0, rounds: 7, width: 1280, height: 720, fps: 50, audio: true, decoder: "auto".into(), demux_latency_ms: 40, output_buffer_ms: 60, cbr_kbps: 0, pace: false }
+        Self { codec: Codec::H264, encoder: "auto".into(), srt_latency_ms: 120, port: 0, rounds: 7, width: 1280, height: 720, fps: 50, audio: true, decoder: "auto".into(), demux_latency_ms: 40, output_buffer_ms: 60, cbr_kbps: 0, pace: false, muxer: TsMuxer::Auto, mux_delay_ms: 0 }
     }
 }
 
@@ -88,6 +96,8 @@ pub fn pair(opts: &MeasureOptions) -> Result<(Channel, Channel)> {
     enc.srt.latency_ms = opts.srt_latency_ms;
     enc.ts.cbr_kbps = opts.cbr_kbps;
     enc.ts.pace = opts.pace;
+    enc.ts.muxer = opts.muxer;
+    enc.ts.delay_ms = opts.mux_delay_ms;
     let encoder = Channel::start_encoder(&enc, &[], &ChannelOptions::default())?;
 
     let mut dec = DecoderConfig::default();
@@ -179,6 +189,10 @@ fn probe_pts(pad: &gst::Pad, st: &SharedStamps, mux: bool) {
         };
         let mut s = st.lock().unwrap();
         let Some((_, Some(p))) = s.enc_in else { return gst::PadProbeReturn::Ok };
+        // eigener Mux stempelt mit der Sendezeit: erst der Puffer nach dem codierten Bild zählt
+        if mux && s.enc_out.is_none() {
+            return gst::PadProbeReturn::Ok;
+        }
         let slot = if mux { &mut s.mux_out } else { &mut s.enc_out };
         if slot.is_none() && pts.is_some_and(|x| x >= p) {
             *slot = Some(Instant::now());
@@ -247,6 +261,8 @@ pub fn measure(opts: &MeasureOptions) -> Result<LatencyReport> {
         std::thread::sleep(Duration::from_millis(300));
     }
     let (el, dl) = (pipeline_latency_ms(enc.pipeline()), pipeline_latency_ms(dec.pipeline()));
+    let dropped = dec.pipeline().by_name("vsink").and_then(|v| v.property::<gst::Structure>("stats").get::<u64>("dropped").ok()).unwrap_or(0);
+    let mux_delay_ms = enc.pipeline().by_name("mux").filter(|m| m.has_property("current-delay")).map(|m| m.property::<u32>("current-delay"));
     enc.stop();
     dec.stop();
     let mut sorted = samples.clone();
@@ -268,6 +284,8 @@ pub fn measure(opts: &MeasureOptions) -> Result<LatencyReport> {
         encoder_pipeline_ms: el,
         decoder_pipeline_ms: dl,
         stages,
+        dropped_frames: dropped,
+        mux_delay_ms,
     })
 }
 

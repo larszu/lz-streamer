@@ -39,6 +39,7 @@ pub mod stats;
 pub mod subtitles;
 pub mod supervisor;
 pub mod tls;
+pub mod tsmux;
 pub mod upload;
 pub mod vad;
 pub mod ytcaptions;

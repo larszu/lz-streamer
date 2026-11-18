@@ -71,6 +71,12 @@ enum Cmd {
         /// im Takt der PCR senden
         #[arg(long)]
         takt: bool,
+        /// Multiplexer: auto, lz (eigener) oder mpegtsmux
+        #[arg(long, default_value = "auto")]
+        mux: String,
+        /// eigener Mux: fester Abstand PCR → PTS in ms (0 = lernen)
+        #[arg(long, default_value_t = 0)]
+        mux_verzug: u32,
         /// Reserve am Decoder-Ausgang in ms
         #[arg(long, default_value_t = 60)]
         reserve: u32,
@@ -183,7 +189,7 @@ fn main() -> Result<()> {
             };
             std::process::exit(code);
         }
-        Cmd::Latenz { encoder, h265, srt_latency, runden, ohne_ton, decoder, demux, cbr, takt, reserve, format, fps } => {
+        Cmd::Latenz { encoder, h265, srt_latency, runden, ohne_ton, decoder, demux, cbr, takt, mux, mux_verzug, reserve, format, fps } => {
             let opts = latency::MeasureOptions {
                 codec: if h265 { Codec::H265 } else { Codec::H264 },
                 encoder,
@@ -195,6 +201,8 @@ fn main() -> Result<()> {
                 output_buffer_ms: reserve,
                 cbr_kbps: cbr,
                 pace: takt,
+                muxer: serde_json::from_value(serde_json::Value::String(mux.clone())).map_err(|_| anyhow::anyhow!("--mux: auto, lz oder mpegtsmux, nicht „{mux}“"))?,
+                mux_delay_ms: mux_verzug,
                 width: format.split('x').next().and_then(|w| w.parse().ok()).unwrap_or(1280),
                 height: format.split('x').nth(1).and_then(|h| h.parse().ok()).unwrap_or(720),
                 fps,
@@ -209,6 +217,11 @@ fn main() -> Result<()> {
             println!(
                 "Aufschlüsselung (Median): Quelle {} ms · Encode {} ms · Parser+Mux {} ms · SRT+Demux+Decode {} ms · Ausgabe {} ms",
                 s.source_ms, s.encode_ms, s.mux_ms, s.transport_decode_ms, s.output_ms
+            );
+            println!(
+                "Verworfene Bilder am Decoder (> 20 ms zu spät): {}{}",
+                r.dropped_frames,
+                r.mux_delay_ms.map(|d| format!(" · eigener Mux, PCR→PTS {d} ms")).unwrap_or_default()
             );
             Ok(())
         }

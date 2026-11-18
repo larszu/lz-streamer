@@ -647,19 +647,20 @@ fn count_frames(pad: &gst::Pad, counters: &Arc<Counters>) {
     });
 }
 
-fn measure_luma(pad: &gst::Pad, counters: &Arc<Counters>) {
+/// Helligkeit beim Zeigen (`handoff` kommt nach dem Takt-Warten, verworfene Bilder fehlen)
+fn measure_luma(sink: &gst::Element, counters: &Arc<Counters>) {
     let c = counters.clone();
-    pad.add_probe(gst::PadProbeType::BUFFER, move |_, info| {
-        if let Some(gst::PadProbeData::Buffer(b)) = &info.data {
-            if let Ok(map) = b.map_readable() {
-                let s = map.as_slice();
-                if !s.is_empty() {
-                    let sum: u64 = s.iter().map(|&x| x as u64).sum();
-                    c.set_luma(sum as f64 / s.len() as f64);
-                }
+    sink.connect("handoff", false, move |args| {
+        if let Some(b) = args.get(1).and_then(|v| v.get::<gst::Buffer>().ok())
+            && let Ok(map) = b.map_readable()
+        {
+            let s = map.as_slice();
+            if !s.is_empty() {
+                let sum: u64 = s.iter().map(|&x| x as u64).sum();
+                c.set_luma(sum as f64 / s.len() as f64);
             }
         }
-        gst::PadProbeReturn::Ok
+        None
     });
 }
 
@@ -861,6 +862,7 @@ impl Channel {
         crate::lzloudness::register();
         crate::plugin::register();
         crate::clearspeech::register();
+        crate::tsmux::register();
         let events: Events = Arc::default();
         let input = devices::resolve_input(&cfg.input, devices);
         if let ResolvedInput::Net { kind, uri, passthrough: true, .. } = &input {
@@ -1397,7 +1399,7 @@ impl Channel {
             }
             if cfg2.output == OutputKind::None {
                 if let Some(vs) = bin.by_name("vsink") {
-                    measure_luma(&vs.static_pad("sink").unwrap(), &c2);
+                    measure_luma(&vs, &c2);
                 }
             }
             hook_preview(&bin, prev.clone());
@@ -1647,7 +1649,7 @@ impl Channel {
     /// SCTE-35-Cue: Splice-Punkt = jetzt + Vorlauf (Laufzeit). mpegtsmux setzt die
     /// PTS, der Encoder legt an genau diese Stelle ein IDR-Bild.
     fn send_cue(&mut self, cue: &crate::scte35::Cue) {
-        let Some(mux) = self.pipeline.by_name("mux").filter(|m| m.property::<u32>("scte-35-pid") != 0) else {
+        let Some(mux) = self.pipeline.by_name("mux").filter(|m| m.has_property("scte-35-pid") && m.property::<u32>("scte-35-pid") != 0) else {
             event(&self.events, "warn", "SCTE-35 ist aus (Ancillary → SCTE-35-PID)");
             return;
         };
