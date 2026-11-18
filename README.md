@@ -18,7 +18,7 @@ Eigener Video-Encoder und -Decoder: **Eingang → Encoder → SRT** (dazu option
   - Endet der Aufpasser, beendet sich auch der Kanal. Es bleiben keine verwaisten Prozesse zurück.
 - **Live-Status:** Vorschaubild, Signal und Eingangsformat, Bitrate, SRT-RTT, Verluste und Wiederholungen, Encoder (Hardware/Software), Bilder/s, Laufzeit, Neustarts, Ereignisliste. Mit „Signalverlust testen“ lässt sich das Standbild ohne Kabelziehen ausprobieren.
 - **Ton wie im Broadcast:** Matrix vom Eingang (2/8/16 eingebettete SDI-Kanäle) auf bis zu 8 Tonspuren je Ausgang, Mono/Stereo/Downmix, Pegel, Stumm, Sprachkennung (ISO 639) im TS. Der Decoder wählt die Spur nach Sprache oder Nummer.
-- **Grafiken (OGraf):** Neben den Untertiteln (Ebene 1) nimmt Ebene 2 beliebige OGraf-Grafiken des Renderers auf, etwa Bauchbinde (`lz-lower-third`), Titel oder Liedtexte (`lz-lyrics`). Bedienung in der Karte „Grafik“, über `POST /api/graphics` oder per OSC an `127.0.0.1:4211`:
+- **Grafiken (OGraf):** Neben den Untertiteln (Ebene 1) nimmt Ebene 2 beliebige OGraf-Grafiken des Renderers auf, etwa Bauchbinde (`lz-lower-third`), Titel oder Liedtexte (`lz-lyrics`). Bedienung in der Karte „Grafik“, über `POST /api/graphics` oder per OSC an `127.0.0.1:4211` (andere Adresse mit `serve --osc 0.0.0.0:4211`, etwa für Companion auf einem anderen Rechner):
   - `/lzs/gfx/show s:grafik [s:JSON]` lädt und blendet ein
   - `/lzs/gfx/next` und `/lzs/gfx/prev` schalten weiter und zurück
   - `/lzs/gfx/update s:JSON` ändert den Inhalt

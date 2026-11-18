@@ -175,6 +175,26 @@ Gezählt sind die 7 fehlenden Funktionen und die drei Teilfunktionen mit dem gr�
 
 CBR und PCR-Takt ändern die Gesamtlatenz nicht messbar: was der Muxer früher abgibt, wartet danach im SRT-/Demux-Puffer. Die erhofften 37–51 ms und das Ziel < 130 ms erreicht dieser Schritt nicht; dafür bräuchte es ein eigenes Pacing-Element mit T-STD-Puffermodell und kleinerem Demux-Puffer am Decoder. Eine CBR-Rate unter Bild + Ton bringt den Takt aus dem Tritt (`--cbr 6000` bei 8000 kbit/s: Weißsprung kommt nicht an), daher der Hinweis in der Oberfläche.
 
+### Gegenprobe mit TSDuck und VLC (#16, #27, TR 101 290)
+
+TSDuck 3.45, VLC 3.0.24. Encoder 720p50, H.264 VideoToolbox 4 Mbit/s ohne feste Rate, GOP 10 s, DVB-Untertitel `deu`, SCTE-35 an, UDP-Ausgang; 26 s mit `tsp -I ip` mitgeschnitten, alle 2 s ein Live-Untertitel, nach 6 s ein Cue `{"kind":"out","duration_s":30,"preroll_ms":4000,"event_id":4711}`.
+
+| Prüfung | Werkzeug | Ergebnis |
+|---|---|---|
+| Subtitling-Descriptor | `tstables --pid 0x20` | PID 0x60, Typ 0x06, Descriptor 0x59: Sprache `deu`, Typ 0x10 (DVB, ohne Seitenverhältnis), Composition-Page 1, Ancillary-Page 0x152 |
+| SCTE-35 in der PMT | `tstables` | Registrierung `CUEI`, PID 0x1F6 Typ 0x86 |
+| splice_insert | `tstables --pid 0x1F6` | Ereignis 4711, out of network, Dauer 30 s, CRC OK |
+| Vorlauf | `tsp -P splicemonitor` | angekündigt 4062 ms vor dem Ereignis, eingetreten nach 4060 ms |
+| IDR am Splice-Punkt | ffprobe-Pakete gegen Splice-PTS | Schlüsselbild genau auf der Splice-PTS (325 744 101), sonst nur alle 10 s |
+| TR 101 290 1.3 / 1.5 (PAT, PMT) | `tsanalyze` | alle 100 ms, höchstens 122 ms |
+| TR 101 290 1.4 (CC) | `tsp -P continuity`, `tsanalyze` | keine Fehler, keine Unterbrechungen |
+| TR 101 290 2.3 (PCR-Abstand) | `tsp -P pcrextract` | höchstens 40 ms |
+| DVB-Untertitel im Player | VLC, Spur PID 96, Decoder `dvbsub`, mit `soverlay` umkodiert | Zeilen erscheinen im Bild |
+
+- **Behoben:** Ohne feste Rate lag der PCR-Abstand bei 60 ms (50p) bzw. 80 ms (25p), weil mpegtsmux die PCR erst schreibt, wenn *mehr* als `pcr-interval` vergangen ist. Mit `pcr-interval=1800` sind es höchstens 40 ms; Test `vbr_ts_pcr_gap_at_most_40ms`.
+- Die Ancillary-Page 0x152 setzt mpegtsmux fest; im Strom gibt es keine Segmente dieser Seite, Empfänger zeigen dann nur die Composition-Page.
+- PCR-Genauigkeit (2.4) gilt nur bei fester Rate; dafür `ts.cbr_kbps` (Test `cbr_ts_with_pcr_pacing_passes_tr101290_subset`).
+
 ### Prometheus (#64)
 
 Prometheus 3.16 (Homebrew) liest einen laufenden Encoder (Testbild 1080p50, SRT-Listener mit einer `srtsrc`-Gegenstelle) alle 2 s:
@@ -201,13 +221,13 @@ Offen bei #33: SRT Socket Groups (das installierte libsrt 1.5.7 ist ohne Bonding
 
 Offen bei #34: HDR-Metadaten (Mastering Display, Content Light Level) aus der Quelle durchreichen und 10-bit-Eingang am DeckLink prüfen (braucht Hardware); NVENC (Blackwell 4:2:2) und Intel Arc hier nicht vorhanden.
 
-Offen bei #27: SCTE-104 aus dem VANC des DeckLink-Eingangs lesen und übersetzen (braucht Hardware) und Gegenprobe mit TSDuck (hier nicht installiert; der Test zerlegt den TS selbst).
+Offen bei #27: SCTE-104 aus dem VANC des DeckLink-Eingangs lesen und übersetzen (braucht Hardware).
 
 Offen bei #28: Timecode und AFD von einem echten DeckLink-Eingang (`output-afd-bar`, Timecode-Meta) sowie das rohe Durchreichen aller übrigen VANC-Pakete (`output-vanc` → `st2038extractor`) – braucht angeschlossene Hardware.
 
 Offen bei #17: Abnahme an einem echten YouTube-Testlivestream (braucht Kanal und Ingest-URL).
 
-Offen bei #16: Abnahme an VLC und einem Fernseher mit DVB-IPTV sowie Descriptor-Prüfung mit TSDuck (hier nicht installiert; ffprobe liest Sprache und PID).
+Offen bei #16: Abnahme an einem Fernseher mit DVB-IPTV.
 
 ## Neu in PR #2
 

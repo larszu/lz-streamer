@@ -144,8 +144,9 @@ Abgleich mit den 608-Untertiteln, die ffmpeg (`movie=…[out0+subcc]`) aus der A
 
 **Bewertung:**
 - Ab der zweiten Zeile setzt ffmpeg Beginn *und* Ende gleichmäßig rund 150–230 ms später als `cea608tojson`.
-- Ein unabhängiger Player (VLC) fehlt hier, deshalb ist offen, welche Seite die Anzeige genauer trifft.
+- VLC 3.0.24 bietet in der Aufnahme CC1–CC4 als Untertitelspuren an. Kopflos lässt sich die 608-Spur aber nicht einblenden: Beim Umkodieren (`soverlay`) fehlen die CC-Spuren, Schnappschüsse brauchen das Videofenster. Der Bildvergleich in VLC ist darum offen.
 - Die Abnahme „< 200 ms“ ist damit gegenüber ffmpeg nicht sicher erreicht.
+- Bei 50p und Zeilen im 2-s-Abstand liest ffmpeg nur jede zweite Zeile, teils ohne Zeilenanfang; `cea608tojson` und die `.srt` haben alle Zeilen. Welche Seite recht hat, zeigt erst der Abgleich in VLC.
 
 **Nicht umgesetzt:**
 - `.scc`
