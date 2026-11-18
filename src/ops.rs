@@ -49,6 +49,29 @@ pub struct SystemInfo {
     pub gpu_percent: Option<f64>,
 }
 
+/// Freier und gesamter Platz (GB) des Laufwerks, auf dem `dir` liegt. Fragt nur
+/// dieses eine Dateisystem ab (statvfs), nicht alle Laufwerke wie `sysinfo::Disks`.
+#[cfg(unix)]
+pub fn disk_space(dir: &std::path::Path) -> Option<(f64, f64)> {
+    use std::os::unix::ffi::OsStrExt;
+    // der Ordner muss nicht existieren: nächster vorhandener Elternordner
+    let existing = dir.ancestors().find(|p| p.exists())?;
+    let c = std::ffi::CString::new(existing.as_os_str().as_bytes()).ok()?;
+    let mut st: libc::statvfs = unsafe { std::mem::zeroed() };
+    if unsafe { libc::statvfs(c.as_ptr(), &mut st) } != 0 {
+        return None;
+    }
+    let frag = st.f_frsize as f64;
+    Some((st.f_bavail as f64 * frag / 1e9, st.f_blocks as f64 * frag / 1e9))
+}
+
+#[cfg(not(unix))]
+pub fn disk_space(dir: &std::path::Path) -> Option<(f64, f64)> {
+    let disks = sysinfo::Disks::new_with_refreshed_list();
+    let d = disks.iter().filter(|d| dir.starts_with(d.mount_point())).max_by_key(|d| d.mount_point().as_os_str().len())?;
+    Some((d.available_space() as f64 / 1e9, d.total_space() as f64 / 1e9))
+}
+
 /// GPU-Auslastung ohne Administratorrechte: macOS über `ioreg` (IOAccelerator,
 /// „Device Utilization %“), sonst `nvidia-smi`, wenn vorhanden.
 pub fn gpu_percent() -> Option<f64> {
@@ -194,25 +217,37 @@ impl Ops {
     /// Statistik, Systemlast und Alarme – alle 5 s.
     pub async fn monitor(self: Arc<Self>, sup: Arc<Supervisor>) {
         let mut sys = sysinfo::System::new();
-        let mut disks = sysinfo::Disks::new_with_refreshed_list();
         let mut tick = tokio::time::interval(Duration::from_secs(STEP_S));
         let mut tracker = AlarmTracker::default();
+        let disk_busy = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let mut disk = (0.0, 0.0);
         loop {
             tick.tick().await;
             sys.refresh_cpu_usage();
             sys.refresh_memory();
-            disks.refresh(true);
             let rec_dir = self.data.recordings();
-            let disk = disks
-                .iter()
-                .filter(|d| rec_dir.starts_with(d.mount_point()))
-                .max_by_key(|d| d.mount_point().as_os_str().len());
+            // Platz nur für den Aufnahmeordner und außerhalb der Laufzeit: ein
+            // hängendes Netzlaufwerk blockiert statfs, im Worker stünde sonst
+            // der ganze Webserver.
+            if !disk_busy.swap(true, std::sync::atomic::Ordering::AcqRel) {
+                let (busy, dir) = (disk_busy.clone(), rec_dir.clone());
+                let job = tokio::task::spawn_blocking(move || {
+                    let r = disk_space(&dir);
+                    busy.store(false, std::sync::atomic::Ordering::Release);
+                    r
+                });
+                match tokio::time::timeout(Duration::from_secs(2), job).await {
+                    Ok(Ok(Some(d))) => disk = d,
+                    Ok(_) => disk = (0.0, 0.0),
+                    Err(_) => sup.log("warn", format!("Freier Platz in {} nicht lesbar (Laufwerk antwortet nicht)", rec_dir.display())).await,
+                }
+            }
             let info = SystemInfo {
                 cpu_percent: sys.global_cpu_usage() as f64,
                 memory_percent: if sys.total_memory() > 0 { sys.used_memory() as f64 * 100.0 / sys.total_memory() as f64 } else { 0.0 },
                 memory_total_gb: sys.total_memory() as f64 / 1e9,
-                disk_free_gb: disk.map(|d| d.available_space() as f64 / 1e9).unwrap_or(0.0),
-                disk_total_gb: disk.map(|d| d.total_space() as f64 / 1e9).unwrap_or(0.0),
+                disk_free_gb: disk.0,
+                disk_total_gb: disk.1,
                 hostname: sysinfo::System::host_name().unwrap_or_default(),
                 uptime_s: sysinfo::System::uptime(),
                 gpu_percent: tokio::task::spawn_blocking(gpu_percent).await.ok().flatten(),
@@ -460,6 +495,12 @@ pub fn report_csv(stats: &[StatPoint], events: &[crate::supervisor::Event]) -> S
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn disk_space_of_missing_subdir() {
+        let (free, total) = disk_space(&std::env::temp_dir().join("lzs-gibt-es-nicht/aufnahmen")).expect("statvfs");
+        assert!(total > 0.0 && free >= 0.0 && free <= total, "{free} / {total}");
+    }
 
     #[test]
     fn ioreg_gpu_parse() {
