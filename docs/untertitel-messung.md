@@ -20,6 +20,11 @@ Die Werte stammen aus Messreihe 2: jede Äußerung auf −23 LUFS ausgesteuert, 
 
 Alle Verzüge gelten gegen den Beginn des ersten Wortes.
 
+**Nachmessung 18.11.2026** (Release-Bau, Deutsch, Roll-up 2, Stück 3 s, ohne Taktung, Lastmittel zu Beginn 6): WER 0,14; Erkennung 4,7 / 5,9 s; Decoder 7,5 / 9,2 s; erstes Wort → Decoder 7,5 / 12,7 s; Untertiteldatei 5,2 / 6,7 s; 608 in der Aufnahme 6,1 / 8,3 s; CPU ≈ 3,4 Kerne. Die Werte bestätigen Messreihe 2.
+
+- `LZS_WHISPER_MODEL=…/ggml-small.bin cargo test --release --test roundtrip speech`: WER 0,00, Verzug Median 3,0 s, Absturz der Erkennung lässt den Kanal weiterlaufen.
+- Im Debug-Bau und unter fremder Last (Lastmittel > 10) staut sich die Erkennung (Median 11–44 s); Messungen nur im Release-Bau auf einem ruhigen Rechner.
+
 **Übersetzung DE → EN** (Whisper-eigen, Messreihe 1 ohne Aussteuerung):
 - WER 0,60 gegen die Referenzübersetzung
 - Erkennung 4,6 / 6,2 s, Decoder 7,2 / 9,2 s
