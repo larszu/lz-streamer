@@ -2211,6 +2211,7 @@ fn check_ts(data: &[u8]) -> TsCheck {
 fn cbr_ts_with_pcr_pacing_passes_tr101290_subset() {
     init();
     let mut cfg = encoder_cfg(free_port(), SrtMode::Listener);
+    cfg.ts.muxer = lz_streamer::config::TsMuxer::Mpegtsmux;
     cfg.ts.cbr_kbps = 3000;
     cfg.ts.pace = true;
     let ts = capture_udp_ts(&mut cfg, 6, "cbr", |_, _| {});
@@ -2235,6 +2236,7 @@ fn vbr_ts_pcr_gap_at_most_40ms() {
     for fps in [25, 50] {
         let mut cfg = encoder_cfg(free_port(), SrtMode::Listener);
         cfg.video.fps = fps;
+        cfg.ts.muxer = lz_streamer::config::TsMuxer::Mpegtsmux;
         let ts = capture_udp_ts(&mut cfg, 4, "vbr", |_, _| {});
         let data = std::fs::read(&ts).unwrap();
         let _ = std::fs::remove_file(&ts);
@@ -2244,4 +2246,119 @@ fn vbr_ts_pcr_gap_at_most_40ms() {
         assert_eq!(c.cc_errors, 0, "{c:?}");
         assert!(c.max_pcr_gap_ms > 0.0 && c.max_pcr_gap_ms <= 40.5, "{fps}p: PCR-Abstand {} ms", c.max_pcr_gap_ms);
     }
+}
+
+/// TSDuck-Gegenprobe, wenn installiert: Fehlerzeilen von `continuity` und `pcrverify`.
+fn tsduck_errors(path: &std::path::Path, cbr: bool) -> Option<Vec<String>> {
+    let mut args: Vec<String> = vec!["-I".into(), "file".into(), path.to_string_lossy().into(), "-P".into(), "continuity".into()];
+    if cbr {
+        // PCR gegen die Rate: Abweichung über 1 µs ist ein Fehler
+        args.extend(["-P", "pcrverify", "--jitter-max", "1", "--absolute"].map(String::from));
+    }
+    args.extend(["-O", "drop"].map(String::from));
+    let out = std::process::Command::new("tsp").args(&args).output().ok()?;
+    let text = String::from_utf8_lossy(&out.stderr).into_owned() + &String::from_utf8_lossy(&out.stdout);
+    eprintln!("tsp: {text}");
+    // „261 PCR OK, 0 with jitter > 1“: die Zahl vor „with jitter“ muss 0 sein
+    let jitter_bad = |l: &str| l.split(" with jitter").next().and_then(|a| a.rsplit(' ').next()).and_then(|n| n.parse::<u64>().ok()).is_some_and(|n| n > 0);
+    Some(text.lines().filter(|l| l.contains("missing") || l.contains("discontinuity") || l.contains("with jitter") && jitter_bad(l) || l.contains("Error")).map(String::from).collect())
+}
+
+fn ffprobe_codecs(path: &std::path::Path) -> String {
+    // ffprobe nennt die Ströme je Programm noch einmal
+    let mut v: Vec<String> = Vec::new();
+    for c in ffprobe_csv(path, &["-show_entries", "stream=codec_name"]).split_whitespace() {
+        if !v.iter().any(|x| x == c) {
+            v.push(c.to_string());
+        }
+    }
+    v.join(",")
+}
+
+/// #32: eigener Mux mit konstanter Rate. TR 101 290 Prio 1 und 2 inklusive
+/// PCR-Genauigkeit ±500 ns, T-STD-Transportpuffer, Rate ±2 %, ffprobe sieht
+/// Bild und Ton; TSDuck als Gegenprobe.
+#[test]
+fn lztsmux_cbr_passes_tr101290_and_tstd() {
+    init();
+    let mut cfg = encoder_cfg(free_port(), SrtMode::Listener);
+    cfg.ts.muxer = lz_streamer::config::TsMuxer::Lz;
+    cfg.ts.cbr_kbps = 3000;
+    let ts = capture_udp_ts(&mut cfg, 6, "lzcbr", |_, _| {});
+    let data = std::fs::read(&ts).unwrap();
+    // Anlauf abschneiden
+    let data = &data[data.len().min(188 * 2000) / 188 * 188..];
+    let tail = ts.with_extension("cut.ts");
+    std::fs::write(&tail, data).unwrap();
+    let c = lz_streamer::tsanalyse::analyse(data);
+    eprintln!("{c:?}");
+    assert_eq!(c.prio1(), 0, "{c:?}");
+    assert_eq!(c.prio2(true), 0, "{c:?}");
+    assert_eq!(c.tstd_tb_overflows, 0, "{c:?}");
+    assert!(c.max_pcr_gap_ms <= 40.0 && c.max_pat_gap_ms <= 500.0 && c.max_pmt_gap_ms <= 500.0, "{c:?}");
+    assert!(c.null_packets > 0, "{c:?}");
+    assert!((c.rate_kbps - 3000.0).abs() < 60.0, "Rate {} kbit/s statt 3000", c.rate_kbps);
+    assert!(c.pcr_to_pts_ms > 0.0 && c.pcr_to_pts_ms < 400.0, "PCR→PTS {} ms", c.pcr_to_pts_ms);
+    if which("ffprobe") {
+        assert_eq!(ffprobe_codecs(&tail), "h264,aac");
+    }
+    if let Some(errs) = tsduck_errors(&tail, true) {
+        assert!(errs.is_empty(), "TSDuck: {errs:?}");
+    }
+    let _ = std::fs::remove_file(&ts);
+    let _ = std::fs::remove_file(&tail);
+}
+
+/// #32: eigener Mux mit variabler Rate (Vorgabe): Prio 1 und 2 ohne PCR-Genauigkeit
+/// (gilt nur bei konstanter Rate), PCR ≤ 40 ms trotz 25 Bilder/s, H.265 ebenso.
+#[test]
+fn lztsmux_vbr_passes_tr101290() {
+    init();
+    for codec in [Codec::H264, Codec::H265] {
+        let mut cfg = encoder_cfg(free_port(), SrtMode::Listener);
+        cfg.video.codec = codec;
+        let ts = capture_udp_ts(&mut cfg, 5, "lzvbr", |_, _| {});
+        let data = std::fs::read(&ts).unwrap();
+        let data = &data[data.len().min(188 * 500) / 188 * 188..];
+        let c = lz_streamer::tsanalyse::analyse(data);
+        eprintln!("{codec:?}: {c:?}");
+        assert_eq!(c.prio1(), 0, "{c:?}");
+        assert_eq!(c.prio2(false), 0, "{c:?}");
+        assert!(c.max_pcr_gap_ms <= 40.0, "{c:?}");
+        assert_eq!(c.es_pids, vec![0x41, 0x42], "{c:?}");
+        if which("ffprobe") {
+            let tail = ts.with_extension("cut.ts");
+            std::fs::write(&tail, data).unwrap();
+            assert_eq!(ffprobe_codecs(&tail), if codec == Codec::H264 { "h264,aac" } else { "hevc,aac" });
+            let _ = std::fs::remove_file(&tail);
+        }
+        let _ = std::fs::remove_file(&ts);
+    }
+}
+
+/// #32: Encoder mit eigenem Mux → SRT → Decoder, mit und ohne konstante Rate:
+/// Bild und Ton kommen an.
+#[test]
+fn lztsmux_roundtrip_video_and_audio() {
+    init();
+    for cbr in [0, 4000] {
+        let port = free_port();
+        let mut cfg = encoder_cfg(port, SrtMode::Listener);
+        cfg.ts.muxer = lz_streamer::config::TsMuxer::Lz;
+        cfg.ts.cbr_kbps = cbr;
+        let mut enc = Channel::start_encoder(&cfg, &[], &ChannelOptions::default()).unwrap();
+        assert_eq!(enc.pipeline().by_name("mux").unwrap().factory().unwrap().name(), "lztsmux");
+        let mut dec = Channel::start_decoder(&decoder_cfg(port, SrtMode::Caller), &ChannelOptions::default()).unwrap();
+        let (_, d) = run_until(&mut enc, &mut dec, Duration::from_secs(15), |_, d| {
+            d.frames >= 50 && d.audio_tracks.iter().any(|t| t.loudness.as_ref().is_some_and(|l| l.short_term.is_some()))
+        });
+        enc.stop();
+        dec.stop();
+        assert!(d.frames >= 50, "CBR {cbr}: {} Bilder", d.frames);
+        assert!(d.audio_tracks.iter().any(|t| t.loudness.as_ref().is_some_and(|l| l.short_term.is_some())), "CBR {cbr}: kein Ton");
+    }
+}
+
+fn which(cmd: &str) -> bool {
+    std::process::Command::new(cmd).arg("-version").output().is_ok()
 }

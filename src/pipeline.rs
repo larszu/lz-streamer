@@ -279,9 +279,10 @@ pub fn uvc_source(index: u32) -> String {
 pub fn primary_audio(input: &ResolvedInput, n: u32) -> String {
     let caps = audio_caps(n);
     match input {
-        // 1 kHz bei -20 dBFS, der übliche Messton, auf allen Kanälen
+        // 1 kHz bei -20 dBFS, der übliche Messton, auf allen Kanälen; Puffer von 10 ms
+        // wie bei einer Capture-Karte (die Vorgabe 1024 Samples ließe den Ton 21 ms später kommen)
         ResolvedInput::Test => format!(
-            "audiotestsrc name=testasrc is-live=true wave=sine freq=1000 volume=0.1 \
+            "audiotestsrc name=testasrc is-live=true wave=sine freq=1000 volume=0.1 samplesperbuffer=480 \
              ! audio/x-raw,format=F32LE,layout=interleaved,rate=48000,channels=1 \
              ! audioconvert mix-matrix={} ! {caps}",
             crate::audio::matrix_string(&vec![vec![1.0f32]; n as usize])
@@ -486,6 +487,11 @@ pub fn encoder_description(cfg: &EncoderConfig, parts: &EncoderParts) -> String 
         ));
     }
 
+    if cfg.uses_lztsmux() {
+        d.push(format!("{} ! tee name=tsout allow-not-linked=true", lztsmux_description(cfg)));
+        d.extend(ts_outputs(cfg));
+        return d.join("  ");
+    }
     d.push(format!(
         // pcr-interval in 90 kHz: mpegtsmux schreibt die PCR erst, wenn mehr als
         // dieser Abstand vergangen ist, und ohne feste Rate nur mit neuen
@@ -501,10 +507,27 @@ pub fn encoder_description(cfg: &EncoderConfig, parts: &EncoderParts) -> String 
     d.join("  ")
 }
 
+/// Eigener Mux (`lztsmux`). Der Spielraum über der gelernten Eingangsverspätung
+/// ist die längste SRT-Latenz: Der Decoder stellt nach SRT-Sendezeit dar und
+/// zieht die SRT-Latenz wieder ab (siehe `decoder_video_branch`), die Pakete kommen
+/// aber erst nach ihr an. Für das Dekodieren selbst hat der Decoder seine Reserve.
+pub fn lztsmux_description(cfg: &EncoderConfig) -> String {
+    let srt = cfg.outputs.iter().filter(|o| o.enabled && o.kind == OutputType::Srt).map(|o| o.srt.latency_ms).chain([cfg.srt.latency_ms]).max().unwrap_or(0);
+    let mut s = format!("lztsmux name=mux headroom={srt}");
+    if cfg.ts.delay_ms > 0 {
+        s += &format!(" delay={}", cfg.ts.delay_ms);
+    }
+    if cfg.ts.cbr_kbps > 0 {
+        s += &format!(" bitrate={}", cfg.ts.cbr_kbps as u64 * 1000);
+    }
+    s
+}
+
 /// Ausgänge hinter dem TS-Verteiler `tsout`: SRT-Ziel und weitere Ausgänge.
 pub fn ts_outputs(cfg: &EncoderConfig) -> Vec<String> {
-    // PCR-getaktet: die Senken warten auf die Zeit jedes Puffers (mit CBR = PCR-Zeit)
-    let sync = cfg.ts.pace;
+    // PCR-getaktet: die Senken warten auf die Zeit jedes Puffers (mit CBR = PCR-Zeit).
+    // Der eigene Mux stempelt mit der Sendezeit und taktet selbst.
+    let sync = cfg.ts.pace && !cfg.uses_lztsmux();
     let mut d = vec![format!(
         "tsout. ! queue max-size-buffers=0 max-size-bytes=0 max-size-time=1000000000 ! srtsink name=srtout uri={} latency={} \
          wait-for-connection=false async=false sync={sync}",
@@ -723,7 +746,11 @@ pub fn decoder_video_branch(
             if deck_mode.trim().is_empty() { "auto" } else { deck_mode.trim() }
         ),
         OutputKind::None => {
-            format!("videoscale ! videoconvert ! video/x-raw,format=GRAY8,width=64,height=36 ! fakesink name=vsink sync=true async=false ts-offset={ts_offset_ns}")
+            // gemessen wird beim Zeigen (handoff), zu späte Bilder zählt `measure_luma`
+            format!(
+                "videoscale ! videoconvert ! video/x-raw,format=GRAY8,width=64,height=36 \
+                 ! fakesink name=vsink sync=true async=false signal-handoffs=true ts-offset={ts_offset_ns}"
+            )
         }
     };
     // libav dekodiert sonst im Frame-Threading und hält dafür mehrere Bilder zurück
@@ -861,7 +888,7 @@ mod tests {
             "vsw.sink_1",
             "x264enc name=venc",
             "h264parse config-interval=-1",
-            "mpegtsmux name=mux alignment=7",
+            "lztsmux name=mux headroom=120",
             "srtsink name=srtout uri=\"srt://:9000?mode=listener\" latency=120",
             "fallbackswitch name=asw",
             "avenc_aac name=aenc0 bitrate=192000",
@@ -992,8 +1019,34 @@ mod tests {
     }
 
     #[test]
+    fn own_muxer_unless_mpegtsmux_features() {
+        use crate::config::TsMuxer;
+        let mut cfg = EncoderConfig::default();
+        cfg.srt.latency_ms = 40;
+        cfg.ts.cbr_kbps = 12000;
+        cfg.ts.pace = true;
+        cfg.ts.delay_ms = 90;
+        let d = encoder_description(&cfg, &parts(&ResolvedInput::Test));
+        assert!(d.contains("lztsmux name=mux headroom=40 delay=90 bitrate=12000000 ! tee name=tsout"), "{d}");
+        assert!(d.contains("srtsink name=srtout") && d.contains("async=false sync=false"), "der Mux taktet selbst: {d}");
+        // SCTE-35 kann nur mpegtsmux
+        cfg.anc.scte35 = true;
+        assert!(encoder_description(&cfg, &parts(&ResolvedInput::Test)).contains("mpegtsmux name=mux"));
+        cfg.ts.muxer = TsMuxer::Lz;
+        assert!(crate::config::Config { encoder: cfg.clone(), ..Default::default() }.hints().iter().any(|h| h.text.contains("SCTE-35 schreibt nur mpegtsmux")));
+        cfg.anc.scte35 = false;
+        cfg.ts.muxer = TsMuxer::Mpegtsmux;
+        assert!(encoder_description(&cfg, &parts(&ResolvedInput::Test)).contains("mpegtsmux name=mux"));
+        // längste SRT-Latenz aller Ausgänge geht in den Spielraum
+        cfg.ts.muxer = TsMuxer::Auto;
+        cfg.outputs.push(crate::config::ExtraOutput { enabled: true, kind: OutputType::Srt, srt: crate::config::SrtConfig { latency_ms: 300, ..Default::default() }, ..Default::default() });
+        assert!(lztsmux_description(&cfg).starts_with("lztsmux name=mux headroom=300"));
+    }
+
+    #[test]
     fn cbr_and_pcr_pacing() {
         let mut cfg = EncoderConfig::default();
+        cfg.ts.muxer = crate::config::TsMuxer::Mpegtsmux;
         let d = encoder_description(&cfg, &parts(&ResolvedInput::Test));
         assert!(d.contains("pcr-interval=1800 ! tee name=tsout") && d.contains("srtsink name=srtout") && d.contains("async=false sync=false"));
         cfg.ts.cbr_kbps = 12000;

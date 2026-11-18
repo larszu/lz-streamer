@@ -161,19 +161,23 @@ Gezählt sind die 7 fehlenden Funktionen und die drei Teilfunktionen mit dem gr�
 
 | SRT-FEC und RIST-Redundanz (F-02, #33): RIST-Ausgang mit mehreren Wegen (broadcast), Decoder-Quelle RIST; Trennung eines Wegs ohne Bildlücke; SRT-Paketfilter `fec` spart Wiederholungen | `rist_two_paths_survive_cut_of_one`, `srt_fec_reduces_retransmissions_under_loss`, Unit-Tests in `config.rs`, `pipeline.rs` |
 
-| Broadcast-TS (F-01, #32): CBR mit Nullpaketen, PCR-getaktetes Senden; TR 101 290 Prio 1/2 (Teil, eigene Prüfung): CC, PAT/PMT-Abstand, PCR-Abstand, Rate | `cbr_ts_with_pcr_pacing_passes_tr101290_subset`, Unit-Test `cbr_and_pcr_pacing` |
+| Broadcast-TS (F-01, #32): eigener Mux `lztsmux` ohne Wartezeit, CBR mit Nullpaketen und T-STD-Takt; TR 101 290 Prio 1/2 samt PCR-Genauigkeit, TSDuck-Gegenprobe; `mpegtsmux` bleibt wählbar | `lztsmux_cbr_passes_tr101290_and_tstd`, `lztsmux_vbr_passes_tr101290`, `lztsmux_roundtrip_video_and_audio`, `cbr_ts_with_pcr_pacing_passes_tr101290_subset`, Unit-Tests in `tsmux.rs`, `tsanalyse.rs`, `pipeline.rs` |
 
 ### Broadcast-TS (#32)
 
-`lz-streamer latenz` (Release, M1 Pro, 1280×720p50, VideoToolbox H.264 8000 kbit/s, SRT 120 ms, je 7 Runden, Median):
+Der TS kommt aus dem eigenen Mux `lztsmux` (`src/tsmux.rs`). Er schreibt jedes Bild und jeden Tonblock sofort, nimmt die PCR aus der Pipeline-Uhr und lernt den Puffer PCR → PTS aus den Eingängen. Mit konstanter Rate taktet er selbst, füllt mit Nullpaketen und hält den T-STD-Transportpuffer ein. SCTE-35, ST 2038 und DVB-Untertitel schreibt nur `mpegtsmux`; mit diesen Funktionen wird er automatisch genommen.
 
-| Einstellung | Median | Parser+Mux |
+`lz-streamer latenz` (Release, M1 Pro, 1280×720p50, VideoToolbox H.264, SRT 40 ms, Demux 0, Reserve 20, je 7 Runden, Median; Spannen über mehrere Läufe):
+
+| Mux | Median | davon Mux |
 |---|---|---|
-| variabel (bisher) | 215–230 ms | 50–56 ms |
-| `--cbr 12000` | 215–228 ms | 5–39 ms |
-| `--cbr 12000 --takt` | 212–226 ms | 31–36 ms |
+| `mpegtsmux` | 176–193 ms | 54–65 ms |
+| eigener | 113–116 ms | 0 ms |
+| eigener, CBR 12 000 kbit/s | 163–190 ms | 0 ms (Warten in der Rate) |
 
-CBR und PCR-Takt ändern die Gesamtlatenz nicht messbar: was der Muxer früher abgibt, wartet danach im SRT-/Demux-Puffer. Die erhofften 37–51 ms und das Ziel < 130 ms erreicht dieser Schritt nicht; dafür bräuchte es ein eigenes Pacing-Element mit T-STD-Puffermodell und kleinerem Demux-Puffer am Decoder. Eine CBR-Rate unter Bild + Ton bringt den Takt aus dem Tritt (`--cbr 6000` bei 8000 kbit/s: Weißsprung kommt nicht an), daher der Hinweis in der Oberfläche.
+Gemessen wird beim Zeigen; kein Bild kam mehr als 20 ms zu spät. Einzelheiten und Prüfung nach TR 101 290: [vergleich-hardware-latenz.md §5.1, §5.4](vergleich-hardware-latenz.md#51-gemessen-aufgeschlüsselt-m).
+
+Offen bei #32: Multiplex- und Elementarpuffer (MB/EB) des T-STD werden nicht geprüft, nur der Transportpuffer; Abnahme an einem echten IRD.
 
 ### Gegenprobe mit TSDuck und VLC (#16, #27, TR 101 290)
 
@@ -215,7 +219,6 @@ Prometheus 3.16 (Homebrew) liest einen laufenden Encoder (Testbild 1080p50, SRT-
 
 Offen bei #20: Die weiteren Kanäle haben in der Oberfläche nur die Grundeinstellungen (Eingang, Ziel, Rate) und den Zustand; Grafik, Untertitel-Eingabe und Pegel sind dem Hauptkanal vorbehalten. Feste Ports (OSC 4211, Grafik-Renderer) gibt es nur einmal.
 
-Offen bei #32: T-STD-Pufferprüfung, eigenes PCR-Pacing-Element, Latenzziel < 130 ms, Gegenprobe mit TSDuck.
 
 Offen bei #33: SRT Socket Groups (das installierte libsrt 1.5.7 ist ohne Bonding gebaut), RIST mit SMPTE-2022-1-FEC, Messung an echten Netzwegen.
 

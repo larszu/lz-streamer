@@ -36,7 +36,8 @@ Eigener Video-Encoder und -Decoder: **Eingang → Encoder → SRT** (dazu option
 - **SCTE-35-Werbemarken:** Mit eingeschalteter SCTE-35-PID (0x1F6) setzt `POST /api/scte35` einen Cue, etwa `{"kind":"out","duration_s":30,"preroll_ms":4000}` oder `{"kind":"in"}`. Der Splice-Punkt liegt nach dem Vorlauf (Vorgabe 4 s); mpegtsmux schreibt die passende PTS, der Encoder legt genau dort ein IDR-Bild.
 - **10 bit, 4:2:2 und HDR:** Farbformat 4:2:0 8 bit (Vorgabe), 4:2:0 10 bit oder 4:2:2 10 bit; Kennlinie SDR, PQ (HDR10) oder HLG mit BT.2020. H.265 kodiert VideoToolbox (4:2:2 10 bit über AYUV64) oder x265, H.264 mit 10 bit nur x264 – der wird dann automatisch gewählt. Die Kennlinie wird im Strom gekennzeichnet, nicht umgerechnet. DeckLink liefert dafür 10-bit-YUV.
 - **Mehrere Kanäle in einer Instanz:** Neben dem Hauptkanal laufen weitere Kanäle (Encoder oder Decoder, `channels` in der Konfiguration), jeder als eigener Prozess unter eigenem Aufpasser. Stürzt einer ab, startet nur er neu. Karte „Weitere Kanäle“ und API: `GET /api/channels`, `POST /api/channels/<n>/start|stop`, `GET /api/channels/<n>/preview.jpg` (`n` ab 0).
-- **Broadcast-TS:** Auf Wunsch konstante TS-Rate mit Nullpaketen (`ts.cbr_kbps`) und Senden im Takt der PCR (`ts.pace`) für Empfänger und Multiplexer, die CBR erwarten. Ist die Rate knapper als Bild + Ton + 15 %, erscheint ein Hinweis. Messung: `lz-streamer latenz --cbr 12000 --takt`; die Latenz bleibt dabei gleich ([Messung](docs/funktionsparitaet-kb.md#broadcast-ts-32)).
+- **Eigener TS-Multiplexer** (`lztsmux`, Vorgabe): schreibt jedes Bild sofort statt auf den Ton zu warten, PCR aus der Pipeline-Uhr, Puffer PCR → PTS selbst gelernt (`ts.delay_ms` legt ihn fest). Spart gegenüber `mpegtsmux` 60–75 ms bei SRT 40 ms. SCTE-35, ST 2038 und DVB-Untertitel kann nur `mpegtsmux`; damit wird er automatisch genommen, `ts.muxer` wählt fest. Geprüft nach TR 101 290 Prio 1/2 und mit TSDuck ([Messung](docs/vergleich-hardware-latenz.md#51-gemessen-aufgeschlüsselt-m)).
+- **Broadcast-TS:** Auf Wunsch konstante TS-Rate mit Nullpaketen (`ts.cbr_kbps`). Der eigene Mux taktet dann Paket für Paket, PCR exakt aus der Sendeposition, Tonpakete nach dem T-STD-Transportpuffer; mit `mpegtsmux` sendet `ts.pace` im Takt der PCR. Ist die Rate knapper als Bild + Ton + 15 %, erscheint ein Hinweis.
 - **Mehrere Ausgänge** aus demselben Strom: weitere SRT-Ziele (auch Rendezvous), TS über UDP/RTP (auch Multicast), RIST, dazu RTMP.
 - **Redundanz und FEC:** Ein RIST-Ausgang sendet jedes Paket über mehrere Wege (zwei Netze, zwei Leitungen); der Decoder mit Quelle „RIST“ führt sie zusammen. Fällt ein Weg aus, läuft das Bild ohne Lücke weiter. SRT kann zusätzlich FEC (libsrt-Paketfilter, z. B. `fec,cols:10,rows:5`, auf beiden Seiten gleich). SRT-Gruppen (Socket Groups) gibt es nicht: das libsrt dieser Installation ist ohne Bonding gebaut.
 - **Aufnahme parallel** zum Stream: TS oder fragmentiertes MP4, Segmente, alle Tonspuren. Mit Untertiteln liegen neben jedem Segment `.srt` und `.vtt`, deren Zeiten aus dem gesendeten 608-Strom stammen. Eine zweite Untertitelsprache liegt auf CC3. Mit Spracherkennung übersetzt Whisper ins Englische, bei Live-Text kommt sie aus einem eigenen Eingabefeld. Der Decoder wählt CC1 oder CC3 ([Messung](docs/untertitel-messung.md)). Aufnahmen-Liste mit Download; älteste löschen, wenn die Platte voll wird.
@@ -72,12 +73,12 @@ Eigener Video-Encoder und -Decoder: **Eingang → Encoder → SRT** (dazu option
 
 | Weg | SRT-Latenz | Median (7 Runden) |
 |---|---|---|
-| H.264 VideoToolbox → avdec_h264 | 120 ms | 227 ms |
-| H.264 VideoToolbox → avdec_h264 | 40 ms | 163 ms |
+| H.264 VideoToolbox → avdec_h264, eigener Mux (18.11.) | 120 ms | 194–197 ms |
+| H.264 VideoToolbox → avdec_h264, eigener Mux (18.11.) | 40 ms | 113–116 ms |
 | H.265 VideoToolbox → avdec_h265 | 120 ms | 220 ms |
 | H.265 VideoToolbox → vtdec_hw (Voreinstellung für H.265) | 120 ms | 549 ms |
 
-`latenz` schlüsselt zusätzlich nach Stationen auf (Quelle, Encode, Parser+Mux, SRT+Demux+Decode, Ausgabe). Mit SRT 40 ms, Demux 0 und Reserve 20 sind es 134–155 ms; der größte vermeidbare Posten ist mit 37–51 ms die Wartezeit im `mpegtsmux`. Weitere Dokumente:
+`latenz` schlüsselt zusätzlich nach Stationen auf (Quelle, Encode, Parser+Mux, SRT+Demux+Decode, Ausgabe), zählt zu spät gezeigte Bilder und misst beim Zeigen. Mit SRT 40 ms, Demux 0 und Reserve 20 sind es mit dem eigenen Mux 113–116 ms, mit `mpegtsmux` 176–193 ms (`--mux mpegtsmux`). Weitere Dokumente:
 
 | Thema | Dokument |
 |---|---|
@@ -117,7 +118,7 @@ cargo build --release
 ./target/release/lz-streamer               # Oberfläche auf http://127.0.0.1:4200
 ./target/release/lz-streamer serve --bind 0.0.0.0 --autostart   # im Netz erreichbar, Kanal sofort an
 ./target/release/lz-streamer serve --bind 0.0.0.0 --https       # über HTTPS (auch in der Verwaltung einstellbar)
-./target/release/lz-streamer latenz [--h265] [--srt-latency 40] [--decoder avdec_h265] [--demux 0] [--reserve 20]
+./target/release/lz-streamer latenz [--h265] [--srt-latency 40] [--decoder avdec_h265] [--demux 0] [--reserve 20] [--mux lz|mpegtsmux] [--mux-verzug 90]
 ```
 
 - **Port 4200.** 4181–4198 belegt die AV-Suite, 4199 belegt `lz-nvx-toolbox`.
@@ -147,7 +148,8 @@ cargo test
   - RTMP-Abbruch reißt SRT nicht mit; ffmpeg als RTMP-Gegenstelle sieht Bildgröße und Ton, mit Hardware-Encoder und x264, ebenso bei der Ausspielung der Empfangsstelle (braucht `ffmpeg`)
   - Kindprozess meldet Status und beendet sich ohne Elternprozess
   - Mehrere Kanäle (`tests/channels.rs`): zwei Encoder 1080p50 parallel in getrennten Prozessen, beide in Echtzeit; `kill -9` auf den zweiten – der Hauptkanal liefert weiter und wird nicht neu gestartet, der zweite kommt von selbst wieder
-  - Broadcast-TS: 3000 kbit/s CBR mit PCR-Takt, eigene Prüfung nach TR 101 290 (Teil): keine CC-Fehler, PAT/PMT ≤ 500 ms, PCR ≤ 40 ms, Nullpakete, Rate ±2 %
+  - Broadcast-TS mit `mpegtsmux`: 3000 kbit/s CBR mit PCR-Takt, keine CC-Fehler, PAT/PMT ≤ 500 ms, PCR ≤ 40 ms, Nullpakete, Rate ±2 %
+  - Eigener Mux: CBR 3000 kbit/s ohne Fehler nach TR 101 290 Prio 1/2 (PCR-Genauigkeit ±500 ns), ohne T-STD-Überlauf, TSDuck `continuity`/`pcrverify` sauber; variabel mit H.264 und H.265 ohne Fehler; Bild und Ton kommen am Decoder an
   - RIST über zwei Wege: je Weg 3 s getrennt, in jeder Sekunde kommen ≥ 20 Bilder an; beide getrennt → nichts (eigener UDP-Verlust-Proxy statt netem)
   - SRT-FEC: bei jedem 50. verlorenen Paket keine Wiederholungen mit FEC, ohne FEC über 20
   - 10 bit/4:2:2/HDR: ffprobe sieht yuv422p10le bzw. yuv420p10le mit smpte2084 bzw. arib-std-b67 und bt2020 (VideoToolbox, x265, x264)
@@ -236,7 +238,7 @@ Anders als dort:
 
 Reihenfolge nach `haivision-kb-analyse/docs/nachbau-konzept.md` §5–§7:
 
-1. **Broadcast-TS:** CBR-Mux mit T-STD-Prüfung (TB/MB/EB), PCR-Pacing, PCR ≤ 40 ms, PSI ≤ 100 ms, TSDuck als Abnahme. Heute ist der Mux nur `mpegtsmux` ohne Nullpaket-CBR.
+1. **Broadcast-TS:** T-STD-Prüfung von Multiplex- und Elementarpuffer (MB/EB), Abnahme an einem echten IRD.
 2. **A/V-Sync über Tage:** DeckLink-Uhr als Pipeline-Uhr, Ton-PTS aus dem Samplezähler, adaptives Resampling, 72-h-Dauertest.
 3. **Ancillary:** CEA-608/708 aus VANC nach SEI, ST 2038, **SCTE-104 → SCTE-35** mit IDR am Splice-Punkt.
 4. **Redundanz:** SRT Socket Groups (broadcast/backup) über zwei Netze, FEC/RIST, SMPTE 2022-7 – Voraussetzung für Ziele wie 120 ms interkontinental (§5.8).

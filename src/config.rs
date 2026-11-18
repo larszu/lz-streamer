@@ -800,8 +800,46 @@ pub struct EncoderConfig {
 pub struct TsOutputConfig {
     /// Gesamtrate des TS in kbit/s, aufgefüllt mit Nullpaketen (0 = variabel)
     pub cbr_kbps: u32,
-    /// TS-Ausgänge senden im Takt der PCR statt so schnell wie möglich
+    /// TS-Ausgänge senden im Takt der PCR statt so schnell wie möglich (nur mpegtsmux;
+    /// der eigene Mux taktet bei konstanter Rate immer selbst)
     pub pace: bool,
+    /// Multiplexer
+    pub muxer: TsMuxer,
+    /// eigener Mux: Abstand PCR → PTS in ms (0 = selbst lernen)
+    pub delay_ms: u32,
+}
+
+/// Welcher Multiplexer den TS schreibt
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum TsMuxer {
+    /// eigener Mux, wenn der Strom nichts braucht, was nur mpegtsmux kann
+    #[default]
+    Auto,
+    /// eigener Mux ohne Wartezeit (`lztsmux`)
+    Lz,
+    /// GStreamer `mpegtsmux`
+    Mpegtsmux,
+}
+
+impl EncoderConfig {
+    /// Was nur mpegtsmux kann: SCTE-35, ST 2038, DVB-Untertitel
+    pub fn needs_mpegtsmux(&self) -> Option<&'static str> {
+        if self.anc.scte35 {
+            Some("SCTE-35")
+        } else if self.anc.st2038 {
+            Some("ST 2038")
+        } else if self.captions.dvb.enabled && self.captions.source != CaptionSource::Off {
+            Some("DVB-Untertitel")
+        } else {
+            None
+        }
+    }
+
+    /// Schreibt der eigene Mux den TS?
+    pub fn uses_lztsmux(&self) -> bool {
+        self.ts.muxer != TsMuxer::Mpegtsmux && self.needs_mpegtsmux().is_none()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -1121,6 +1159,9 @@ impl Config {
                 if e.srt.mode == SrtMode::Caller && e.srt.host.trim().is_empty() {
                     h.push(warn("Kein Ziel eingetragen – gesendet wird an diesen Rechner (127.0.0.1)."));
                 }
+                if let (TsMuxer::Lz, Some(what)) = (e.ts.muxer, e.needs_mpegtsmux()) {
+                    h.push(warn(&format!("{what} schreibt nur mpegtsmux – dafür bleibt der eigene Mux aus.")));
+                }
                 if e.ts.cbr_kbps > 0 {
                     let audio: u32 = if e.audio.enabled { crate::audio::effective_tracks(&e.audio.tracks).iter().map(|t| t.bitrate_kbps).sum() } else { 0 };
                     let need = (e.video.bitrate_kbps + audio) * 115 / 100;
@@ -1206,6 +1247,18 @@ mod tests {
         assert_eq!(rist_paths(Some(("10.0.0.1", 5004)), "10.1.0.1:5004, 10.2.0.1:6000;x"), "10.0.0.1:5004,10.1.0.1:5004,10.2.0.1:6000");
         assert_eq!(rist_paths(Some(("", 5004)), ""), "127.0.0.1:5004");
         assert_eq!(rist_paths(None, &RistInput::default().paths), "0.0.0.0:5004");
+    }
+
+    #[test]
+    fn ts_muxer_choice() {
+        let t: TsOutputConfig = serde_json::from_str(r#"{"muxer":"lz","delay_ms":90}"#).unwrap();
+        assert_eq!((t.muxer, t.delay_ms), (TsMuxer::Lz, 90));
+        assert_eq!(serde_json::to_value(TsMuxer::Mpegtsmux).unwrap(), "mpegtsmux");
+        let mut e = EncoderConfig::default();
+        assert!(e.uses_lztsmux(), "Vorgabe: eigener Mux");
+        e.anc.st2038 = true;
+        assert_eq!(e.needs_mpegtsmux(), Some("ST 2038"));
+        assert!(!e.uses_lztsmux());
     }
 
     #[test]

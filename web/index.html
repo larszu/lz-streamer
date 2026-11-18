@@ -272,8 +272,13 @@
             <label class="field"><span>Ordner (leer = Aufnahmeordner)</span><input class="input" data-path="encoder.record.dir" spellcheck="false"></label>
             <p class="group-title">Transportstrom</p>
             <div class="row2">
+              <label class="field"><span>Multiplexer</span><select class="input" data-path="encoder.ts.muxer"><option value="auto">Automatisch (eigener, wenn möglich)</option><option value="lz">Eigener, ohne Wartezeit</option><option value="mpegtsmux">GStreamer mpegtsmux</option></select></label>
+              <label class="field"><span>Puffer PCR → PTS (ms, 0 = lernen)</span><input class="input" data-path="encoder.ts.delay_ms" data-num inputmode="numeric"></label>
+            </div>
+            <p class="hint">Der eigene Multiplexer sendet jedes Bild sofort und spart so 60–75 ms. SCTE-35, ST 2038 und DVB-Untertitel schreibt nur mpegtsmux; dann wird er automatisch genommen.</p>
+            <div class="row2">
               <label class="field"><span>Konstante TS-Rate (kbit/s, 0 = variabel)</span><input class="input" data-path="encoder.ts.cbr_kbps" data-num inputmode="numeric"></label>
-              <label class="switch"><input type="checkbox" data-path="encoder.ts.pace"> Im Takt der PCR senden</label>
+              <label class="switch"><input type="checkbox" data-path="encoder.ts.pace"> Im Takt der PCR senden (mpegtsmux; der eigene taktet bei konstanter Rate immer)</label>
             </div>
             <p class="hint">Für Empfänger und Multiplexer, die konstante Rate erwarten; aufgefüllt wird mit Nullpaketen. Die Rate muss über Bild + Ton liegen.</p>
             <p class="group-title">Ancillary (Timecode, AFD)</p>

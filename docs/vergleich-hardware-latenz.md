@@ -27,14 +27,14 @@ Preise sind Richtwerte aus Händlerlisten des Konzepts und nicht frisch geprüft
   - Ringpuffer-Aufnahme, Companion-Steuerung
 
   Übernehmen statt neu bauen.
-- **Latenz heute** [M], Testbild → SRT → Decoder-Ausgang am M1 Pro, im LAN:
+- **Latenz heute** [M], Testbild → SRT → Decoder-Ausgang am M1 Pro, im LAN, eigener Mux (Vorgabe):
 
-  | SRT-Latenz | Median |
-  |---|---|
-  | 120 ms | 211–227 ms |
-  | 40 ms | 134–156 ms |
+  | SRT-Latenz | Median | mit mpegtsmux |
+  |---|---|---|
+  | 120 ms (Demux 40, Reserve 60) | 194–197 ms | 241–249 ms |
+  | 40 ms (Demux 0, Reserve 20) | 113–116 ms | 176–193 ms |
 
-  Glas-zu-Glas mit Capture, Ausgabe und Monitor gerechnet [S]: **≈ 190–210 ms**. Optimiert sind im LAN **≈ 120–135 ms** realistisch, siehe §5.
+  Glas-zu-Glas mit Capture, Ausgabe und Monitor gerechnet [S]: **≈ 150–155 ms** bei SRT 40 ms, siehe §5.
 - **Hardware-Empfehlung:**
   - Hauptgerät: Linux-Kompakt-PC mit NVIDIA-Blackwell-GPU und DeckLink 8K Pro (12G, Referenzeingang).
   - Mobil: Mac mini M4 Pro mit UltraStudio 4K Mini (12G).
@@ -151,36 +151,43 @@ Bauform wie A, aber mit kleinerer GPU. Wichtig sind zwei Dinge: eine DeckLink mi
 
 ### 5.1 Gemessen, aufgeschlüsselt [M]
 
-Gemessen am MacBook Pro M1 Pro: Testbild 1280×720p50, VideoToolbox H.264, SRT über 127.0.0.1, Decoder avdec_h264. Median aus 7 Runden mit `lz-streamer latenz`.
+Gemessen am MacBook Pro M1 Pro: Testbild 1280×720p50, VideoToolbox H.264, SRT über 127.0.0.1, Decoder avdec_h264. Je Zeile mehrere Läufe mit `lz-streamer latenz --runden 7`, angegeben ist die Spanne der Mediane. Gemessen wird beim Zeigen an der taktsynchronen Senke. Bilder, die mehr als 20 ms nach ihrer Zeit gezeigt werden, zählt die Messung; ein Bildschirm würde sie verwerfen. In allen Zeilen mit eigenem Mux sind es 0–1 bei rund 750 Bildern, mit `mpegtsmux` bei SRT 120 ms 2–3. Auf dem Rechner liefen dabei andere Bauten (Last 8–27), die Werte streuen deshalb um ±15 ms.
 
-| Einstellung | Quelle | Encode | Parser+Mux | SRT+Demux+Decode | Ausgabe | **Summe** |
-|---|---|---|---|---|---|---|
-| Vorgabe: SRT 120, Demux 40, Reserve 60 | 30 | 9 | 48 | 128 | 0 | **211** |
-| SRT 40, Demux 0, Reserve 20 | 25 | 9 | 51 | 50 | 13 | **155** |
-| dito, x264 statt VideoToolbox | 27 | 3 | 37 | 43 | 24 | **134** |
-| dito, ohne Ton | 28 | 9 | 40 | 44 | 22 | **140** |
+| Einstellung | Mux | Quelle | Encode | Mux | SRT+Demux+Decode | Ausgabe | **Summe** |
+|---|---|---|---|---|---|---|---|
+| SRT 40, Demux 0, Reserve 20 | mpegtsmux | 20–33 | 4–9 | 54–65 | 35–57 | 18–51 | **176–193** |
+| dito | eigener (`lztsmux`) | 26–30 | 3–6 | 0 | 65–73 | 3–15 | **113–116** |
+| dito, ohne Ton | eigener | 27 | 4 | 0 | 68 | 9 | **110** |
+| dito, x264 | mpegtsmux | 24 | 2 | 31 | 48 | 38 | **148** |
+| dito, x264 | eigener | 24–37 | 2 | 0 | 62–66 | 25–27 | **114** |
+| dito, CBR 12 000 kbit/s | mpegtsmux mit PCR-Takt | 30 | 4 | 54 | 62 | 47 | **192** |
+| dito, CBR 12 000 kbit/s | eigener | 24–31 | 7–8 | 0 | 74–79 | 36–54 | **163–190** |
+| Vorgabe: SRT 120, Demux 40, Reserve 60 | mpegtsmux | 25–28 | 9 | 47–52 | 143–155 | 0 | **241–249** |
+| dito | eigener | 27 | 7 | 0 | 145–153 | 14–18 | **194–197** |
 
 Lesart:
-- **Quelle** (25–30 ms) sind gut ein Bildtakt bei 50p plus der Umschalter.
-- **Encode** ist mit 3–9 ms klein.
-- **Parser+Mux** ist mit 37–51 ms der größte vermeidbare Posten. `mpegtsmux` wartet auf Ton und auf volle Paketgruppen. Schiebt man nur dort, wandert die Zeit an der taktsynchronen Senke nach hinten. Gewinnen lässt sie sich erst mit einem eigenen PCR-Pacer (Fahrplan Broadcast-TS).
-- **SRT** geht 1 : 1 ein. Die doppelte Zählung durch `srtsrc` ist schon ausgeglichen.
-- Unter ≈ 130 ms kommt dieser Weg ohne Umbau des Mux nicht.
+- **Quelle** (20–35 ms) sind gut ein Bildtakt bei 50p plus der Umschalter.
+- **Encode** ist mit 2–9 ms klein.
+- **Mux:** `mpegtsmux` ist ein Aggregator. Er gibt ein Bild erst ab, wenn auch der Ton einen Puffer mit späterer Zeit geliefert hat (der Ton kommt ≈ 45–55 ms nach seinem Zeitstempel). Mit `alignment=7` hält er außerdem die letzten bis zu sechs Pakete jedes Bilds bis zum nächsten Bild zurück (+1 Bildtakt). Die PCR setzt er fest 125 ms vor die DTS.
+- **Eigener Mux:** schreibt jedes Bild sofort (Station 0 ms) und nimmt die PCR aus der Pipeline-Uhr beim Senden. Der Abstand PCR → PTS ist der einzige Puffer. Der Mux lernt ihn aus der spätesten Eingangsverspätung plus SRT-Latenz plus 3 ms; beim Bild zählen 20 ms fürs Dekodieren dazu, beim Ton nicht. Ist er größer als nötig, gleitet er zurück. Gelernt: 88–92 ms bei SRT 40 (der Ton kommt ≈ 45 ms nach seinem Zeitstempel), 84 ms ohne Ton, 170 ms bei SRT 120.
+- **SRT+Demux+Decode** wächst mit dem eigenen Mux, weil der Decoder jetzt auf die PTS wartet statt auf den Mux. In Summe bleibt der Gewinn: 60–75 ms bei SRT 40, ≈ 50 ms bei SRT 120.
+- **CBR:** Bei konstanter Rate muss jedes Bild durch die feste Rate; große Bilder (Szenenwechsel) brauchen bei 12 Mbit/s 20–40 ms. Der Mux rechnet die Warteschlange in den Puffer ein. CBR ist deshalb nicht schneller als `mpegtsmux` mit PCR-Takt, aber PCR-genau und T-STD-sauber (siehe §5.4).
+- **Ausgabe** ist die Wartezeit an der Senke, also der Rest des Puffers.
 
 ### 5.2 Rechenmodell Glas-zu-Glas [S]
 
 Bei 50p ist ein Bild T = 20 ms lang.
 
 ```
-G2G = Capture (≈ T) + Skalierung (2–5) + Encode (3–20) + Mux (5 Ziel / 40–50 heute)
+G2G = Capture (≈ T) + Skalierung (2–5) + Encode (3–20) + Mux (0 mit lztsmux / 50–65 mit mpegtsmux)
     + Netz einweg (d) + SRT-Latenz (L ≥ 3–4 × RTT, im LAN ≥ 20–40)
     + Demux (0–40) + Decode (5–10, vtdec_hw +100/+330) + Warten auf Ausgabetakt (0–T, Mittel T/2)
     + DeckLink-Ausgabe (≈ T) + Monitor (5–15, TV 30–100)
 ```
 
-| Szenario | Netz einweg | RTT | SRT-Latenz | Heute (Mac, gemessener Weg + Capture/Ausgabe/Monitor) | Optimiert (Linux/NVENC, eigener Mux) |
+| Szenario | Netz einweg | RTT | SRT-Latenz | Heute (Mac, gemessener Weg + Capture/Ausgabe/Monitor) | Optimiert (Linux/NVENC) |
 |---|---|---|---|---|---|
-| Gleicher Raum/LAN | 0,5 | 1 | 40 | **≈ 190–205 ms** | **≈ 120–135 ms** |
+| Gleicher Raum/LAN | 0,5 | 1 | 40 | **≈ 150–155 ms** | **≈ 120–135 ms** |
 | Inland Internet | 15 | 30 | 120 | ≈ 290 ms | ≈ 215 ms |
 | Europa | 30 | 60 | 240 | ≈ 425 ms | ≈ 350 ms |
 | Bangkok → Köln, Internet | 90 | 180 | 720 | ≈ 1 000 ms | ≈ 925 ms |
@@ -188,12 +195,12 @@ G2G = Capture (≈ T) + Skalierung (2–5) + Encode (3–20) + Mux (5 Ziel / 40�
 | UHD 2160p50 HEVC am M1 Pro | | | | +≈ 20 ms (Encode nahe einem Bildtakt) | – |
 | H.265-Decode mit vtdec_hw | | | | +≈ 330 ms [M] | NVDEC: zu messen |
 
-Rechenweg „heute, LAN“: 155 ms [M, Quelle bis Senke] + 20 (Capture) + 20 (DeckLink-Ausgabe) + 10 (Monitor) − 10 (die Testbildquelle enthält schon einen halben Takt) ≈ 195 ms.
+Rechenweg „heute, LAN“: 113 ms [M, Quelle bis Senke, eigener Mux] + 20 (Capture) + 20 (DeckLink-Ausgabe) + 10 (Monitor) − 10 (die Testbildquelle enthält schon einen halben Takt) ≈ 153 ms. Mit `mpegtsmux` wären es ≈ 225 ms.
 
 Rechenweg „optimiert, LAN“: 20 + 3 + 6 + 5 + 0,5 + 40 + 10 + 8 + 10 + 20 + 10 ≈ 133 ms. Mit 30 ms SRT und 0 ms Demux ≈ 120 ms.
 
 **Folgen:**
-- Im LAN sind 120–135 ms erreichbar. Dafür braucht es drei Dinge: einen eigenen PCR-gepacten Ausgang statt `mpegtsmux`-Wartezeit, den Software-Decoder für ≤ 1080p und eine kurze SRT-Latenz.
+- Im LAN sind 120–135 ms erreichbar. Der eigene Mux ohne Wartezeit ist da; dazu kommen der Software-Decoder für ≤ 1080p, eine kurze SRT-Latenz und eine schnellere Plattform (Encode, Capture).
 - Über das Internet bestimmt fast nur die SRT-Latenz (3–4 × RTT) das Ergebnis.
 - Die 120 ms Bangkok → Köln aus dem Konzept gehen nur mit FEC statt Wiederholung, zwei Netzwegen und Sub-Frame-Pfad. Mit SRT allein ist das physikalisch nicht machbar.
 
@@ -201,7 +208,28 @@ Rechenweg „optimiert, LAN“: 20 + 3 + 6 + 5 + 0,5 + 40 + 10 + 8 + 10 + 20 + 1
 
 ```bash
 ./target/release/lz-streamer latenz --srt-latency 40 --demux 0 --reserve 20 --runden 7
+./target/release/lz-streamer latenz --srt-latency 40 --demux 0 --reserve 20 --mux mpegtsmux   # Vergleich
+./target/release/lz-streamer latenz --srt-latency 40 --demux 0 --reserve 20 --mux-verzug 90  # fester Puffer
 ./target/release/lz-streamer latenz --encoder x264enc --h265 --decoder avdec_h265
 ```
 
+Die Ausgabe nennt die am Decoder zu spät gezeigten Bilder und den Puffer PCR → PTS, den der eigene Mux gelernt hat.
+
 Glas-zu-Glas über eine echte Strecke kommt mit dem Messkettenbaustein aus lz-scopes (§2): Stempel-Testbild am Encoder, Kamera auf den Decoder-Monitor oder Rückweg in lz-scopes.
+
+### 5.4 TR 101 290 und T-STD [M]
+
+`src/tsanalyse.rs` prüft einen mitgeschnittenen TS nach ETSI TR 101 290:
+
+- **Priorität 1:** Sync-Byte, PAT (Abstand ≤ 0,5 s, table_id, Verschlüsselung), CC, PMT (≤ 0,5 s), PID fehlt > 5 s.
+- **Priorität 2:** Transport-Error-Bit, CRC von PAT/PMT, PCR-Abstand ≤ 40 ms, PCR-Sprung ≤ 100 ms ohne Kennzeichen, PCR-Genauigkeit ±500 ns gegen die Rate, PTS-Abstand ≤ 700 ms.
+- **T-STD:** Transportpuffer TB_n mit 512 Byte je Elementarstrom und der Abflussrate nach ISO/IEC 13818-1 (Ton 2 Mbit/s, Bild 1,2 × Rmax).
+
+Ergebnis, Testbild 640×360p25, 1500 kbit/s, Ton AAC, je 4–6 s Mitschnitt nach dem Anlauf:
+
+| Strom | Prio 1 | Prio 2 | T-STD-Überläufe | PCR-Abstand | PAT/PMT | PCR-Genauigkeit | TSDuck `continuity`, `pcrverify --jitter-max 1` |
+|---|---|---|---|---|---|---|---|
+| eigener Mux, CBR 3000 kbit/s | 0 | 0 | 0 | 20 ms | 100 ms | 0 ns (exakt aus der Sendeposition) | keine Fehler, 261 PCR ohne Jitter |
+| eigener Mux, variabel, H.264 und H.265 | 0 | 0 (ohne Genauigkeit, gilt nur bei CBR) | – | ≤ 40 ms | 100 ms | – | – |
+
+Der CBR-Takt schickt ein Tonpaket erst, wenn es den Transportpuffer nicht überlaufen lässt. Bei 12 Mbit/s liegen dadurch zwischen zwei Tonpaketen mindestens ≈ 0,75 ms.
