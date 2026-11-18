@@ -1250,6 +1250,18 @@ mod tests {
     }
 
     #[test]
+    fn ts_muxer_choice() {
+        let t: TsOutputConfig = serde_json::from_str(r#"{"muxer":"lz","delay_ms":90}"#).unwrap();
+        assert_eq!((t.muxer, t.delay_ms), (TsMuxer::Lz, 90));
+        assert_eq!(serde_json::to_value(TsMuxer::Mpegtsmux).unwrap(), "mpegtsmux");
+        let mut e = EncoderConfig::default();
+        assert!(e.uses_lztsmux(), "Vorgabe: eigener Mux");
+        e.anc.st2038 = true;
+        assert_eq!(e.needs_mpegtsmux(), Some("ST 2038"));
+        assert!(!e.uses_lztsmux());
+    }
+
+    #[test]
     fn empty_json_gives_defaults() {
         let c: Config = serde_json::from_str("{}").unwrap();
         assert_eq!(c, Config::default());

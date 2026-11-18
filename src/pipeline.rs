@@ -279,9 +279,10 @@ pub fn uvc_source(index: u32) -> String {
 pub fn primary_audio(input: &ResolvedInput, n: u32) -> String {
     let caps = audio_caps(n);
     match input {
-        // 1 kHz bei -20 dBFS, der übliche Messton, auf allen Kanälen
+        // 1 kHz bei -20 dBFS, der übliche Messton, auf allen Kanälen; Puffer von 10 ms
+        // wie bei einer Capture-Karte (die Vorgabe 1024 Samples ließe den Ton 21 ms später kommen)
         ResolvedInput::Test => format!(
-            "audiotestsrc name=testasrc is-live=true wave=sine freq=1000 volume=0.1 \
+            "audiotestsrc name=testasrc is-live=true wave=sine freq=1000 volume=0.1 samplesperbuffer=480 \
              ! audio/x-raw,format=F32LE,layout=interleaved,rate=48000,channels=1 \
              ! audioconvert mix-matrix={} ! {caps}",
             crate::audio::matrix_string(&vec![vec![1.0f32]; n as usize])
@@ -523,7 +524,7 @@ pub fn lztsmux_description(cfg: &EncoderConfig) -> String {
 }
 
 /// Spielraum für Demux, Decoder und Bildwechsel am Empfänger (gemessen, siehe docs)
-pub const LZTSMUX_DECODE_MS: u32 = 15;
+pub const LZTSMUX_DECODE_MS: u32 = 5;
 
 /// Ausgänge hinter dem TS-Verteiler `tsout`: SRT-Ziel und weitere Ausgänge.
 pub fn ts_outputs(cfg: &EncoderConfig) -> Vec<String> {
@@ -890,7 +891,7 @@ mod tests {
             "vsw.sink_1",
             "x264enc name=venc",
             "h264parse config-interval=-1",
-            "lztsmux name=mux headroom=135",
+            "lztsmux name=mux headroom=125",
             "srtsink name=srtout uri=\"srt://:9000?mode=listener\" latency=120",
             "fallbackswitch name=asw",
             "avenc_aac name=aenc0 bitrate=192000",
@@ -1029,7 +1030,7 @@ mod tests {
         cfg.ts.pace = true;
         cfg.ts.delay_ms = 90;
         let d = encoder_description(&cfg, &parts(&ResolvedInput::Test));
-        assert!(d.contains("lztsmux name=mux headroom=55 delay=90 bitrate=12000000 ! tee name=tsout"), "{d}");
+        assert!(d.contains("lztsmux name=mux headroom=45 delay=90 bitrate=12000000 ! tee name=tsout"), "{d}");
         assert!(d.contains("srtsink name=srtout") && d.contains("async=false sync=false"), "der Mux taktet selbst: {d}");
         // SCTE-35 kann nur mpegtsmux
         cfg.anc.scte35 = true;
@@ -1042,7 +1043,7 @@ mod tests {
         // längste SRT-Latenz aller Ausgänge geht in den Spielraum
         cfg.ts.muxer = TsMuxer::Auto;
         cfg.outputs.push(crate::config::ExtraOutput { enabled: true, kind: OutputType::Srt, srt: crate::config::SrtConfig { latency_ms: 300, ..Default::default() }, ..Default::default() });
-        assert!(lztsmux_description(&cfg).starts_with("lztsmux name=mux headroom=315"));
+        assert!(lztsmux_description(&cfg).starts_with("lztsmux name=mux headroom=305"));
     }
 
     #[test]
