@@ -256,6 +256,8 @@ fn ns_to_27m(ns: u64) -> u64 {
 const MS: u64 = 1_000_000;
 /// so lange lernt der Mux D aus den Eingängen
 const LEARN_MS: u64 = 1000;
+/// so weit sinkt D je Bild, wenn er größer als nötig ist
+const SLEW_NS: u64 = 200_000;
 
 #[derive(Debug, Clone)]
 pub struct Settings {
@@ -305,6 +307,8 @@ struct State {
     learn_until: Option<u64>,
     /// nach dem Lernen: Puffer, die über D lagen (Zeit, Verspätung)
     exceed: VecDeque<(u64, u64)>,
+    /// Verspätungen der letzten 2 s (Zeit, Verspätung)
+    window: VecDeque<(u64, u64)>,
     last_si: Option<u64>,
     last_pcr: Option<u64>,
     sent_events: bool,
@@ -316,6 +320,8 @@ struct State {
     eos_sent: bool,
     queued: usize,
     seq: u64,
+    /// CBR: PMT nach der PAT im nächsten Paket (auch über das Ende eines Ausgabepuffers)
+    pending_psi: Vec<[u8; PACKET]>,
     warned_overflow: bool,
 }
 
@@ -655,7 +661,6 @@ mod imp {
             let mut out: Vec<[u8; PACKET]> = Vec::with_capacity(GROUP);
             let pcr_iv = settings.pcr_interval_ms as u64 * MS;
             let si_iv = settings.si_interval_ms as u64 * MS;
-            let mut pending_psi: Vec<[u8; PACKET]> = Vec::new();
             while out.len() < GROUP {
                 let t0 = st.t0.unwrap();
                 let tk = t0 + (st.slot as f64 * dur) as u64;
@@ -668,7 +673,7 @@ mod imp {
                     let rx = if s.kind == Some(Kind::Aac) { RX_AUDIO } else { ts_rate * 1.2 };
                     s.tb = (s.tb - rx / 8.0 * dt).max(0.0);
                 }
-                if let Some(p) = pending_psi.pop() {
+                if let Some(p) = st.pending_psi.pop() {
                     out.push(p);
                     continue;
                 }
@@ -687,7 +692,7 @@ mod imp {
                     st.last_si = Some(tk);
                     psi.reverse();
                     out.push(psi.pop().unwrap());
-                    pending_psi = psi;
+                    st.pending_psi = psi;
                     continue;
                 }
                 // ES-Paket: ältester Strom zuerst, der in seinen Transportpuffer passt
@@ -777,6 +782,19 @@ mod imp {
                             );
                         }
                         st.delay_ns = new;
+                    }
+                }
+                // Verspätungen der letzten 2 s; ist D größer als nötig (Ausreißer, Anlauf),
+                // gleitet er langsam zurück: 0,2 ms je Bild, bei 50p 1 % – der Empfänger
+                // spielt kurz minimal schneller, ohne Sprung in den Zeitstempeln
+                st.window.push_back((now, late));
+                while st.window.front().is_some_and(|(t, _)| now.saturating_sub(*t) > 2000 * MS) {
+                    st.window.pop_front();
+                }
+                if now > learn_until && st.pcr_index() == Some(idx) {
+                    let need = st.window.iter().map(|(_, l)| *l).max().unwrap_or(0) + margin + 5 * MS;
+                    if st.delay_ns > need + MS {
+                        st.delay_ns -= (st.delay_ns - need).min(SLEW_NS);
                     }
                 }
             }

@@ -291,4 +291,5 @@ pub fn measure(opts: &MeasureOptions) -> Result<LatencyReport> {
 
 pub fn ensure_init() {
     let _ = gst::init();
+    crate::tsmux::register();
 }

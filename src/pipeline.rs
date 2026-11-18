@@ -523,7 +523,7 @@ pub fn lztsmux_description(cfg: &EncoderConfig) -> String {
 }
 
 /// Spielraum für Demux, Decoder und Bildwechsel am Empfänger (gemessen, siehe docs)
-pub const LZTSMUX_DECODE_MS: u32 = 25;
+pub const LZTSMUX_DECODE_MS: u32 = 15;
 
 /// Ausgänge hinter dem TS-Verteiler `tsout`: SRT-Ziel und weitere Ausgänge.
 pub fn ts_outputs(cfg: &EncoderConfig) -> Vec<String> {
@@ -890,7 +890,7 @@ mod tests {
             "vsw.sink_1",
             "x264enc name=venc",
             "h264parse config-interval=-1",
-            "mpegtsmux name=mux alignment=7",
+            "lztsmux name=mux headroom=135",
             "srtsink name=srtout uri=\"srt://:9000?mode=listener\" latency=120",
             "fallbackswitch name=asw",
             "avenc_aac name=aenc0 bitrate=192000",
@@ -1021,8 +1021,34 @@ mod tests {
     }
 
     #[test]
+    fn own_muxer_unless_mpegtsmux_features() {
+        use crate::config::TsMuxer;
+        let mut cfg = EncoderConfig::default();
+        cfg.srt.latency_ms = 40;
+        cfg.ts.cbr_kbps = 12000;
+        cfg.ts.pace = true;
+        cfg.ts.delay_ms = 90;
+        let d = encoder_description(&cfg, &parts(&ResolvedInput::Test));
+        assert!(d.contains("lztsmux name=mux headroom=55 delay=90 bitrate=12000000 ! tee name=tsout"), "{d}");
+        assert!(d.contains("srtsink name=srtout") && d.contains("async=false sync=false"), "der Mux taktet selbst: {d}");
+        // SCTE-35 kann nur mpegtsmux
+        cfg.anc.scte35 = true;
+        assert!(encoder_description(&cfg, &parts(&ResolvedInput::Test)).contains("mpegtsmux name=mux"));
+        cfg.ts.muxer = TsMuxer::Lz;
+        assert!(crate::config::Config { encoder: cfg.clone(), ..Default::default() }.hints().iter().any(|h| h.text.contains("SCTE-35 schreibt nur mpegtsmux")));
+        cfg.anc.scte35 = false;
+        cfg.ts.muxer = TsMuxer::Mpegtsmux;
+        assert!(encoder_description(&cfg, &parts(&ResolvedInput::Test)).contains("mpegtsmux name=mux"));
+        // längste SRT-Latenz aller Ausgänge geht in den Spielraum
+        cfg.ts.muxer = TsMuxer::Auto;
+        cfg.outputs.push(crate::config::ExtraOutput { enabled: true, kind: OutputType::Srt, srt: crate::config::SrtConfig { latency_ms: 300, ..Default::default() }, ..Default::default() });
+        assert!(lztsmux_description(&cfg).starts_with("lztsmux name=mux headroom=315"));
+    }
+
+    #[test]
     fn cbr_and_pcr_pacing() {
         let mut cfg = EncoderConfig::default();
+        cfg.ts.muxer = crate::config::TsMuxer::Mpegtsmux;
         let d = encoder_description(&cfg, &parts(&ResolvedInput::Test));
         assert!(d.contains("pcr-interval=1800 ! tee name=tsout") && d.contains("srtsink name=srtout") && d.contains("async=false sync=false"));
         cfg.ts.cbr_kbps = 12000;
