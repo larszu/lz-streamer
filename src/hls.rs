@@ -3,7 +3,7 @@
 //! Master-Playlist. Chrome spielt die CMAF-Segmente von GStreamer 1.28 nicht
 //! („Failed to prepare video sample“), TS dagegen schon – darum TS als Vorgabe. Die Untertitel
 //! stecken als CEA-608 im Bild und werden als CLOSED-CAPTIONS (CC1, CC3)
-//! angemeldet – hls.js und Safari zeigen sie so ohne eigene WebVTT-Segmente.
+//! angemeldet; dazu kommen dieselben Zeilen als WebVTT-Rendition (`hlsvtt`).
 //!
 //! ABR-Leiter (KB-30): weitere Bildstufen aus demselben Rohbild, je Stufe ein
 //! eigener Encoder. Damit die Stufen umschaltbar bleiben, erzwingt
@@ -249,31 +249,45 @@ pub fn master_playlist(cfg: &EncoderConfig) -> String {
             );
         }
     }
+    let subs = crate::hlsvtt::names(cfg);
+    for (i, n) in subs.iter().enumerate() {
+        let lang = if i == 0 {
+            tracks.first().map(|t| lang2(&t.language)).unwrap_or_else(|| "de".into())
+        } else {
+            lang2(&cfg.captions.second.language)
+        };
+        s += &format!(
+            "#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID=\"subs\",LANGUAGE=\"{lang}\",NAME=\"{} (WebVTT)\",DEFAULT=NO,AUTOSELECT=YES,URI=\"{n}.m3u8\"\n",
+            if i == 0 { "Untertitel" } else { "Untertitel 2" }
+        );
+    }
     let audio_kbps = if audio { tracks.iter().map(|t| t.bitrate_kbps as u64).max().unwrap_or(0) } else { 0 };
     let main = RungOut { index: 0, width: cfg.video.width, height: cfg.video.height, bitrate_kbps: cfg.video.bitrate_kbps };
     for r in std::iter::once(main).chain(rungs(cfg)) {
         let uri = if r.index == 0 { "v.m3u8".to_string() } else { format!("v{}.m3u8", r.index) };
         s += &format!(
-            "#EXT-X-STREAM-INF:BANDWIDTH={},CODECS=\"{}\",RESOLUTION={}x{},FRAME-RATE={:.3}{}{}\n{uri}\n",
+            "#EXT-X-STREAM-INF:BANDWIDTH={},CODECS=\"{}\",RESOLUTION={}x{},FRAME-RATE={:.3}{}{}{}\n{uri}\n",
             (r.bitrate_kbps as u64 + audio_kbps) * 1100,
             codec_string_for(cfg, r.height),
             r.width,
             r.height,
             cfg.video.fps as f64,
             if audio { ",AUDIO=\"aud\"" } else { "" },
+            if subs.is_empty() { "" } else { ",SUBTITLES=\"subs\"" },
             if cc { ",CLOSED-CAPTIONS=\"cc\"" } else { ",CLOSED-CAPTIONS=NONE" }
         );
     }
     s
 }
 
-/// Basisnamen aller Renditionen: `v`, `v1` …, `a0` …
+/// Basisnamen aller Renditionen: `v`, `v1` …, `a0` …, Untertitel `s0` …
 pub fn rendition_names(cfg: &EncoderConfig) -> Vec<String> {
     let mut n = vec!["v".to_string()];
     n.extend(rungs(cfg).iter().map(|r| format!("v{}", r.index)));
     if cfg.audio.enabled {
         n.extend((0..crate::audio::effective_tracks(&cfg.audio.tracks).len()).map(|i| format!("a{i}")));
     }
+    n.extend(crate::hlsvtt::names(cfg));
     n
 }
 
@@ -430,6 +444,22 @@ mod tests {
         assert!(master_playlist(&c).contains("CODECS=\"avc3.640028"));
         c.hls.dir.clear();
         assert!(branches(&c).is_empty());
+    }
+
+    #[test]
+    fn master_lists_webvtt_per_language() {
+        let mut c = EncoderConfig::default();
+        c.hls.enabled = true;
+        c.hls.dir = "/tmp/h".into();
+        assert!(!master_playlist(&c).contains("SUBTITLES"), "ohne Untertitelquelle keine Rendition");
+        c.captions.source = crate::config::CaptionSource::Live;
+        c.captions.second.enabled = true;
+        c.captions.second.language = "eng".into();
+        let m = master_playlist(&c);
+        assert!(m.contains("#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID=\"subs\",LANGUAGE=\"de\",NAME=\"Untertitel (WebVTT)\",DEFAULT=NO,AUTOSELECT=YES,URI=\"s0.m3u8\""), "{m}");
+        assert!(m.contains("LANGUAGE=\"en\",NAME=\"Untertitel 2 (WebVTT)\"") && m.contains("URI=\"s1.m3u8\""), "{m}");
+        assert_eq!(m.matches(",SUBTITLES=\"subs\",CLOSED-CAPTIONS=\"cc\"\n").count(), 3, "{m}");
+        assert!(rendition_names(&c).ends_with(&["s0".to_string(), "s1".to_string()]));
     }
 
     #[test]

@@ -108,7 +108,7 @@ struct CaptionCounter {
     last: Mutex<Option<Instant>>,
     text: Mutex<Option<String>>,
     /// Untertitelzeilen mit Laufzeit, für die Dateien neben der Aufnahme
-    cues: Mutex<Vec<crate::subtitles::Cue>>,
+    cues: crate::subtitles::CueStore,
     /// Untertitel stumm: nichts einspeisen
     muted: AtomicBool,
     /// Anzeigedauer je eingespeistem Text (tttocea608 löscht danach)
@@ -828,12 +828,23 @@ impl Channel {
     pub fn start_encoder(cfg: &EncoderConfig, devices: &[CaptureDevice], opts: &ChannelOptions) -> Result<Self> {
         let mut cfg_run = cfg.clone();
         let mut publisher = None;
+        // Untertitelzeilen je Sprache (Rücklesen aus dem 608-Strom): Aufnahme und HLS
+        let (cues_main, cues_second): (crate::subtitles::CueStore, crate::subtitles::CueStore) = Default::default();
         if cfg.hls.enabled && !cfg.hls.dir.trim().is_empty() {
             // eindeutige Kennung je Start: Segmente überschreiben nichts, was ein Player noch lädt
             let ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
             cfg_run.hls.generation = format!("{:x}", ms % 0xff_ffff_ffff);
             let resume = crate::hls::prepare_dir(&cfg_run).with_context(|| format!("HLS-Ordner {}", cfg.hls.dir))?;
             let mut tasks: Vec<crate::hlsplaylist::Task> = Vec::new();
+            let langs: Vec<crate::hlsvtt::Language> = crate::hlsvtt::names(&cfg_run)
+                .into_iter()
+                .zip([cues_main.clone(), cues_second.clone()])
+                .map(|(name, cues)| crate::hlsvtt::Language { name, cues })
+                .collect();
+            if !langs.is_empty() {
+                let mut w = crate::hlsvtt::VttWriter::new(&cfg_run, langs);
+                tasks.push(Box::new(move || w.tick()));
+            }
             if crate::dash::active(&cfg_run) {
                 let mut w = crate::dash::DashWriter::new(&cfg_run);
                 tasks.push(Box::new(move || w.tick()));
@@ -959,7 +970,11 @@ impl Channel {
             if cfg.anc.scte35 {
                 hook_frame_clock(&pipeline, &frame_clock);
             }
-            let cc = Arc::new(CaptionCounter { youtube: crate::ytcaptions::YtSender::spawn(&cfg.captions.youtube), ..Default::default() });
+            let cc = Arc::new(CaptionCounter {
+                youtube: crate::ytcaptions::YtSender::spawn(&cfg.captions.youtube),
+                cues: cues_main.clone(),
+                ..Default::default()
+            });
             count_captions(&venc.static_pad("sink").unwrap(), &cc);
             hook_recording_cues(&pipeline, &cc, "");
             if let Some(v2) = pipeline.by_name("venc2") {
@@ -1039,7 +1054,7 @@ impl Channel {
                             )
                         });
                     let second = cfg.captions.second_active().then(|| {
-                        let cc2: Arc<CaptionCounter> = Arc::default();
+                        let cc2 = Arc::new(CaptionCounter { cues: cues_second.clone(), ..Default::default() });
                         hook_recording_cues(&pipeline, &cc2, "2");
                         let speech = cfg.captions.source == crate::config::CaptionSource::Speech;
                         let mut acfg = cfg.captions.asr.clone();
@@ -1500,10 +1515,15 @@ impl Channel {
     /// `.srt` und `.vtt` neben dem aktuellen Aufnahme-Segment nachführen.
     fn update_sidecars(&mut self) {
         if self.pipeline.by_name("rec").is_none() {
-            // ohne Aufnahme braucht niemand die Zeilen
-            self.cc.cues.lock().unwrap().clear();
+            // ohne Aufnahme genügt HLS-WebVTT ein kurzer Rückblick (es führt eine eigene Kopie)
+            let trim = |c: &CaptionCounter| {
+                let mut cues = c.cues.lock().unwrap();
+                let newest = cues.last().map(|x| x.start_ns).unwrap_or(0);
+                cues.retain(|x| x.start_ns + 60_000_000_000 > newest);
+            };
+            trim(&self.cc);
             if let Some(s) = &self.second {
-                s.cc.cues.lock().unwrap().clear();
+                trim(&s.cc);
             }
             return;
         }

@@ -86,7 +86,7 @@ Ohne die entfallenden Punkte sind 38 von 59 Funktionen fertig (64 %), dazu 14 in
 | 37 | SRT Overhead-Bandbreite | Teil | libsrt-Vorgabe, nicht einstellbar | S |
 | 38 | TS über UDP/RTP (auch Multicast) | fertig | als weitere Ausgänge | – |
 | 39 | Mehrere Ausgänge je Kanal | fertig | beliebig viele SRT/UDP/RTP + RTMP | – |
-| 40 | HLS/DASH/CMAF | Teil | HLS (TS oder CMAF) mit ABR-Stufen, allen Tonspuren, 608 als CC, Upload per HTTP PUT; geprüft mit hls.js in Chrome. Bei CMAF zusätzlich DASH (`/hls/index.mpd`, Stufen als Representations, Tonspuren mit `lang`). Offen: Safari-Abnahme, DASH-Wiedergabe mit dash.js (`abr-leiter.md`) | S |
+| 40 | HLS/DASH/CMAF | Teil | HLS (TS oder CMAF) mit ABR-Stufen, allen Tonspuren, 608 als CC und als WebVTT-Rendition je Sprache, Upload per HTTP PUT; geprüft mit hls.js in Chrome. Bei CMAF zusätzlich DASH (`/hls/index.mpd`, Stufen als Representations, Tonspuren mit `lang`). Offen: Safari-Abnahme, DASH-Wiedergabe mit dash.js (`abr-leiter.md`) | S |
 | 41 | Aufnahme (Archiv) | fertig | parallel, TS oder fragmentiertes MP4, Segmente, alle Tonspuren | – |
 | 42 | Aufnahmen-Seite (Liste, Download) | fertig | Liste, Download, Löschen | – |
 
@@ -148,6 +148,7 @@ Gezählt sind die 7 fehlenden Funktionen und die drei Teilfunktionen mit dem gr�
 
 | Funktion | Test |
 |---|---|
+| WebVTT in HLS (#14): je Sprache eine Rendition `TYPE=SUBTITLES` aus den gesendeten 608-Zeilen; Segmente folgen den Bildsegmenten, `X-TIMESTAMP-MAP` auf deren PTS, Diskontinuitätszählung wie beim Bild; hls.js in Chrome zeigt die Zeilen | `hls_webvtt_subtitles_follow_video_segments`, Unit-Tests in `hlsvtt`, `scripts/hls/wiedergabe-pruefen.mjs` |
 | DVB-Untertitel (U7, #16): Datei → `dvbsubenc` → PID 0x60 mit Sprachkennung, Lösch-Seiten, PCR bleibt auf dem Bild | `dvb_subtitles_in_ts_with_language`, Unit-Test `dvb_subtitles_branch` |
 
 | YouTube-Untertitel per HTTP POST (U8, #17): Folgenummer, UTC-Zeitstempel, Herzschlag, Antwortzeit von YouTube im Status; Ingest-URL maskiert | `youtube_captions_posted_with_sequence`, Unit-Tests in `ytcaptions.rs`, `relay.rs` |

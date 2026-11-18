@@ -58,8 +58,19 @@ Gemessen am 14.11.2026, Systemlast durch andere Prozesse gering (Last 5–20):
 
 | Player | Stand |
 |---|---|
-| hls.js 1.6.16 in Chrome (headless, Remote-Debugging) | spielt ab; drei Stufen, zwei Sprachen, CC1 als Textspur; Wechsel von Stufe und Tonspur wirkt; läuft über Kanal-Neustart weiter |
+| hls.js 1.6.16 in Chrome (headless, Remote-Debugging) | spielt ab; drei Stufen, zwei Sprachen, CC1 und WebVTT als Textspur mit Zeilen; Wechsel von Stufe und Tonspur wirkt; läuft über Kanal-Neustart weiter |
 | Safari (eingebaut, `/hls-test?nativ`) | offen: Safari ließ sich nicht fernsteuern („Entfernte Automation erlauben“ ist aus); von Hand prüfen |
+
+## WebVTT-Untertitel
+
+Neben CC1/CC3 im Bild steht je Untertitelsprache eine Rendition `TYPE=SUBTITLES` (`s0.m3u8`, bei zweiter Sprache `s1.m3u8`) in der Master-Playlist. Die Zeilen sind dieselben, die `cea608tojson` aus dem gesendeten 608-Strom liest (wie für `.srt`/`.vtt` neben der Aufnahme).
+
+- Zu jedem Bildsegment entsteht ein `.vtt` mit gleicher Dauer und Uhrzeit, sobald das nächste Bildsegment vorliegt; eine Zeile steht in dem Segment, in dem sie beginnt.
+- Die Zeiten sind Laufzeit; `X-TIMESTAMP-MAP=MPEGTS:324000000,LOCAL:00:00:00.000` bildet sie auf die PTS ab (`mpegtsmux` beginnt bei 3600 s, CMAF bei 0).
+- Die Untertitel-Playlist übernimmt die Diskontinuitätszählung des Bilds. Wird sie später als das Bild angelegt, ordnet hls.js ihre Segmente sonst keinem Bild zu (geprüft: Segmente geladen, keine Zeilen).
+- Nur mit Untertitelquelle Datei, live oder Spracherkennung; SDI-Untertitel haben keinen Text-Zweig.
+
+Prüfung (`hls_webvtt_subtitles_follow_video_segments`): drei gesendete Zeilen stehen in den `.vtt`-Segmenten, und jede fällt über die Zeitzuordnung in die PTS-Spanne des Bildsegments mit gleicher Uhrzeit.
 
 ## DASH
 

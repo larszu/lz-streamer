@@ -22,6 +22,7 @@ pub mod scte35;
 pub mod segtime;
 pub mod hlsplaylist;
 pub mod hlsupload;
+pub mod hlsvtt;
 pub mod latency;
 pub mod leveler;
 pub mod loudness;

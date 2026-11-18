@@ -58,7 +58,7 @@ Eigener Video-Encoder und -Decoder: **Eingang → Encoder → SRT** (dazu option
 
 ## HLS und ABR-Leiter
 
-- HLS als MPEG-TS (Vorgabe) oder CMAF unter `/hls/index.m3u8`, alle Tonspuren als wählbare Sprachen, Untertitel als CEA-608 (CC1/CC3).
+- HLS als MPEG-TS (Vorgabe) oder CMAF unter `/hls/index.m3u8`, alle Tonspuren als wählbare Sprachen, Untertitel als CEA-608 (CC1/CC3) und als WebVTT-Rendition je Sprache.
 - DASH bei CMAF unter `/hls/index.mpd`: dieselben Segmente, Bildstufen als Representations eines AdaptationSets, je Tonspur ein AdaptationSet mit Sprachkennung.
 - ABR-Leiter: weitere Bildstufen mit eigenem Encoder (Vorschlag 1080p → 720p/480p, 2160p → 1080p/720p, frei wählbar). Die Keyframes aller Stufen liegen auf denselben Bildern, Segmente sind darum umschaltbar.
 - Hochladen per HTTP PUT an ein Ziel (Segmente vor der Playlist, mit Wiederholung, wahlweise Löschen per DELETE).

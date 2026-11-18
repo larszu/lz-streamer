@@ -100,6 +100,30 @@ impl Playlist {
         }
     }
 
+    /// Diskontinuitätszähler (hls.js: „cc“) je Eintrag
+    fn ccs(&self) -> impl Iterator<Item = (&Entry, u64)> {
+        let mut cc = self.disc_seq;
+        self.entries.iter().map(move |e| {
+            if e.disc {
+                cc += 1;
+            }
+            (e, cc)
+        })
+    }
+
+    /// Zähler so setzen, dass der jüngste Eintrag denselben „cc“ hat wie der
+    /// Eintrag von `main` mit gleicher Uhrzeit. Untertitel folgen den
+    /// Bildsegmenten, ihre Playlist kann aber jünger sein (Untertitel erst
+    /// später eingeschaltet); ohne Abgleich ordnet der Player sie keinem Bild zu.
+    pub fn align_to(&mut self, main: &Playlist) {
+        let pdt = |e: &Entry| e.tags.iter().find(|t| t.starts_with("#EXT-X-PROGRAM-DATE-TIME")).cloned();
+        let Some((last, own)) = self.ccs().last().and_then(|(e, cc)| Some((pdt(e)?, cc))) else { return };
+        let Some(target) = main.ccs().find(|(e, _)| pdt(e).as_ref() == Some(&last)).map(|(_, cc)| cc) else { return };
+        if target != own && self.disc_seq + target >= own {
+            self.disc_seq = self.disc_seq + target - own;
+        }
+    }
+
     pub fn has_segments(&self) -> bool {
         !self.entries.is_empty()
     }
@@ -189,6 +213,18 @@ impl Publisher {
                         last[i] = raw;
                         grace.extend(p.dropped.drain(..).map(|u| (0, u)));
                     }
+                    // Untertitel (`s0` …) auf die Zählung des Bilds abgleichen
+                    if let Some(vi) = lists.iter().position(|(n, _)| n == "v") {
+                        let (head, tail) = lists.split_at_mut(vi + 1);
+                        let main = &head[vi].1;
+                        for (n, p) in tail.iter_mut().filter(|(n, _)| n.starts_with('s')) {
+                            let before = p.disc_seq;
+                            p.align_to(main);
+                            if p.disc_seq != before && p.has_segments() {
+                                write_atomic(&dir.join(format!("{n}.m3u8")), &p.render());
+                            }
+                        }
+                    }
                     // Segmente früherer Läufe erst eine Weile nach dem Herausfallen löschen
                     for g in grace.iter_mut() {
                         g.0 += 1;
@@ -256,6 +292,21 @@ mod tests {
         assert!(s.contains("#EXT-X-MEDIA-SEQUENCE:5\n#EXT-X-DISCONTINUITY-SEQUENCE:1\n") && !s.contains("#EXT-X-DISCONTINUITY\n"), "{s}");
         // Segmente des laufenden Laufs löscht der Segmentierer selbst
         assert!(q.dropped.iter().all(|u| u.starts_with("v_a_")), "{:?}", q.dropped);
+    }
+
+    #[test]
+    fn subtitles_take_discontinuity_count_of_video() {
+        // Bild: zwei Läufe hinter sich (Zähler 2), Untertitel neu
+        let mut v = Playlist::resume("#EXTM3U\n#EXT-X-DISCONTINUITY-SEQUENCE:2\n#EXT-X-PROGRAM-DATE-TIME:2026-01-01T00:00:00Z\n#EXTINF:2,\nv_a_00000.ts\n");
+        let seg = |u: &str, t: u32| format!("#EXT-X-PROGRAM-DATE-TIME:2026-01-01T00:00:{t:02}Z\n#EXTINF:2,\n{u}\n");
+        v.update(&format!("#EXTM3U\n{}{}", seg("v_b_00000.ts", 10), seg("v_b_00001.ts", 12)), 4);
+        let mut s = Playlist::resume("");
+        s.update(&format!("#EXTM3U\n{}", seg("s_b_00000.vtt", 10)), 4);
+        s.align_to(&v);
+        assert!(s.render().contains("#EXT-X-DISCONTINUITY-SEQUENCE:3\n"), "{}", s.render());
+        // gleicher Stand: nichts ändern
+        s.align_to(&v);
+        assert_eq!(s.disc_seq, 3);
     }
 
     #[test]

@@ -1,5 +1,29 @@
-//! Zeitangaben aus fertigen Segmenten: Zeitskala des Init-Segments (mdhd)
-//! und Decodierzeit samt Dauer eines CMAF-Segments (moof/traf: tfdt, tfhd, trun).
+//! Zeitangaben aus fertigen Segmenten: Zeitskala des Init-Segments (mdhd),
+//! Decodierzeit samt Dauer eines CMAF-Segments (moof/traf: tfdt, tfhd, trun)
+//! und erste Bild-PTS eines MPEG-TS-Segments.
+
+/// Erste PTS (90 kHz) eines Bild-PES (stream_id 0xE0–0xEF) im Transportstrom
+pub fn ts_first_pts(ts: &[u8]) -> Option<u64> {
+    for p in ts.as_chunks::<188>().0 {
+        if p[0] != 0x47 || p[1] & 0x40 == 0 {
+            continue;
+        }
+        let afc = (p[3] >> 4) & 3;
+        if afc & 1 == 0 {
+            continue;
+        }
+        let o = if afc == 3 { 5 + p[4] as usize } else { 4 };
+        let pes = p.get(o..)?;
+        if pes.len() < 14 || pes[..3] != [0, 0, 1] || !(0xE0..=0xEF).contains(&pes[3]) || pes[7] & 0x80 == 0 {
+            continue;
+        }
+        let b = &pes[9..14];
+        return Some(
+            ((b[0] as u64 >> 1) & 7) << 30 | (b[1] as u64) << 22 | ((b[2] as u64) >> 1) << 15 | (b[3] as u64) << 7 | (b[4] as u64) >> 1,
+        );
+    }
+    None
+}
 
 fn u32_at(b: &[u8], o: usize) -> Option<u32> {
     Some(u32::from_be_bytes(b.get(o..o + 4)?.try_into().ok()?))
@@ -140,5 +164,25 @@ pub(crate) mod tests {
         // Ton: Dauer je Paket
         assert_eq!(fragment(&segment(48_000, 47, None)), Some((48_000, 47 * 1024)));
         assert_eq!(fragment(b"kaputt"), None);
+    }
+
+    #[test]
+    fn reads_first_video_pts_from_ts() {
+        // PAT-Paket, dann Bild-PES mit PTS 324 000 000 + 1234 hinter einem Anpassungsfeld
+        let pts: u64 = 324_000_000 + 1234;
+        let mut pat = vec![0x47, 0x40, 0x00, 0x10];
+        pat.resize(188, 0xff);
+        let mut v = vec![0x47, 0x41, 0x00, 0x30, 1, 0x00];
+        v.extend_from_slice(&[0, 0, 1, 0xE0, 0, 0, 0x80, 0x80, 5]);
+        v.extend_from_slice(&[
+            0x21 | ((pts >> 29) & 0x0e) as u8,
+            (pts >> 22) as u8,
+            0x01 | ((pts >> 14) & 0xfe) as u8,
+            (pts >> 7) as u8,
+            0x01 | ((pts << 1) & 0xfe) as u8,
+        ]);
+        v.resize(188, 0xff);
+        assert_eq!(ts_first_pts(&[pat, v].concat()), Some(pts));
+        assert_eq!(ts_first_pts(&[0u8; 188]), None);
     }
 }

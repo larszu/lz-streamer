@@ -51,6 +51,7 @@ fn content_type(name: &str) -> &'static str {
         Some("m4s") => "video/iso.segment",
         Some("mp4") => "video/mp4",
         Some("mpd") => "application/dash+xml",
+        Some("vtt") => "text/vtt",
         _ => "application/octet-stream",
     }
 }

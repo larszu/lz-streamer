@@ -1058,6 +1058,88 @@ fn hls_output_with_two_languages() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// #14: WebVTT-Rendition je Sprache aus den gesendeten 608-Zeilen. Die Segmente
+/// tragen den Text; über X-TIMESTAMP-MAP fällt jede Zeile in die PTS-Spanne des
+/// Bildsegments, dem ihr Segment folgt.
+#[test]
+fn hls_webvtt_subtitles_follow_video_segments() {
+    use lz_streamer::config::{CaptionMode, CaptionSource};
+    init();
+    let port = free_port();
+    let dir = std::env::temp_dir().join(format!("lzs-vtt-{port}"));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut cfg = encoder_cfg(port, SrtMode::Listener);
+    cfg.video.width = 1280;
+    cfg.video.height = 720;
+    cfg.hls.abr = false;
+    cfg.captions.source = CaptionSource::Live;
+    cfg.captions.mode = CaptionMode::PopOn;
+    cfg.hls.enabled = true;
+    cfg.hls.dir = dir.to_string_lossy().to_string();
+    cfg.hls.segment_s = 1;
+    cfg.hls.playlist_length = 20;
+    let mut enc = Channel::start_encoder(&cfg, &[], &ChannelOptions::default()).unwrap();
+    std::thread::sleep(Duration::from_secs(2));
+    let texts = ["Erste Zeile", "Zweite Zeile", "Dritte Zeile"];
+    for t in texts {
+        enc.command(&ChildCmd::Caption { text: t.into() });
+        let end = Instant::now() + Duration::from_millis(2500);
+        while Instant::now() < end {
+            status(&mut enc);
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+    let end = Instant::now() + Duration::from_secs(3);
+    while Instant::now() < end {
+        status(&mut enc);
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    enc.stop();
+    let master = std::fs::read_to_string(dir.join("index.m3u8")).unwrap();
+    assert!(master.contains("TYPE=SUBTITLES,GROUP-ID=\"subs\",LANGUAGE=\"de\"") && master.contains("SUBTITLES=\"subs\""), "{master}");
+    let s0 = std::fs::read_to_string(dir.join("s0.m3u8")).expect("s0.m3u8 fehlt");
+    let v = std::fs::read_to_string(dir.join("v.m3u8")).unwrap();
+    // Bildsegment je Uhrzeit
+    let by_pdt = |pl: &str| -> Vec<(String, String)> {
+        let mut out = Vec::new();
+        let mut pdt = String::new();
+        for l in pl.lines() {
+            if let Some(p) = l.strip_prefix("#EXT-X-PROGRAM-DATE-TIME:") {
+                pdt = p.to_string();
+            } else if !l.starts_with('#') && !l.is_empty() {
+                out.push((std::mem::take(&mut pdt), l.to_string()));
+            }
+        }
+        out
+    };
+    let video = by_pdt(&v);
+    let mut found = Vec::new();
+    for (pdt, seg) in by_pdt(&s0) {
+        let text = std::fs::read_to_string(dir.join(&seg)).unwrap();
+        assert!(text.starts_with("WEBVTT\nX-TIMESTAMP-MAP=MPEGTS:324000000,LOCAL:00:00:00.000\n"), "{text}");
+        let (_, vseg) = video.iter().find(|(p, _)| *p == pdt).unwrap_or_else(|| panic!("kein Bildsegment zu {pdt}"));
+        let out = std::process::Command::new("ffprobe")
+            .args(["-v", "error", "-select_streams", "v:0", "-show_entries", "packet=pts", "-of", "csv=p=0"])
+            .arg(dir.join(vseg))
+            .output()
+            .unwrap();
+        let pts: Vec<i64> = String::from_utf8_lossy(&out.stdout).lines().filter_map(|l| l.trim_end_matches(',').parse().ok()).collect();
+        let (lo, hi) = (*pts.iter().min().unwrap(), *pts.iter().max().unwrap() + 3600);
+        for block in text.split("\n\n").filter(|b| b.contains("-->")) {
+            let (times, line) = block.split_once('\n').unwrap();
+            let start = times.split(" --> ").next().unwrap();
+            let p: Vec<f64> = start.split(':').map(|x| x.parse().unwrap()).collect();
+            let rt = p[0] * 3600.0 + p[1] * 60.0 + p[2];
+            let cue_pts = 324_000_000 + (rt * 90_000.0) as i64;
+            eprintln!("{seg} → {vseg}: {line} bei {start}, PTS {cue_pts} in {lo}..{hi}");
+            assert!(cue_pts >= lo - 3600 && cue_pts <= hi, "{line}: PTS {cue_pts} nicht in {lo}..{hi} ({vseg})");
+            found.push(line.to_string());
+        }
+    }
+    assert_eq!(found, texts, "{s0}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// KB-40/#23: CMAF-Segmente, dazu `index.mpd`: ein AdaptationSet Bild mit allen Stufen,
 /// je Tonspur eines mit `lang`; jede Representation löst über ihr SegmentTemplate
 /// auf Init- und Mediensegment auf, die ffprobe liest. (ffprobe liest das MPD selbst
