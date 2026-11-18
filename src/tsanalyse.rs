@@ -96,7 +96,7 @@ fn pts_of(pes: &[u8]) -> Option<u64> {
 /// Prüft einen aufgezeichneten TS (Vielfaches von 188 Byte, Anfang beliebig).
 pub fn analyse(data: &[u8]) -> Tr101290 {
     let mut c = Tr101290::default();
-    let pkts: Vec<&[u8]> = data.chunks_exact(PACKET).collect();
+    let pkts: Vec<&[u8]> = data.as_chunks::<PACKET>().0.iter().map(|c| c.as_slice()).collect();
     // 1. Durchgang: PMT-PID, PCR-PID, Rate aus erster und letzter PCR
     let (mut pmt_pid, mut pcr_pid) = (None, None);
     let mut es_kind: HashMap<u16, u8> = HashMap::new();
@@ -366,7 +366,7 @@ mod tests {
     fn detects_crc_and_tb_overflow() {
         let mut d = synthetic(4_000_000.0, 0, None);
         // ein Byte der ersten PAT verfälschen
-        let i = d.chunks_exact(PACKET).position(|p| p[1] & 0x1f == 0 && p[2] == 0 && p[1] & 0x40 != 0).unwrap();
+        let i = d.as_chunks::<PACKET>().0.iter().position(|p| p[1] & 0x1f == 0 && p[2] == 0 && p[1] & 0x40 != 0).unwrap();
         d[i * PACKET + 12] ^= 0xff;
         assert!(analyse(&d).crc_errors >= 1);
         // Ton als Block von 10 Paketen hintereinander bei 20 Mbit/s: TB (2 Mbit/s Abfluss) läuft über

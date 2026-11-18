@@ -681,14 +681,14 @@ mod imp {
                     out.push(p);
                     continue;
                 }
-                if st.last_pcr.is_none_or(|l| tk.saturating_sub(l) >= pcr_iv) {
-                    if let Some(i) = st.pcr_index() {
-                        let (pid, cc) = (st.streams[i].pid, (st.streams[i].sent_cc + 1) & 0x0f);
-                        let d = std::mem::take(&mut st.discont);
-                        out.push(pcr_packet(pid, cc, ns_to_27m(tk), d));
-                        st.last_pcr = Some(tk);
-                        continue;
-                    }
+                if st.last_pcr.is_none_or(|l| tk.saturating_sub(l) >= pcr_iv)
+                    && let Some(i) = st.pcr_index()
+                {
+                    let (pid, cc) = (st.streams[i].pid, (st.streams[i].sent_cc + 1) & 0x0f);
+                    let d = std::mem::take(&mut st.discont);
+                    out.push(pcr_packet(pid, cc, ns_to_27m(tk), d));
+                    st.last_pcr = Some(tk);
+                    continue;
                 }
                 if st.last_si.is_none_or(|l| tk.saturating_sub(l) >= si_iv) || st.pmt_dirty {
                     let mut psi = Vec::new();
@@ -755,7 +755,7 @@ mod imp {
             st.streams[idx].buffers += 1;
             let nbuf = st.streams[idx].buffers;
             // Verzug: wie spät ist der Puffer, bis er gesendet ist?
-            let drain = if settings.bitrate > 0 { (st.queued * PACKET * 8) as u64 * 1_000_000_000 / settings.bitrate } else { 0 };
+            let drain = ((st.queued * PACKET * 8) as u64 * 1_000_000_000).checked_div(settings.bitrate).unwrap_or(0);
             // Bilder brauchen am Empfänger noch Dekodieren und Umwandeln, Ton kaum
             let extra = if kind.is_video() { VIDEO_DECODE_NS } else { 0 };
             let late = (now as i64 + drain as i64 - dts_rt).max(0) as u64 + extra;
@@ -982,7 +982,12 @@ mod imp {
                 // Encoder-Anforderungen (Schlüsselbild) an alle Eingänge weiterreichen
                 gst::EventView::CustomUpstream(_) => {
                     let pads: Vec<gst::Pad> = self.state.lock().unwrap().streams.iter().map(|s| s.pad.clone()).collect();
-                    pads.iter().fold(false, |a, p| p.push_event(event.clone()) || a)
+                    // an jeden Eingang, nicht nur bis zum ersten Erfolg
+                    let mut ok = false;
+                    for p in &pads {
+                        ok |= p.push_event(event.clone());
+                    }
+                    ok
                 }
                 _ => gst::Pad::event_default(pad, Some(&*self.obj()), event),
             }
@@ -1038,7 +1043,7 @@ mod tests {
         assert_eq!(ns_to_90k(1_000_000_000), BASE_90K + 90_000);
         assert_eq!(ns_to_90k(-1_000_000_000), BASE_90K - 90_000);
         assert_eq!(ns_to_27m(1_000_000_000), BASE_90K * 300 + 27_000_000);
-        assert_eq!(ns_to_27m(37), BASE_90K * 300 + 0); // < ein Takt
+        assert_eq!(ns_to_27m(37), BASE_90K * 300, "unter einem Takt");
     }
 
     #[test]
