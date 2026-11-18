@@ -25,7 +25,7 @@ fn defeedback_crash_bypass_restart() {
         eprintln!("LZ Defeedback nicht installiert – übersprungen");
         return;
     };
-    crash_bypass_restart(&path);
+    crash_bypass_restart(&path, |r| r < 0.1);
 }
 
 /// P2: dieselbe Prüfung mit einer Audio Unit. Apples AUHipass ist immer da und
@@ -33,10 +33,22 @@ fn defeedback_crash_bypass_restart() {
 #[cfg(target_os = "macos")]
 #[test]
 fn audio_unit_crash_bypass_restart() {
-    crash_bypass_restart("au:aufx:hpas:appl");
+    crash_bypass_restart("au:aufx:hpas:appl", |r| r < 0.1);
 }
 
-fn crash_bypass_restart(path: &str) {
+/// P2: CLAP über clack-host mit Airwindows Consolidated (scripts/plugin/clap-laden.sh).
+#[test]
+fn clap_crash_bypass_restart() {
+    let Some(p) = dirs::home_dir().map(|h| h.join("Library/Audio/Plug-Ins/CLAP/Airwindows Consolidated.clap")).filter(|p| p.exists()) else {
+        eprintln!("Airwindows Consolidated (CLAP) nicht installiert – übersprungen");
+        return;
+    };
+    // Ausgangspegel per Parameter ganz zu: der Sinus (trocken RMS ≈ 0,21) verschwindet
+    crash_bypass_restart(&format!("{};Output Level=0", p.to_string_lossy()), |r| r < 0.1);
+}
+
+/// `processed`: Bedingung für den RMS eines bearbeiteten Blocks
+fn crash_bypass_restart(path: &str, processed_ok: fn(f64) -> bool) {
     // SAFETY: Test setzt die Variable vor jedem Hilfsprozess
     unsafe { std::env::set_var("LZS_PLUGIN_HOST_EXE", env!("CARGO_BIN_EXE_lz-streamer")) };
     gst::init().unwrap();
@@ -81,8 +93,8 @@ fn crash_bypass_restart(path: &str) {
     }
     eprintln!("geladen nach {:?}", t0.elapsed());
     let processed = pull(2.0);
-    // LZ Defeedback dämpft den stehenden Sinus deutlich
-    assert!(processed[processed.len() - 10..].iter().all(|r| *r < 0.1), "{:?}", &processed[processed.len() - 10..]);
+    // LZ Defeedback dämpft den stehenden Sinus deutlich, andere Plugins verändern ihn erkennbar
+    assert!(processed[processed.len() - 10..].iter().all(|r| processed_ok(*r)), "{:?}", &processed[processed.len() - 10..]);
     let st = pl.status();
     assert!(st.running && st.processed_blocks > 50, "{st:?}");
     let pid = st.pid.unwrap();
@@ -131,5 +143,42 @@ fn scan_survives_crashing_plugin() {
     let r2 = scan(&cands, &r, false);
     assert_eq!(r2, r);
     assert!(t.elapsed() < std::time::Duration::from_millis(100), "Zwischenspeicher nicht genutzt");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// P2: ein abstürzendes CLAP-Bündel landet beim Scan auf der Sperrliste, das freie CLAP-Plugin nicht.
+#[cfg(target_os = "macos")]
+#[test]
+fn scan_survives_crashing_clap() {
+    use lz_streamer::plugin::{ScanResult, scan};
+    // SAFETY: Test setzt die Variable vor jedem Hilfsprozess
+    unsafe { std::env::set_var("LZS_PLUGIN_HOST_EXE", env!("CARGO_BIN_EXE_lz-streamer")) };
+    let dir = std::env::temp_dir().join(format!("lzs-crash-clap-{}", std::process::id()));
+    let contents = dir.join("Absturz.clap/Contents");
+    std::fs::create_dir_all(contents.join("MacOS")).unwrap();
+    std::fs::write(
+        contents.join("Info.plist"),
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<plist version=\"1.0\"><dict><key>CFBundleExecutable</key><string>Absturz</string><key>CFBundleIdentifier</key><string>lz.absturz</string><key>CFBundlePackageType</key><string>BNDL</string></dict></plist>\n",
+    )
+    .unwrap();
+    let src = dir.join("absturz.c");
+    std::fs::write(&src, "#include <stdlib.h>\n__attribute__((constructor)) static void boom(void) { abort(); }\nconst void *clap_entry = 0;\n").unwrap();
+    let ok = std::process::Command::new("cc").args(["-dynamiclib", "-o"]).arg(contents.join("MacOS/Absturz")).arg(&src).status().map(|s| s.success()).unwrap_or(false);
+    if !ok {
+        eprintln!("kein C-Compiler – übersprungen");
+        return;
+    }
+    let crash = dir.join("Absturz.clap").to_string_lossy().into_owned();
+    let mut cands = vec![(crash.clone(), "Absturz".to_string(), "clap")];
+    let free = dirs::home_dir().unwrap().join("Library/Audio/Plug-Ins/CLAP/Airwindows Consolidated.clap");
+    if free.exists() {
+        cands.push((free.to_string_lossy().into_owned(), "Airwindows Consolidated".into(), "clap"));
+    }
+    let r = scan(&cands, &ScanResult::default(), false);
+    assert_eq!(r.blocked.len(), 1, "{r:?}");
+    assert_eq!(r.blocked[0].id, crash);
+    assert_eq!(r.blocked[0].reason, "abgestürzt", "{r:?}");
+    assert_eq!(r.plugins.len(), cands.len() - 1, "{r:?}");
+    eprintln!("gesperrt: {:?}, geprüft: {:?}", r.blocked[0], r.plugins);
     let _ = std::fs::remove_dir_all(&dir);
 }
