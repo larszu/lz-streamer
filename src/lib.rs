@@ -9,6 +9,7 @@ pub mod audio;
 pub mod caps;
 pub mod caption_measure;
 pub mod channel;
+pub mod clap;
 pub mod clearspeech;
 pub mod config;
 pub mod control;

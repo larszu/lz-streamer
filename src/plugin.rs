@@ -79,6 +79,11 @@ fn load_engine(id: &str, channels: usize) -> anyhow::Result<(u32, Engine)> {
         let lat = p.latency_samples;
         return Ok((lat, Box::new(move |buf: &mut [f32]| p.process(buf).is_ok())));
     }
+    if crate::clap::is_clap(id) {
+        let mut p = crate::clap::ClapPlugin::load(id, RATE, channels, MAX_BLOCK)?;
+        let lat = p.latency_samples;
+        return Ok((lat, Box::new(move |buf: &mut [f32]| p.process(buf).is_ok())));
+    }
     let mut host = vst3_host::Vst3Host::builder()
         .sample_rate(RATE)
         .block_size(MAX_BLOCK)
@@ -170,7 +175,7 @@ pub struct ScannedPlugin {
     /// Pfad (VST3) oder `au:typ:subtyp:hersteller`
     pub id: String,
     pub name: String,
-    /// vst3 oder au
+    /// vst3, clap oder au
     pub format: String,
     pub latency_samples: u32,
 }
@@ -189,9 +194,10 @@ pub struct ScanResult {
     pub blocked: Vec<BlockedPlugin>,
 }
 
-/// Kandidaten: VST3-Bündel in den üblichen Ordnern und am Mac die Effekt-AUs.
+/// Kandidaten: VST3- und CLAP-Bündel in den üblichen Ordnern und am Mac die Effekt-AUs.
 pub fn candidates() -> Vec<(String, String, &'static str)> {
     let mut c: Vec<(String, String, &'static str)> = installed().into_iter().map(|(name, path)| (path, name, "vst3")).collect();
+    c.extend(crate::clap::bundles().into_iter().map(|p| (p.to_string_lossy().into_owned(), display_name(&p.to_string_lossy()), "clap")));
     #[cfg(target_os = "macos")]
     c.extend(crate::au::list_effects().into_iter().map(|(id, name)| (id, name, "au")));
     c

@@ -350,13 +350,13 @@ const trackFields = [
   { key: 'cs', label: 'Klare Sprache', type: 'check', rerender: true, get: t => t.clear_speech?.enabled, set: (t, v) => { t.clear_speech = { residual_db: -9, keep_singing: true, ...(t.clear_speech || {}), enabled: v }; } },
   { key: 'csr', label: 'Rest (dB)', show: t => t.clear_speech?.enabled, get: t => t.clear_speech.residual_db, set: (t, v) => { const n = parseFloat(String(v).replace(',', '.')); t.clear_speech.residual_db = Number.isFinite(n) ? Math.min(0, n) : -9; } },
   { key: 'csg', label: 'Bei Gesang nicht absenken', type: 'check', show: t => t.clear_speech?.enabled, get: t => t.clear_speech.keep_singing, set: (t, v) => { t.clear_speech.keep_singing = v; } },
-  { key: 'plug', label: 'Plugin (VST3/AU)', type: 'select', options: t => pluginOptions(t), get: t => t.plugins?.find(p => p.enabled)?.path || '', set: (t, v) => { t.plugins = v ? [{ enabled: true, path: v }] : []; } },
+  { key: 'plug', label: 'Plugin (VST3/CLAP/AU)', type: 'select', options: t => pluginOptions(t), get: t => t.plugins?.find(p => p.enabled)?.path || '', set: (t, v) => { t.plugins = v ? [{ enabled: true, path: v }] : []; } },
 ];
 let installedPlugins = [];
 function pluginOptions(t) {
-  const opts = [['', 'keins'], ...installedPlugins.map(p => [p.id, p.format === 'au' ? `${p.name} (AU)` : p.name])];
+  const opts = [['', 'keins'], ...installedPlugins.map(p => [p.id, p.format === 'au' ? `${p.name} (AU)` : p.format === 'clap' ? `${p.name} (CLAP)` : p.name])];
   // gespeichertes Plugin, das hier nicht installiert ist, trotzdem zeigen
-  for (const p of t.plugins || []) if (p.path && !opts.some(o => o[0] === p.path)) opts.push([p.path, p.path.split(/[\\/]/).pop().replace(/\.vst3$/, '') + ' (fehlt)']);
+  for (const p of t.plugins || []) if (p.path && !opts.some(o => o[0] === p.path)) opts.push([p.path, p.path.split(/[\\/]/).pop().replace(/\.(vst3|clap)$/, '') + ' (fehlt)']);
   return opts;
 }
 async function loadPlugins() {
