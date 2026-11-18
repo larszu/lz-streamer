@@ -53,6 +53,9 @@ hyper-util = { version = "0.1.21", features = ["tokio"] }
 http-body-util = "0.1"
 ring = "0.17"
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
