@@ -1,5 +1,5 @@
 // HLS-Testwiedergabe in Chrome (headless, Remote-Debugging) prüfen:
-// spielt ab, Stufen/Tonspuren/Untertitel sichtbar, Ton- und Stufenwechsel wirken.
+// spielt ab, Stufen/Tonspuren/Untertitel (CC1 und WebVTT) sichtbar, Ton- und Stufenwechsel wirken.
 // Aufruf: node scripts/hls/wiedergabe-pruefen.mjs http://127.0.0.1:<Port>/hls-test
 // Chrome-Pfad über CHROME, sonst der Standardpfad am Mac.
 import { spawn } from 'node:child_process';
@@ -27,7 +27,7 @@ async function target() {
   throw new Error('Chrome meldet sich nicht');
 }
 
-let ws, seq = 0;
+let ws, seq = 0, feeder;
 const pending = new Map();
 function send(method, params = {}) {
   const id = ++seq;
@@ -49,6 +49,12 @@ try {
     const m = JSON.parse(e.data);
     if (m.id && pending.has(m.id)) { pending.get(m.id).res(m.result || {}); pending.delete(m.id); }
   });
+  // laufend Untertitelzeilen einspeisen (Quelle „live“); ohne diese Quelle bleibt es wirkungslos
+  const origin0 = new URL(url).origin;
+  let n = 0;
+  feeder = setInterval(() => {
+    fetch(`${origin0}/api/caption`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: `Testzeile ${++n}` }) }).catch(() => {});
+  }, 2000);
   await send('Page.navigate', { url });
   await sleep(12000);
   const s1 = await evaluate(`({ ...hlsTestState, t: document.getElementById('v').currentTime, w: document.getElementById('v').videoWidth })`);
@@ -66,6 +72,12 @@ try {
   check('läuft weiter', s2.t > s1.t + 5, `Zeit ${s2.t.toFixed(1)} s`);
   check('Untertitel (CC1) als Textspur', s2.cues.some(c => c.cues > 0), JSON.stringify(s2.cues));
   check('kein Fehler', !s2.error, s2.error || '');
+  // WebVTT-Rendition wählen (die Zeilen schickt der Ablauf laufend über /api/caption)
+  const subs = await evaluate(`(() => { const i = hls.subtitleTracks.findIndex(t => /WebVTT/.test(t.name)); hls.subtitleTrack = i; return hls.subtitleTracks.map(t => t.name); })()`);
+  check('WebVTT-Rendition in der Master-Playlist', subs.some(n => /WebVTT/.test(n)), subs.join(', '));
+  await sleep(12000);
+  const vtt = await evaluate(`[...document.getElementById('v').textTracks].filter(t => /WebVTT/.test(t.label)).map(t => ({ label: t.label, mode: t.mode, cues: t.cues ? t.cues.length : 0, text: t.cues && t.cues.length ? t.cues[t.cues.length - 1].text : '' }))`);
+  check('WebVTT-Zeilen als Textspur', vtt.some(t => t.cues > 0 && /Testzeile/.test(t.text)), JSON.stringify(vtt));
   if (process.argv.includes('--neustart')) {
     // Kanal neu starten: Playlists beginnen neu, Wiedergabe muss weiterlaufen
     const origin = new URL(url).origin;
@@ -79,6 +91,7 @@ try {
 } catch (e) {
   check('Ablauf', false, String(e));
 } finally {
+  clearInterval(feeder);
   try { ws?.close(); } catch {}
   proc.kill();
   await sleep(500);
