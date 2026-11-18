@@ -4,7 +4,7 @@
 
 /// Erste PTS (90 kHz) eines Bild-PES (stream_id 0xE0–0xEF) im Transportstrom
 pub fn ts_first_pts(ts: &[u8]) -> Option<u64> {
-    for p in ts.chunks_exact(188) {
+    for p in ts.as_chunks::<188>().0 {
         if p[0] != 0x47 || p[1] & 0x40 == 0 {
             continue;
         }
