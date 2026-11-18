@@ -504,7 +504,21 @@ pub fn encoder_description(cfg: &EncoderConfig, parts: &EncoderParts) -> String 
         if fixed_pcr { " prog-map=\"progmap,PCR_1=(string)sink_65\"" } else { "" }
     ));
     d.extend(ts_outputs(cfg));
-    d.join("  ")
+    let d = d.join("  ");
+    // K2 verzögert eine Spur um Sekunden: alle Wege zu Mux und Aufnahme müssen so
+    // lange puffern, damit Bild und Spuren nach Zeitstempel zusammenfinden
+    match k2_delay_ns(cfg) {
+        0 => d,
+        k2 => d.replace("max-size-time=2000000000", &format!("max-size-time={}", 2_000_000_000 + k2)),
+    }
+}
+
+/// größte Zusatzverzögerung durch Klare Sprache K2 über alle Spuren, ns
+pub fn k2_delay_ns(cfg: &EncoderConfig) -> u64 {
+    if !cfg.audio.enabled {
+        return 0;
+    }
+    crate::audio::effective_tracks(&cfg.audio.tracks).iter().map(|t| t.clear_speech.output_delay_ns()).max().unwrap_or(0)
 }
 
 /// Eigener Mux (`lztsmux`). Der Spielraum über der gelernten Eingangsverspätung

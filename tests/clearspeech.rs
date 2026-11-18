@@ -37,7 +37,7 @@ fn clear_speech_is_lip_sync_and_reports_30ms() {
     .downcast::<gst::Pipeline>()
     .unwrap();
     let cs = p.by_name("cs").unwrap().downcast::<lz_streamer::clearspeech::LzClearSpeech>().unwrap();
-    cs.set_config(lz_streamer::clearspeech::ClearSpeechConfig { enabled: true, residual_db: 0.0, keep_singing: false });
+    cs.set_config(lz_streamer::clearspeech::ClearSpeechConfig { enabled: true, residual_db: 0.0, keep_singing: false, ..Default::default() });
     let dry = p.by_name("dry").unwrap().downcast::<gst_app::AppSink>().unwrap();
     let wet = p.by_name("wet").unwrap().downcast::<gst_app::AppSink>().unwrap();
     p.set_state(gst::State::Playing).unwrap();
@@ -70,4 +70,58 @@ fn clear_speech_cpu_load() {
     let load = t.elapsed().as_secs_f64() / secs as f64;
     eprintln!("Rechenlast Stereo: {:.1} % eines Kerns", load * 100.0);
     assert!(load < 1.0, "nicht echtzeitfähig: {load:.2}");
+}
+
+/// K2: ganze Spur um die eingestellte Zeit verzögert, Zeitstempel zurückgesetzt.
+/// Mit `LZS_K2_PYTHON` (Python mit demucs) läuft die echte Trennung mit; ohne
+/// geht das Original mit derselben Verzögerung durch.
+#[test]
+fn clear_speech_k2_constant_delay_lip_sync() {
+    gst::init().unwrap();
+    lz_streamer::clearspeech::register();
+    let real = std::env::var("LZS_K2_PYTHON").is_ok();
+    let p = gst::parse::launch(
+        "audiotestsrc is-live=true wave=ticks tick-interval=1000000000 volume=0.8 samplesperbuffer=480 \
+         ! audio/x-raw,format=F32LE,rate=48000,channels=2,layout=interleaved ! tee name=t \
+         t. ! queue ! appsink name=dry sync=false \
+         t. ! queue max-size-time=0 max-size-buffers=0 max-size-bytes=0 ! audiobuffersplit output-buffer-duration=1/100 ! lzclearspeech name=cs ! appsink name=wet sync=false",
+    )
+    .unwrap()
+    .downcast::<gst::Pipeline>()
+    .unwrap();
+    let cs = p.by_name("cs").unwrap().downcast::<lz_streamer::clearspeech::LzClearSpeech>().unwrap();
+    cs.set_config(lz_streamer::clearspeech::ClearSpeechConfig {
+        enabled: true,
+        residual_db: 0.0,
+        keep_singing: false,
+        mode: lz_streamer::clearspeech::Mode::K2,
+        delay_ms: 4000,
+        ..Default::default()
+    });
+    let dry = p.by_name("dry").unwrap().downcast::<gst_app::AppSink>().unwrap();
+    let wet = p.by_name("wet").unwrap().downcast::<gst_app::AppSink>().unwrap();
+    p.set_state(gst::State::Playing).unwrap();
+    let secs = if real { 30 } else { 8 };
+    let mut offs = Vec::new();
+    for k in 1..secs {
+        let after = gst::ClockTime::from_mseconds(k * 1000 - 500);
+        let d = first_click(&dry, 0.3, after).unwrap();
+        let w = first_click(&wet, 0.3, after).unwrap();
+        offs.push((w.nseconds() as f64 - d.nseconds() as f64) / 1e6);
+    }
+    let mut q = gst::query::Latency::new();
+    assert!(wet.static_pad("sink").unwrap().peer_query(&mut q));
+    let mut q0 = gst::query::Latency::new();
+    assert!(cs.static_pad("sink").unwrap().peer_query(&mut q0));
+    let own = q.result().1 - q0.result().1;
+    let st = cs.status().unwrap();
+    p.set_state(gst::State::Null).unwrap();
+    let max = offs.iter().fold(0.0f64, |m, v| m.max(v.abs()));
+    eprintln!("K2: Versatz je Sekunde {offs:?} ms, größter {max:.2} ms, Latenz {own}, Status {st:?}");
+    assert!(max < 20.0, "A/V-Versatz {max:.2} ms");
+    assert_eq!(own, gst::ClockTime::from_seconds(4), "Verzögerung");
+    assert!((st.delay_ms - 4000.0).abs() < 0.5, "{st:?}");
+    if real {
+        assert!(st.k2_ready, "{st:?}");
+    }
 }

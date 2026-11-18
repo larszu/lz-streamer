@@ -139,6 +139,18 @@ enum Cmd {
     KlassenMessen {
         #[arg(long)]
         korpus: PathBuf,
+        /// regeln (Merkmale, ohne Modell) oder netz (Silero + YAMNet)
+        #[arg(long, default_value = "regeln")]
+        verfahren: String,
+        /// Modellordner für `netz` (Vorgabe: <Daten>/lz-streamer/modelle/a3)
+        #[arg(long)]
+        modelle: Option<PathBuf>,
+        /// `netz` ohne gelernten Kopf (feste Regeln über AudioSet-Gruppen)
+        #[arg(long)]
+        ohne_kopf: bool,
+        /// Merkmale je Fenster als JSON-Zeilen schreiben (für kopf-lernen.py)
+        #[arg(long)]
+        merkmale: Option<PathBuf>,
     },
     /// Hilfsprozess für ein VST3-Plugin (wird von `lzplugin` gestartet)
     #[command(hide = true)]
@@ -255,8 +267,25 @@ fn main() -> Result<()> {
             Ok(())
         }
         Cmd::PluginHost { plugin, channels, probe } => if probe { lz_streamer::plugin::probe(&plugin, channels) } else { lz_streamer::plugin::run_host(&plugin, channels) },
-        Cmd::KlassenMessen { korpus } => {
-            let r = lz_streamer::vad::evaluate_corpus(&korpus)?;
+        Cmd::KlassenMessen { korpus, verfahren, modelle, ohne_kopf, merkmale } => {
+            let r = if verfahren == "netz" {
+                let dir = modelle.unwrap_or_else(lz_streamer::vadml::default_dir);
+                let (rows, us) = lz_streamer::vadml::run_corpus(&korpus, &dir, !ohne_kopf)?;
+                if let Some(path) = merkmale {
+                    use std::io::Write;
+                    let mut f = std::io::BufWriter::new(std::fs::File::create(&path)?);
+                    for l in &rows {
+                        let mut v = serde_json::to_value(&l.w)?;
+                        v["truth"] = serde_json::to_value(l.truth)?;
+                        v["file"] = l.file.clone().into();
+                        v["emb"] = serde_json::to_value(&l.w.emb)?;
+                        writeln!(f, "{v}")?;
+                    }
+                }
+                lz_streamer::vad::tally(rows.iter().map(|l| (l.truth, l.class)), us)
+            } else {
+                lz_streamer::vad::evaluate_corpus(&korpus)?
+            };
             for (c, ok, n) in &r.per_class {
                 println!("{c:?}: {ok}/{n} = {:.1} %", if *n > 0 { *ok as f64 * 100.0 / *n as f64 } else { 0.0 });
             }
