@@ -28,12 +28,40 @@ pub struct ClearSpeechConfig {
     pub residual_db: f64,
     /// bei erkanntem Gesang nicht absenken
     pub keep_singing: bool,
+    /// k1: DeepFilterNet3, 30 ms; k2: HTDemucs im Hilfsprozess, ganze Ausgabe um `delay_ms` verzögert
+    pub mode: Mode,
+    /// K2: feste Verzögerung der gesamten Ausgabe (Bild und alle Spuren), ms
+    pub delay_ms: u32,
+    /// K2: Python mit demucs (leer: `LZS_K2_PYTHON` oder `python3`)
+    pub python: String,
+    /// K2: demucs-Modell (htdemucs, htdemucs_ft, …)
+    pub model: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum Mode {
+    #[default]
+    K1,
+    K2,
 }
 
 impl Default for ClearSpeechConfig {
     fn default() -> Self {
-        Self { enabled: false, residual_db: -9.0, keep_singing: true }
+        Self { enabled: false, residual_db: -9.0, keep_singing: true, mode: Mode::K1, delay_ms: 6000, python: String::new(), model: "htdemucs".into() }
     }
+}
+
+impl ClearSpeechConfig {
+    /// Zusatzverzögerung der gesamten Ausgabe durch K2 (0 bei K1 oder aus)
+    pub fn output_delay_ns(&self) -> u64 {
+        if self.enabled && self.mode == Mode::K2 { k2_delay_frames(self) as u64 * 1_000_000_000 / RATE as u64 } else { 0 }
+    }
+}
+
+/// K2-Verzögerung in Frames, auf ganze 10 ms gerundet, mindestens 3 s
+fn k2_delay_frames(c: &ClearSpeechConfig) -> usize {
+    (c.delay_ms.clamp(3000, 30_000) as usize / 10) * (RATE / 100)
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq)]
@@ -43,6 +71,13 @@ pub struct ClearSpeechStatus {
     pub singing: bool,
     /// Sprach-Rausch-Schätzung des Modells, dB
     pub lsnr: f64,
+    /// Verzögerung dieser Spur und damit der ganzen Ausgabe, ms
+    pub delay_ms: f64,
+    /// K2: Trennung läuft
+    pub k2_ready: bool,
+    /// K2: Anteil der Ausgabe ohne Trennung seit Bereitschaft (Hilfsprozess zu spät), %
+    pub k2_fallback_pct: f64,
+    pub k2_restarts: u32,
 }
 
 pub struct ClearSpeech {
@@ -54,9 +89,11 @@ pub struct ClearSpeech {
     fifo_in: Vec<f32>,
     fifo_out: VecDeque<f32>,
     g: f64,
-    vad: crate::vad::Classifier,
+    vad: crate::vad::Detector,
     decim: Vec<f32>,
     prefill: usize,
+    k2: Option<crate::clearspeech_k2::K2>,
+    k2_out: Vec<(f32, Option<f32>)>,
     pub status: ClearSpeechStatus,
 }
 
@@ -67,7 +104,6 @@ impl ClearSpeech {
         let d = df.delay();
         let hop = df.hop_size;
         Ok(Self {
-            cfg,
             df,
             ch,
             hop,
@@ -75,21 +111,24 @@ impl ClearSpeech {
             fifo_in: Vec::new(),
             fifo_out: VecDeque::new(),
             g: 1.0,
-            vad: Default::default(),
+            vad: crate::vad::Detector::auto(),
             decim: Vec::new(),
             prefill: 0,
+            k2: (cfg.enabled && cfg.mode == Mode::K2).then(|| crate::clearspeech_k2::K2::new(ch, k2_delay_frames(&cfg), crate::clearspeech_k2::python(&cfg.python), cfg.model.clone())),
+            k2_out: Vec::new(),
             status: Default::default(),
+            cfg,
         })
     }
 
-    /// Modell-Latenz in Samples (DeepFilterNet3: 1440 = 30 ms)
+    /// Modell-Latenz in Samples (DeepFilterNet3: 1440 = 30 ms; K2: eingestellte Verzögerung)
     pub fn latency_samples(&self) -> usize {
-        self.df.delay()
+        self.k2.as_ref().map(|k| k.delay_frames()).unwrap_or_else(|| self.df.delay())
     }
 
     /// gesamte Verzögerung des Ausgangs je Kanal: Modell plus ggf. Vorfüllung
     pub fn output_delay_samples(&self) -> usize {
-        self.df.delay() + self.prefill / self.ch
+        self.latency_samples() + self.prefill / self.ch
     }
 
     fn target_g(&self) -> f64 {
@@ -112,8 +151,11 @@ impl ClearSpeech {
             }
             self.decim.push(acc / (3 * ch) as f32);
         }
-        if let Some((class, _)) = self.vad.push(&std::mem::take(&mut self.decim)).pop() {
+        if let Some(class) = self.vad.push(std::mem::take(&mut self.decim)) {
             self.status.singing = class == crate::vad::Class::Gesang;
+        }
+        if self.k2.is_some() {
+            return self.hop_frame_k2(frame);
         }
         let mut enh = Array2::<f32>::zeros((ch, hop));
         let ok = self.df.process(noisy.view(), enh.view_mut());
@@ -140,6 +182,36 @@ impl ClearSpeech {
         out
     }
 
+    fn hop_frame_k2(&mut self, frame: &[f32]) -> Vec<f32> {
+        let (ch, hop) = (self.ch, frame.len() / self.ch);
+        let mut buf = std::mem::take(&mut self.k2_out);
+        let Some(k2) = self.k2.as_mut() else { return frame.to_vec() };
+        k2.process(frame, &mut buf);
+        let st = k2.stats;
+        self.status.k2_ready = st.ready;
+        self.status.k2_restarts = st.restarts;
+        let total = st.separated + st.fallback;
+        self.status.k2_fallback_pct = if total > 0 { st.fallback as f64 * 100.0 / total as f64 } else { 0.0 };
+        let tg = self.target_g();
+        let step = 1.0 - (-(hop as f64) / (0.5 * RATE as f64)).exp();
+        let g0 = self.g;
+        self.g += (tg - self.g) * step;
+        self.status.residual_db = 20.0 * self.g.max(1e-6).log10();
+        let mut out = vec![0.0; ch * hop];
+        for t in 0..hop {
+            let g = (g0 + (self.g - g0) * t as f64 / hop as f64) as f32;
+            for c in 0..ch {
+                let (x, s) = buf[t * ch + c];
+                out[t * ch + c] = match s {
+                    Some(s) => (1.0 - g) * s + g * x,
+                    None => x,
+                };
+            }
+        }
+        self.k2_out = buf;
+        out
+    }
+
     /// Interleaved verarbeiten. Bei Blöcken aus ganzen 10-ms-Stücken entsteht keine
     /// Zusatzlatenz über die Modell-Latenz hinaus.
     pub fn process(&mut self, samples: &mut [f32]) {
@@ -161,6 +233,7 @@ impl ClearSpeech {
         for s in samples.iter_mut() {
             *s = self.fifo_out.pop_front().unwrap_or(0.0);
         }
+        self.status.delay_ms = self.output_delay_samples() as f64 * 1000.0 / RATE as f64;
     }
 }
 
@@ -309,7 +382,7 @@ mod tests {
 
     #[test]
     fn lowers_noise_and_reports_30ms() {
-        let mut cs = ClearSpeech::new(ClearSpeechConfig { enabled: true, residual_db: -9.0, keep_singing: false }, 1).unwrap();
+        let mut cs = ClearSpeech::new(ClearSpeechConfig { enabled: true, residual_db: -9.0, keep_singing: false, ..Default::default() }, 1).unwrap();
         assert_eq!(cs.latency_samples(), 1440);
         let mut seed = 7;
         let x = noise(RATE * 3, 0.2, &mut seed);
@@ -326,7 +399,7 @@ mod tests {
 
     #[test]
     fn zero_db_is_delayed_passthrough() {
-        let mut cs = ClearSpeech::new(ClearSpeechConfig { enabled: true, residual_db: 0.0, keep_singing: false }, 2).unwrap();
+        let mut cs = ClearSpeech::new(ClearSpeechConfig { enabled: true, residual_db: 0.0, keep_singing: false, ..Default::default() }, 2).unwrap();
         let mut seed = 3;
         let x = noise(2 * 4800, 0.3, &mut seed);
         let mut y = x.clone();

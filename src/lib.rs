@@ -11,6 +11,7 @@ pub mod caption_measure;
 pub mod channel;
 pub mod clap;
 pub mod clearspeech;
+pub mod clearspeech_k2;
 pub mod config;
 pub mod control;
 pub mod dash;
@@ -44,6 +45,7 @@ pub mod tsanalyse;
 pub mod tsmux;
 pub mod upload;
 pub mod vad;
+pub mod vadml;
 pub mod ytcaptions;
 
 /// 4181–4198 belegt die AV-Suite, 4199 lz-nvx-toolbox.

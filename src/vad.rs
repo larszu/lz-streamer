@@ -192,14 +192,69 @@ pub fn read_wav(path: &std::path::Path) -> anyhow::Result<Vec<f32>> {
     anyhow::bail!("keine Daten in {}", path.display())
 }
 
+/// Unterordner eines Korpus und ihre Klasse
+pub const CLASS_DIRS: &[(&str, Class)] = &[("stille", Class::Stille), ("sprache", Class::Sprache), ("gesang", Class::Gesang), ("orgel", Class::Orgel), ("applaus", Class::Applaus)];
+
+/// Erkenner für den Betrieb: Netze (`vadml`), wenn die Modelle da sind, sonst Regeln.
+pub enum Detector {
+    Rules(Box<Classifier>),
+    Ml(crate::vadml::Worker),
+}
+
+impl Detector {
+    pub fn auto() -> Self {
+        let dir = crate::vadml::default_dir();
+        if crate::vadml::available(&dir) {
+            match crate::vadml::MlClassifier::load(&dir) {
+                Ok(c) => {
+                    tracing::info!("A3: Netze aus {} (Kopf: {})", dir.display(), c.uses_head());
+                    return Detector::Ml(crate::vadml::Worker::start(c));
+                }
+                Err(e) => tracing::warn!("A3: Netze nicht ladbar, Regeln: {e}"),
+            }
+        }
+        Detector::Rules(Box::default())
+    }
+
+    /// Samples (16 kHz mono) anhängen; liefert die zuletzt erkannte Klasse, sobald eine vorliegt.
+    pub fn push(&mut self, samples: Vec<f32>) -> Option<Class> {
+        match self {
+            Detector::Rules(c) => c.push(&samples).pop().map(|(k, _)| k),
+            Detector::Ml(w) => {
+                w.push(samples);
+                w.latest()
+            }
+        }
+    }
+}
+
+/// Wahrheitstabelle aus (wahr, erkannt)-Paaren
+pub fn tally(pairs: impl IntoIterator<Item = (Class, Class)>, us_per_10ms: f64) -> CorpusResult {
+    use std::collections::HashMap;
+    let mut conf: HashMap<(Class, Class), usize> = HashMap::new();
+    for p in pairs {
+        *conf.entry(p).or_default() += 1;
+    }
+    let per_class = CLASS_DIRS
+        .iter()
+        .map(|(_, t)| {
+            let total: usize = conf.iter().filter(|((a, _), _)| a == t).map(|(_, n)| n).sum();
+            (*t, conf.get(&(*t, *t)).copied().unwrap_or(0), total)
+        })
+        .collect();
+    let mut confusion: Vec<_> = conf.into_iter().map(|((a, b), n)| (a, b, n)).collect();
+    confusion.sort_by_key(|(a, b, _)| (format!("{a:?}"), format!("{b:?}")));
+    CorpusResult { per_class, confusion, us_per_10ms }
+}
+
 /// Korpus `<ordner>/<klasse>/*.wav` klassifizieren (1-s-Fenster).
 pub fn evaluate_corpus(dir: &std::path::Path) -> anyhow::Result<CorpusResult> {
     use std::collections::HashMap;
-    let classes = [("stille", Class::Stille), ("sprache", Class::Sprache), ("gesang", Class::Gesang), ("orgel", Class::Orgel), ("applaus", Class::Applaus)];
+    let classes = CLASS_DIRS;
     let mut conf: HashMap<(Class, Class), usize> = HashMap::new();
     let mut samples = 0usize;
     let mut elapsed = std::time::Duration::ZERO;
-    for (name, truth) in classes {
+    for &(name, truth) in classes {
         let Ok(rd) = std::fs::read_dir(dir.join(name)) else { continue };
         for e in rd.flatten().filter(|e| e.path().extension().is_some_and(|x| x == "wav")) {
             let x = read_wav(&e.path())?;
@@ -216,16 +271,8 @@ pub fn evaluate_corpus(dir: &std::path::Path) -> anyhow::Result<CorpusResult> {
             }
         }
     }
-    let per_class = classes
-        .iter()
-        .map(|(_, t)| {
-            let total: usize = conf.iter().filter(|((a, _), _)| a == t).map(|(_, n)| n).sum();
-            (*t, conf.get(&(*t, *t)).copied().unwrap_or(0), total)
-        })
-        .collect();
-    let mut confusion: Vec<_> = conf.into_iter().map(|((a, b), n)| (a, b, n)).collect();
-    confusion.sort_by_key(|(a, b, _)| (format!("{a:?}"), format!("{b:?}")));
-    Ok(CorpusResult { per_class, confusion, us_per_10ms: elapsed.as_secs_f64() * 1e6 / (samples as f64 / HOP as f64).max(1.0) })
+    let pairs = conf.into_iter().flat_map(|(k, n)| std::iter::repeat_n(k, n));
+    Ok(tally(pairs, elapsed.as_secs_f64() * 1e6 / (samples as f64 / HOP as f64).max(1.0)))
 }
 
 /// Rechenzeit-Hilfe: 10 ms Audio analysieren (für den Leistungstest).
