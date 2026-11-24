@@ -382,7 +382,7 @@ mod tests {
 
     #[test]
     fn lowers_noise_and_reports_30ms() {
-        let mut cs = ClearSpeech::new(ClearSpeechConfig { enabled: true, residual_db: -9.0, keep_singing: false }, 1).unwrap();
+        let mut cs = ClearSpeech::new(ClearSpeechConfig { enabled: true, residual_db: -9.0, keep_singing: false, ..Default::default() }, 1).unwrap();
         assert_eq!(cs.latency_samples(), 1440);
         let mut seed = 7;
         let x = noise(RATE * 3, 0.2, &mut seed);
@@ -399,7 +399,7 @@ mod tests {
 
     #[test]
     fn zero_db_is_delayed_passthrough() {
-        let mut cs = ClearSpeech::new(ClearSpeechConfig { enabled: true, residual_db: 0.0, keep_singing: false }, 2).unwrap();
+        let mut cs = ClearSpeech::new(ClearSpeechConfig { enabled: true, residual_db: 0.0, keep_singing: false, ..Default::default() }, 2).unwrap();
         let mut seed = 3;
         let x = noise(2 * 4800, 0.3, &mut seed);
         let mut y = x.clone();
